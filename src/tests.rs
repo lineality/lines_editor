@@ -1182,3 +1182,231 @@ mod revised_display_integration_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+
+    #[test]
+    fn test_days_to_ymd_boundary_conditions() {
+        // Test 1: Zero days (epoch start: 1970-01-01)
+        let (year, month, day) = days_to_ymd(0);
+        assert_eq!(year, 1970, "Year should be 1970 at epoch");
+        assert_eq!(month, 1, "Month should be January at epoch");
+        assert_eq!(day, 1, "Day should be 1 at epoch");
+
+        // Test 2: One day after epoch (1970-01-02)
+        let (year, month, day) = days_to_ymd(1);
+        assert_eq!(year, 1970, "Year should be 1970");
+        assert_eq!(month, 1, "Month should be January");
+        assert_eq!(day, 2, "Day should be 2");
+
+        // Test 3: Known leap year - Feb 29, 2024
+        // Calculation: Days from 1970-01-01 to 2024-02-29
+        // Method: Count complete years (1970-2023) + days in 2024 (Jan 31 + Feb 29)
+        let days_to_2024_feb_29 = calculate_days_to_date(2024, 2, 29);
+        let (year, month, day) = days_to_ymd(days_to_2024_feb_29);
+        assert_eq!(year, 2024, "Year should be 2024");
+        assert_eq!(month, 2, "Month should be February");
+        assert_eq!(day, 29, "Day should be 29 (leap day)");
+
+        // Test 4: Non-leap year (2023-02-28, no Feb 29)
+        let days_to_2023_feb_28 = calculate_days_to_date(2023, 2, 28);
+        let (year, month, day) = days_to_ymd(days_to_2023_feb_28);
+        assert_eq!(year, 2023, "Year should be 2023");
+        assert_eq!(month, 2, "Month should be February");
+        assert_eq!(day, 28, "Day should be 28");
+
+        // Test 5: End of year (2023-12-31)
+        let days_to_2023_dec_31 = calculate_days_to_date(2023, 12, 31);
+        let (year, month, day) = days_to_ymd(days_to_2023_dec_31);
+        assert_eq!(year, 2023, "Year should be 2023");
+        assert_eq!(month, 12, "Month should be December");
+        assert_eq!(day, 31, "Day should be 31");
+
+        // Test 6: Start of 2024 (2024-01-01)
+        let days_to_2024_jan_01 = calculate_days_to_date(2024, 1, 1);
+        let (year, month, day) = days_to_ymd(days_to_2024_jan_01);
+        assert_eq!(year, 2024, "Year should be 2024");
+        assert_eq!(month, 1, "Month should be January");
+        assert_eq!(day, 1, "Day should be 1");
+    }
+
+    #[test]
+    fn test_days_to_ymd_extreme_input() {
+        // Test with absurdly large input (cosmic ray corruption scenario)
+        let huge_days = u64::MAX / 2; // Very large but won't overflow arithmetic
+
+        // Should return fallback date without panicking
+        let (year, month, day) = days_to_ymd(huge_days);
+
+        // Should hit iteration limit and return fallback
+        assert_eq!(year, 9999, "Should return max year fallback");
+        assert_eq!(month, 12, "Should return December as fallback");
+        assert_eq!(day, 31, "Should return last day as fallback");
+    }
+
+    #[test]
+    fn test_leap_year_calculations() {
+        let is_leap_year = |y: u32| -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) };
+
+        // Test standard leap years
+        assert!(is_leap_year(2024), "2024 should be leap year");
+        assert!(
+            is_leap_year(2000),
+            "2000 should be leap year (divisible by 400)"
+        );
+        assert!(is_leap_year(2020), "2020 should be leap year");
+
+        // Test non-leap years
+        assert!(!is_leap_year(2023), "2023 should NOT be leap year");
+        assert!(
+            !is_leap_year(1900),
+            "1900 should NOT be leap year (century rule)"
+        );
+        assert!(
+            !is_leap_year(2100),
+            "2100 should NOT be leap year (century rule)"
+        );
+        assert!(!is_leap_year(2001), "2001 should NOT be leap year");
+    }
+
+    #[test]
+    fn test_century_leap_years() {
+        // Test the century rule (divisible by 100 but not 400)
+        let is_leap_year = |y: u32| -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) };
+
+        assert!(!is_leap_year(1800), "1800 should NOT be leap year");
+        assert!(!is_leap_year(1900), "1900 should NOT be leap year");
+        assert!(is_leap_year(2000), "2000 SHOULD be leap year");
+        assert!(!is_leap_year(2100), "2100 should NOT be leap year");
+        assert!(!is_leap_year(2200), "2200 should NOT be leap year");
+        assert!(!is_leap_year(2300), "2300 should NOT be leap year");
+        assert!(is_leap_year(2400), "2400 SHOULD be leap year");
+    }
+
+    /// Helper function to calculate days from epoch to a specific date
+    /// This is used for test validation - it implements the SAME logic as days_to_ymd
+    /// but in reverse, so we can verify our function works correctly.
+    ///
+    /// # Arguments
+    /// * `target_year` - Year (e.g., 2024)
+    /// * `target_month` - Month (1-12)
+    /// * `target_day` - Day (1-31)
+    ///
+    /// # Returns
+    /// * `u64` - Number of days since 1970-01-01
+    fn calculate_days_to_date(target_year: u32, target_month: u32, target_day: u32) -> u64 {
+        const EPOCH_YEAR: u32 = 1970;
+
+        let is_leap_year = |y: u32| -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) };
+
+        // Count days in complete years from 1970 to target_year - 1
+        let mut total_days = 0u64;
+
+        // Bounded loop: maximum (target_year - 1970) iterations
+        let year_diff = target_year.saturating_sub(EPOCH_YEAR);
+        for year_offset in 0..year_diff {
+            let year = EPOCH_YEAR + year_offset;
+            let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+            total_days += days_in_year;
+        }
+
+        // Add days for complete months in target year
+        const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const DAYS_IN_MONTH_LEAP: [u32; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+        let days_in_months = if is_leap_year(target_year) {
+            &DAYS_IN_MONTH_LEAP
+        } else {
+            &DAYS_IN_MONTH
+        };
+
+        // Add complete months (bounded: max 12 iterations)
+        for month_index in 0..(target_month - 1) as usize {
+            if month_index < 12 {
+                total_days += days_in_months[month_index] as u64;
+            }
+        }
+
+        // Add remaining days (minus 1 because day 1 is day 0 in our count)
+        total_days += (target_day - 1) as u64;
+
+        total_days
+    }
+
+    #[test]
+    fn test_helper_calculate_days_to_date() {
+        // Verify our helper function with known values
+
+        // Epoch start: 0 days
+        assert_eq!(
+            calculate_days_to_date(1970, 1, 1),
+            0,
+            "Epoch should be 0 days"
+        );
+
+        // One day after epoch
+        assert_eq!(
+            calculate_days_to_date(1970, 1, 2),
+            1,
+            "Jan 2, 1970 should be 1 day"
+        );
+
+        // End of January 1970
+        assert_eq!(
+            calculate_days_to_date(1970, 1, 31),
+            30,
+            "Jan 31, 1970 should be 30 days"
+        );
+
+        // Start of February 1970
+        assert_eq!(
+            calculate_days_to_date(1970, 2, 1),
+            31,
+            "Feb 1, 1970 should be 31 days"
+        );
+
+        // One complete year
+        assert_eq!(
+            calculate_days_to_date(1971, 1, 1),
+            365,
+            "Jan 1, 1971 should be 365 days"
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_date_conversion() {
+        // Test that converting TO days and back FROM days gives the same result
+
+        let test_dates = [
+            (1970, 1, 1),   // Epoch
+            (1970, 12, 31), // End of first year
+            (2000, 1, 1),   // Y2K
+            (2000, 2, 29),  // Leap day
+            (2023, 6, 15),  // Random recent date
+            (2024, 2, 29),  // Recent leap day
+        ];
+
+        for (expected_year, expected_month, expected_day) in test_dates.iter() {
+            let days = calculate_days_to_date(*expected_year, *expected_month, *expected_day);
+            let (year, month, day) = days_to_ymd(days);
+
+            assert_eq!(
+                year, *expected_year,
+                "Year mismatch for {}-{:02}-{:02}",
+                expected_year, expected_month, expected_day
+            );
+            assert_eq!(
+                month, *expected_month,
+                "Month mismatch for {}-{:02}-{:02}",
+                expected_year, expected_month, expected_day
+            );
+            assert_eq!(
+                day, *expected_day,
+                "Day mismatch for {}-{:02}-{:02}",
+                expected_year, expected_month, expected_day
+            );
+        }
+    }
+}

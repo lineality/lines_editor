@@ -624,6 +624,25 @@ fn create_archive_timestamp(time: SystemTime) -> String {
     let (year, month, day, hour, minute, second) =
         epoch_seconds_to_datetime_components(total_seconds);
 
+    // Assertion 1: Validate year range
+    const MAX_REASONABLE_YEAR: u32 = 9999;
+    if year > MAX_REASONABLE_YEAR {
+        eprintln!(
+            "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
+            year, MAX_REASONABLE_YEAR
+        );
+        return String::from("99_12_31_23_59_59");
+    }
+
+    // Assertion 2: Validate all components are in expected ranges
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        eprintln!(
+            "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        );
+        return String::from("70_01_01_00_00_00"); // Safe fallback
+    }
+
     // Format as YY_MM_DD_HH_MM_SS
     format!(
         "{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
@@ -688,23 +707,58 @@ fn epoch_seconds_to_datetime_components(epoch_seconds: u64) -> (u32, u32, u32, u
 /// - Divisible by 4: leap year
 /// - Divisible by 100: not a leap year
 /// - Divisible by 400: leap year
+///
+/// # Safety Bounds
+/// - Maximum year: 9999 (bounded loop with MAX_YEAR_ITERATIONS)
+/// - If bounds exceeded, returns safe fallback date
 fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
+    // Constants for loop bounds and validation
+    const EPOCH_YEAR: u32 = 1970;
+    const MAX_YEAR: u32 = 9999;
+    const MAX_YEAR_ITERATIONS: u32 = MAX_YEAR - EPOCH_YEAR; // 8029 iterations max
+
     // Start from 1970-01-01
-    let mut year = 1970u32;
+    let mut year = EPOCH_YEAR;
     let mut remaining_days = days_since_epoch;
 
     // Helper function to check if a year is a leap year
     let is_leap_year = |y: u32| -> bool { (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) };
 
-    // Subtract complete years
-    while remaining_days > 0 {
+    // BOUNDED LOOP - Subtract complete years with explicit upper limit
+    let mut iteration_count = 0u32;
+    while remaining_days > 0 && iteration_count < MAX_YEAR_ITERATIONS {
         let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+
         if remaining_days >= days_in_year {
             remaining_days -= days_in_year;
             year += 1;
+            iteration_count += 1;
         } else {
             break;
         }
+    }
+
+    // Assertion 1: Check if we hit the iteration limit (defensive programming)
+    if iteration_count >= MAX_YEAR_ITERATIONS {
+        eprintln!(
+            "Warning: Year calculation exceeded maximum iterations ({}). Input may be corrupted.",
+            MAX_YEAR_ITERATIONS
+        );
+        eprintln!(
+            "Debug: days_since_epoch={}, remaining_days={}, year={}",
+            days_since_epoch, remaining_days, year
+        );
+        // Return safe fallback date: 9999-12-31
+        return (9999, 12, 31);
+    }
+
+    // Assertion 2: Year should be in reasonable range
+    if year > MAX_YEAR {
+        eprintln!(
+            "Warning: Calculated year {} exceeds maximum {}",
+            year, MAX_YEAR
+        );
+        return (9999, 12, 31);
     }
 
     // Days in each month for normal and leap years
@@ -717,11 +771,14 @@ fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
         &DAYS_IN_MONTH
     };
 
-    // Find the month and day
+    // BOUNDED LOOP - Find the month and day (max 12 iterations)
     let mut month = 1u32;
     let mut days_left = remaining_days as u32;
 
-    for &days_in_month in days_in_months.iter() {
+    // Explicit bound: maximum 12 months
+    for month_index in 0..12 {
+        let days_in_month = days_in_months[month_index];
+
         if days_left >= days_in_month {
             days_left -= days_in_month;
             month += 1;
@@ -730,8 +787,27 @@ fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
         }
     }
 
+    // Assertion 3: Month should be in valid range
+    if month < 1 || month > 12 {
+        eprintln!(
+            "Warning: Calculated month {} is invalid. Defaulting to December.",
+            month
+        );
+        month = 12;
+    }
+
     // Day of month (1-based), add 1 because we want 1-31, not 0-30
     let day = days_left + 1;
+
+    // Assertion 4: Day should be in valid range for the month
+    let max_day_for_month = days_in_months[(month - 1) as usize];
+    if day < 1 || day > max_day_for_month {
+        eprintln!(
+            "Warning: Calculated day {} is invalid for month {}. Using last valid day.",
+            day, month
+        );
+        return (year, month, max_day_for_month);
+    }
 
     (year, month, day)
 }
@@ -771,6 +847,197 @@ pub fn createarchive_timestamp_with_precision(
     let microseconds = duration_since_epoch.as_micros() % 1_000_000;
 
     format!("{}_{:06}", base_timestamp, microseconds)
+}
+
+/*
+ * Solution 2
+ * The attempt is to follow NASA's only-preallocated-memory rule.
+ */
+
+use std::fmt;
+// use std::io;
+
+/// Fixed-size timestamp type - stack allocated, no heap
+#[derive(Copy, Clone)]
+pub struct FixedSize32Timestamp {
+    data: [u8; 32],
+    len: usize,
+}
+
+impl FixedSize32Timestamp {
+    /// Creates a FixedSize32Timestamp from a string slice
+    ///
+    /// # Arguments
+    /// * `s` - String slice to convert (max 31 bytes)
+    ///
+    /// # Returns
+    /// * `Result<Self>` - FixedSize32Timestamp or LinesError
+    ///
+    /// # Errors
+    /// Returns error if string exceeds 31 bytes
+    pub fn from_str(s: &str) -> Result<Self> {
+        const MAX_LEN: usize = 31;
+
+        // Assertion 1: Check length
+        if s.len() > MAX_LEN {
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("String too long: {} bytes, max: {}", s.len(), MAX_LEN),
+            )));
+        }
+
+        // Assertion 2: Verify valid UTF-8 (already guaranteed by &str type)
+        let mut data = [0u8; 32];
+        let bytes = s.as_bytes();
+
+        // Bounded copy loop
+        for i in 0..s.len().min(MAX_LEN) {
+            data[i] = bytes[i];
+        }
+
+        Ok(FixedSize32Timestamp { data, len: s.len() })
+    }
+
+    /// Gets the timestamp as a string slice
+    ///
+    /// # Returns
+    /// * `Result<&str>` - String slice view of timestamp
+    ///
+    /// # Errors
+    /// Returns error if internal data is not valid UTF-8
+    pub fn as_str(&self) -> Result<&str> {
+        // Assertion: Internal invariant check
+        assert!(
+            self.len <= 32,
+            "Internal invariant violated: length exceeds buffer size"
+        );
+
+        std::str::from_utf8(&self.data[..self.len]).map_err(|e| {
+            LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid UTF-8 in FixedSize32Timestamp: {}", e),
+            ))
+        })
+    }
+}
+
+impl fmt::Display for FixedSize32Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self.as_str() {
+            Ok(s) => write!(f, "{}", s),
+            Err(e) => {
+                // Log the error before returning placeholder
+                eprintln!("Warning: Invalid UTF-8 in FixedSize32Timestamp: {}", e);
+                write!(f, "[invalid UTF-8]")
+            }
+        }
+    }
+}
+
+/// Splits a timestamp into two independent copies - NO HEAP, NO UNSAFE
+///
+/// # Purpose
+/// Creates two stack-allocated copies of a timestamp string without any heap allocation.
+/// This follows NASA's pre-allocated memory rule by using only fixed-size stack arrays.
+///
+/// # Arguments
+/// * `input` - String slice containing timestamp (17-31 characters)
+///
+/// # Returns
+/// * `Result<(FixedSize32Timestamp, FixedSize32Timestamp)>` - Two independent copies or error
+///
+/// # Memory Allocation
+/// Uses only stack-allocated fixed arrays ([u8; 32]). No heap allocation.
+/// Both copies are completely independent and stored on the stack.
+///
+/// # Constraints
+/// - Minimum length: 17 characters (YY_MM_DD_HH_MM_SS)
+/// - Maximum length: 31 characters (YY_MM_DD_HH_MM_SS_UUUUUU)
+///
+/// # Errors
+/// Returns error if:
+/// - Input is too short (< 17 chars)
+/// - Input is too long (> 31 chars)
+/// - Input contains invalid UTF-8
+///
+/// # Example
+/// ```
+/// let timestamp = "24_10_12_12_08_13_656800";
+/// match split_timestamp_no_heap(timestamp) {
+///     Ok((copy1, copy2)) => {
+///         // copy1 and copy2 are independent stack copies
+///         println!("Copy 1: {}", copy1);
+///         println!("Copy 2: {}", copy2);
+///     }
+///     Err(e) => eprintln!("Error: {}", e),
+/// }
+/// ```
+pub fn split_timestamp_no_heap(
+    input: &str,
+) -> Result<(FixedSize32Timestamp, FixedSize32Timestamp)> {
+    // Assertion 1: Length check - minimum
+    const MIN_LEN: usize = 17;
+    const MAX_LEN: usize = 31;
+
+    if input.len() < MIN_LEN {
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Timestamp too short: {} chars, minimum required: {}",
+                input.len(),
+                MIN_LEN
+            ),
+        )));
+    }
+
+    // Assertion 2: Length check - maximum
+    if input.len() > MAX_LEN {
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Timestamp too long: {} chars, maximum allowed: {}",
+                input.len(),
+                MAX_LEN
+            ),
+        )));
+    }
+
+    // Create the timestamp (this validates and copies to stack)
+    let timestamp = FixedSize32Timestamp::from_str(input)?;
+
+    // These are true copies on the stack, no heap allocation
+    // The Copy trait creates bitwise copies
+    let copy1 = timestamp;
+    let copy2 = timestamp;
+
+    // Assertion 3: Verify copies maintain data integrity
+    assert_eq!(
+        copy1.len, timestamp.len,
+        "Copy 1 length mismatch: expected {}, got {}",
+        timestamp.len, copy1.len
+    );
+    assert_eq!(
+        copy2.len, timestamp.len,
+        "Copy 2 length mismatch: expected {}, got {}",
+        timestamp.len, copy2.len
+    );
+
+    // Assertion 4: Verify both copies have identical content
+    // Note: In safe Rust, we cannot verify different stack addresses,
+    // but we can verify the content is identical
+    match (copy1.as_str(), copy2.as_str()) {
+        (Ok(s1), Ok(s2)) => {
+            assert_eq!(s1, s2, "Copies should have identical content");
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Copy validation failed: {}", e),
+            )));
+        }
+    }
+
+    Ok((copy1, copy2))
 }
 
 /// Formats the navigation legend with color-coded keyboard shortcuts
@@ -3376,8 +3643,25 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         println!("Created new file with header");
     }
     // Initialize editor state
-    let session_time_stamp1 = createarchive_timestamp_with_precision(SystemTime::now(), true);
-    let session_time_stamp2 = session_time_stamp1.clone();
+    let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
+
+    let (session_time_stamp1, session_time_stamp2) =
+        match split_timestamp_no_heap(&session_time_base) {
+            Ok((ts4, ts5)) => (ts4, ts5),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                // Create two empty FixedSize32Timestamp structs as defaults
+                let empty =
+                    FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
+                        // If even the fallback fails, create manually
+                        FixedSize32Timestamp {
+                            data: [0u8; 32],
+                            len: 0,
+                        }
+                    });
+                (empty, empty)
+            }
+        };
 
     let mut state = EditorState::new();
     state.original_file_path = Some(target_path.clone());
@@ -3392,7 +3676,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
 
     // Create read-copy for safety
-    let read_copy_path = create_read_copy(&target_path, session_dir, session_time_stamp2)?;
+    let read_copy_path =
+        create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
     println!("Read-copy: {}", read_copy_path.display());
 
     // Initialize editor state
@@ -3502,7 +3787,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 /// - Stored in session directory for crash recovery
 /// - Timestamp prefix ensures uniqueness
 /// - Session directory persists after exit for recovery
-fn create_read_copy(
+fn create_a_readcopy_of_file(
     original_path: &Path,
     session_dir: &Path,
     session_time_stamp: String,
@@ -3828,7 +4113,7 @@ pub fn render_tui_to_writer<W: Write>(
 /// read-copy operations depend on this directory existing.
 fn initialize_session_directory(
     state: &mut EditorState,
-    session_time_stamp: String,
+    session_time_stamp: FixedSize32Timestamp,
 ) -> io::Result<()> {
     // Defensive: Verify state is in clean initial state
     debug_assert!(
@@ -3863,8 +4148,8 @@ fn initialize_session_directory(
     // let session_time_stamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
 
     // Step 3: Create this session's directory
-    let session_dir_name = format!("{}/", session_time_stamp);
-    let session_path = sessions_dir.join(&session_time_stamp);
+    // let session_dir_name = format!("{}/", session_time_stamp);
+    let session_path = sessions_dir.join(session_time_stamp.to_string());
 
     // Create the session directory
     fs::create_dir(&session_path).map_err(|e| {
