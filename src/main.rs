@@ -3460,35 +3460,153 @@ pub fn execute_command(
 ) -> io::Result<bool> {
     match command {
         Command::MoveLeft(count) => {
-            // Move CURSOR left within window (not window itself)
-            state.cursor.col = state.cursor.col.saturating_sub(count);
+            // Vim-like behavior: move cursor left, scroll window if at edge
 
-            // NO rebuild needed - just cursor moved!
+            let mut remaining_moves = count;
+            let mut needs_rebuild = false;
+
+            // Defensive: Limit iterations to prevent infinite loops
+            const MAX_ITERATIONS: usize = 1000;
+            let mut iterations = 0;
+
+            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+
+                if state.cursor.col > 0 {
+                    // Cursor can move left within visible window
+                    let cursor_moves = remaining_moves.min(state.cursor.col);
+                    state.cursor.col -= cursor_moves;
+                    remaining_moves -= cursor_moves;
+                } else if state.horizontal_line_char_offset > 0 {
+                    // Cursor at left edge, scroll window left
+                    let scroll_amount = remaining_moves.min(state.horizontal_line_char_offset);
+                    state.horizontal_line_char_offset -= scroll_amount;
+                    remaining_moves -= scroll_amount;
+                    needs_rebuild = true;
+                } else {
+                    // At absolute left edge - can't move further
+                    break;
+                }
+            }
+
+            // Defensive: Check iteration limit
+            if iterations >= MAX_ITERATIONS {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Maximum iterations exceeded in MoveLeft",
+                ));
+            }
+
+            // Only rebuild if we scrolled the window
+            if needs_rebuild {
+                build_windowmap_nowrap(state, original_file_path)?;
+            }
+
             Ok(true)
         }
 
         Command::MoveRight(count) => {
-            // Move CURSOR right within window
-            let new_col = state.cursor.col + count;
+            // Vim-like behavior: move cursor right, scroll window if at edge
 
-            // Don't go past effective columns
-            state.cursor.col = new_col.min(state.effective_cols.saturating_sub(1));
+            let mut remaining_moves = count;
+            let mut needs_rebuild = false;
 
-            // NO rebuild needed!
+            // Defensive: Limit iterations
+            const MAX_ITERATIONS: usize = 1000;
+            let mut iterations = 0;
+
+            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+
+                // Calculate space available before right edge
+                // Reserve 1 column to prevent display overflow
+                let right_edge = state.effective_cols.saturating_sub(1);
+
+                if state.cursor.col < right_edge {
+                    // Cursor can move right within visible window
+                    let space_available = right_edge - state.cursor.col;
+                    let cursor_moves = remaining_moves.min(space_available);
+                    state.cursor.col += cursor_moves;
+                    remaining_moves -= cursor_moves;
+                } else {
+                    // Cursor at right edge, scroll window right
+                    // Cap scroll to prevent excessive horizontal offset
+                    const MAX_HORIZONTAL_OFFSET: usize = 1000;
+
+                    if state.horizontal_line_char_offset < MAX_HORIZONTAL_OFFSET {
+                        let max_scroll = MAX_HORIZONTAL_OFFSET - state.horizontal_line_char_offset;
+                        let scroll_amount = remaining_moves.min(max_scroll);
+                        state.horizontal_line_char_offset += scroll_amount;
+                        remaining_moves -= scroll_amount;
+                        needs_rebuild = true;
+                    } else {
+                        // Hit maximum horizontal scroll
+                        break;
+                    }
+                }
+            }
+
+            // Defensive: Check iteration limit
+            if iterations >= MAX_ITERATIONS {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Maximum iterations exceeded in MoveRight",
+                ));
+            }
+
+            // Only rebuild if we scrolled the window
+            if needs_rebuild {
+                build_windowmap_nowrap(state, original_file_path)?;
+            }
+
             Ok(true)
         }
 
         Command::MoveDown(count) => {
-            // Try to move cursor down within visible window first
-            let space_below = state.effective_rows.saturating_sub(state.cursor.row + 1);
-            let cursor_moves = count.min(space_below);
+            // Vim-like behavior: move cursor down, scroll window if at bottom edge
 
-            state.cursor.row += cursor_moves;
+            let mut remaining_moves = count;
+            let mut needs_rebuild = false;
 
-            // If we need to move more, scroll the window
-            let remaining = count - cursor_moves;
-            if remaining > 0 {
-                state.line_count_at_top_of_window += remaining;
+            // Defensive: Limit iterations
+            const MAX_ITERATIONS: usize = 1000;
+            let mut iterations = 0;
+
+            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+
+                // Calculate space available before bottom edge
+                let bottom_edge = state.effective_rows.saturating_sub(1);
+
+                if state.cursor.row < bottom_edge {
+                    // Cursor can move down within visible window
+                    let space_available = bottom_edge - state.cursor.row;
+                    let cursor_moves = remaining_moves.min(space_available);
+                    state.cursor.row += cursor_moves;
+                    remaining_moves -= cursor_moves;
+                } else {
+                    // Cursor at bottom edge, scroll window down
+                    // Note: We should track total file lines to prevent scrolling past EOF
+                    // For now, scroll unconditionally (will show empty lines at EOF)
+                    state.line_count_at_top_of_window += remaining_moves;
+                    remaining_moves = 0;
+                    needs_rebuild = true;
+                }
+            }
+
+            // Defensive: Check iteration limit
+            if iterations >= MAX_ITERATIONS {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Maximum iterations exceeded in MoveDown",
+                ));
+            }
+
+            // Rebuild window if we scrolled
+            if needs_rebuild {
+                // Update file position for top line before rebuild
+                // TODO: Implement proper byte position tracking
+                // For now, build_windowmap_nowrap will seek based on line_count_at_top_of_window
                 build_windowmap_nowrap(state, original_file_path)?;
             }
 
@@ -3496,73 +3614,51 @@ pub fn execute_command(
         }
 
         Command::MoveUp(count) => {
-            // Try to move cursor up within visible window first
-            let cursor_moves = count.min(state.cursor.row);
+            // Vim-like behavior: move cursor up, scroll window if at top edge
 
-            state.cursor.row -= cursor_moves;
+            let mut remaining_moves = count;
+            let mut needs_rebuild = false;
 
-            // If we need to move more, scroll the window
-            let remaining = count - cursor_moves;
-            if remaining > 0 {
-                state.line_count_at_top_of_window =
-                    state.line_count_at_top_of_window.saturating_sub(remaining);
+            // Defensive: Limit iterations
+            const MAX_ITERATIONS: usize = 1000;
+            let mut iterations = 0;
+
+            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+                iterations += 1;
+
+                if state.cursor.row > 0 {
+                    // Cursor can move up within visible window
+                    let cursor_moves = remaining_moves.min(state.cursor.row);
+                    state.cursor.row -= cursor_moves;
+                    remaining_moves -= cursor_moves;
+                } else if state.line_count_at_top_of_window > 0 {
+                    // Cursor at top edge, scroll window up
+                    let scroll_amount = remaining_moves.min(state.line_count_at_top_of_window);
+                    state.line_count_at_top_of_window -= scroll_amount;
+                    remaining_moves -= scroll_amount;
+                    needs_rebuild = true;
+                } else {
+                    // At absolute top of file - can't move further
+                    break;
+                }
+            }
+
+            // Defensive: Check iteration limit
+            if iterations >= MAX_ITERATIONS {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Maximum iterations exceeded in MoveUp",
+                ));
+            }
+
+            // Rebuild window if we scrolled
+            if needs_rebuild {
                 build_windowmap_nowrap(state, original_file_path)?;
             }
 
             Ok(true)
         }
-        // Command::MoveDown(count) => {
-        //     // Scroll down by incrementing window start line
-        //     for _ in 0..count {
-        //         state.line_count_at_top_of_window += 1;
 
-        //         // TODO: Update file_position_of_topline_start by seeking to next line
-        //         // For now, just increment line counter
-        //     }
-
-        //     // Rebuild window with new position
-        //     build_windowmap_nowrap(state, original_file_path)?;
-        //     Ok(true)
-        // }
-
-        // Command::MoveUp(count) => {
-        //     // Scroll up by decrementing window start line
-        //     for _ in 0..count {
-        //         if state.line_count_at_top_of_window > 0 {
-        //             state.line_count_at_top_of_window -= 1;
-        //         }
-
-        //         // TODO: Update file_position_of_topline_start
-        //     }
-
-        //     // Rebuild window
-        //     build_windowmap_nowrap(state, original_file_path)?;
-        //     Ok(true)
-        // }
-
-        // Command::MoveLeft(count) => {
-        //     // Horizontal scroll left
-        //     state.horizontal_line_char_offset =
-        //         state.horizontal_line_char_offset.saturating_sub(count);
-
-        //     // Rebuild window with new offset
-        //     build_windowmap_nowrap(state, original_file_path)?;
-        //     Ok(true)
-        // }
-
-        // Command::MoveRight(count) => {
-        //     // Horizontal scroll right
-        //     state.horizontal_line_char_offset += count;
-
-        //     // Defensive: Cap at reasonable limit
-        //     if state.horizontal_line_char_offset > 1000 {
-        //         state.horizontal_line_char_offset = 1000;
-        //     }
-
-        //     // Rebuild window
-        //     build_windowmap_nowrap(state, original_file_path)?;
-        //     Ok(true)
-        // }
         Command::EnterInsertMode => {
             state.mode = EditorMode::Insert;
             Ok(true)
@@ -3620,6 +3716,185 @@ pub fn execute_command(
         Command::None => Ok(true),
     }
 }
+
+// /// Executes a command and updates editor state
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state to modify
+// /// * `command` - Command to execute
+// /// * `original_file_path` - Path to the file being edited
+// ///
+// /// # Returns
+// /// * `Ok(true)` - Continue editor loop
+// /// * `Ok(false)` - Exit editor loop
+// /// * `Err(io::Error)` - Command execution failed
+// pub fn execute_command(
+//     state: &mut EditorState,
+//     command: Command,
+//     original_file_path: &Path,
+// ) -> io::Result<bool> {
+//     match command {
+//         Command::MoveLeft(count) => {
+//             // Move CURSOR left within window (not window itself)
+//             state.cursor.col = state.cursor.col.saturating_sub(count);
+
+//             // NO rebuild needed - just cursor moved!
+//             Ok(true)
+//         }
+
+//         Command::MoveRight(count) => {
+//             // Move CURSOR right within window
+//             let new_col = state.cursor.col + count;
+
+//             // Don't go past effective columns
+//             state.cursor.col = new_col.min(state.effective_cols.saturating_sub(1));
+
+//             // NO rebuild needed!
+//             Ok(true)
+//         }
+
+//         Command::MoveDown(count) => {
+//             // Try to move cursor down within visible window first
+//             let space_below = state.effective_rows.saturating_sub(state.cursor.row + 1);
+//             let cursor_moves = count.min(space_below);
+
+//             state.cursor.row += cursor_moves;
+
+//             // If we need to move more, scroll the window
+//             let remaining = count - cursor_moves;
+//             if remaining > 0 {
+//                 state.line_count_at_top_of_window += remaining;
+//                 build_windowmap_nowrap(state, original_file_path)?;
+//             }
+
+//             Ok(true)
+//         }
+
+//         Command::MoveUp(count) => {
+//             // Try to move cursor up within visible window first
+//             let cursor_moves = count.min(state.cursor.row);
+
+//             state.cursor.row -= cursor_moves;
+
+//             // If we need to move more, scroll the window
+//             let remaining = count - cursor_moves;
+//             if remaining > 0 {
+//                 state.line_count_at_top_of_window =
+//                     state.line_count_at_top_of_window.saturating_sub(remaining);
+//                 build_windowmap_nowrap(state, original_file_path)?;
+//             }
+
+//             Ok(true)
+//         }
+//         // Command::MoveDown(count) => {
+//         //     // Scroll down by incrementing window start line
+//         //     for _ in 0..count {
+//         //         state.line_count_at_top_of_window += 1;
+
+//         //         // TODO: Update file_position_of_topline_start by seeking to next line
+//         //         // For now, just increment line counter
+//         //     }
+
+//         //     // Rebuild window with new position
+//         //     build_windowmap_nowrap(state, original_file_path)?;
+//         //     Ok(true)
+//         // }
+
+//         // Command::MoveUp(count) => {
+//         //     // Scroll up by decrementing window start line
+//         //     for _ in 0..count {
+//         //         if state.line_count_at_top_of_window > 0 {
+//         //             state.line_count_at_top_of_window -= 1;
+//         //         }
+
+//         //         // TODO: Update file_position_of_topline_start
+//         //     }
+
+//         //     // Rebuild window
+//         //     build_windowmap_nowrap(state, original_file_path)?;
+//         //     Ok(true)
+//         // }
+
+//         // Command::MoveLeft(count) => {
+//         //     // Horizontal scroll left
+//         //     state.horizontal_line_char_offset =
+//         //         state.horizontal_line_char_offset.saturating_sub(count);
+
+//         //     // Rebuild window with new offset
+//         //     build_windowmap_nowrap(state, original_file_path)?;
+//         //     Ok(true)
+//         // }
+
+//         // Command::MoveRight(count) => {
+//         //     // Horizontal scroll right
+//         //     state.horizontal_line_char_offset += count;
+
+//         //     // Defensive: Cap at reasonable limit
+//         //     if state.horizontal_line_char_offset > 1000 {
+//         //         state.horizontal_line_char_offset = 1000;
+//         //     }
+
+//         //     // Rebuild window
+//         //     build_windowmap_nowrap(state, original_file_path)?;
+//         //     Ok(true)
+//         // }
+//         Command::EnterInsertMode => {
+//             state.mode = EditorMode::Insert;
+//             Ok(true)
+//         }
+
+//         Command::EnterNormalMode => {
+//             state.mode = EditorMode::Normal;
+//             Ok(true)
+//         }
+
+//         Command::EnterVisualMode => {
+//             state.mode = EditorMode::Visual;
+//             // Set selection start at current cursor position
+//             if let Ok(Some(file_pos)) = state
+//                 .window_map
+//                 .get_file_position(state.cursor.row, state.cursor.col)
+//             {
+//                 state.selection_start = Some(file_pos);
+//             }
+//             Ok(true)
+//         }
+
+//         Command::Save => {
+//             // TODO: Implement save logic
+//             println!("Save not yet implemented");
+//             Ok(true)
+//         }
+
+//         Command::Quit => {
+//             if state.is_modified {
+//                 println!("Warning: Unsaved changes! Use 'w' to save and quit.");
+//                 Ok(true)
+//             } else {
+//                 Ok(false) // Signal to exit loop
+//             }
+//         }
+
+//         Command::SaveAndQuit => {
+//             // TODO: Implement save logic
+//             println!("Save and quit not yet implemented");
+//             Ok(false) // Signal to exit after save
+//         }
+
+//         Command::ToggleWrap => {
+//             state.wrap_mode = match state.wrap_mode {
+//                 WrapMode::Wrap => WrapMode::NoWrap,
+//                 WrapMode::NoWrap => WrapMode::Wrap,
+//             };
+
+//             // Rebuild window with new wrap mode
+//             build_windowmap_nowrap(state, original_file_path)?;
+//             Ok(true)
+//         }
+
+//         Command::None => Ok(true),
+//     }
+// }
 
 /// Full-featured editor mode for editing files
 ///
