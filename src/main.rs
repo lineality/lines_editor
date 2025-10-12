@@ -2922,6 +2922,14 @@ fn process_line_with_offset(
     {
         iterations += 1;
 
+        // Assertion 4: byte_index should never exceed line length
+        debug_assert!(
+            byte_index < line_bytes.len(),
+            "byte_index {} exceeds line length {}",
+            byte_index,
+            line_bytes.len()
+        );
+
         // Determine character byte length from first byte
         let byte_val = line_bytes[byte_index];
         let char_len = if byte_val & 0b1000_0000 == 0 {
@@ -2942,10 +2950,12 @@ fn process_line_with_offset(
         chars_skipped += 1;
     }
 
-    // Assertion: We should have skipped the right number of characters
+    // Assertion 5: We should have skipped exactly the requested amount or hit end
     debug_assert!(
         chars_skipped <= horizontal_offset,
-        "Skipped more characters than requested"
+        "Skipped {} characters but only {} requested",
+        chars_skipped,
+        horizontal_offset
     );
 
     // Second pass: Write visible characters to display buffer
@@ -2961,6 +2971,14 @@ fn process_line_with_offset(
         && iterations < MAX_ITERATIONS
     {
         iterations += 1;
+
+        // Assertion 6: byte_index should be within bounds
+        debug_assert!(
+            byte_index < line_bytes.len(),
+            "byte_index {} exceeds line length {} in write phase",
+            byte_index,
+            line_bytes.len()
+        );
 
         // Parse next UTF-8 character
         let byte_val = line_bytes[byte_index];
@@ -2985,6 +3003,13 @@ fn process_line_with_offset(
 
         // Get the character bytes
         let char_bytes = &line_bytes[byte_index..byte_index + char_len];
+
+        // Assertion 7: Character bytes should be exactly char_len
+        debug_assert_eq!(
+            char_bytes.len(),
+            char_len,
+            "Character byte slice length mismatch"
+        );
 
         // Check how many display columns this character needs
         let display_width = if char_len == 1 {
@@ -3050,8 +3075,20 @@ fn process_line_with_offset(
         ));
     }
 
-    // Assertion: Verify we stayed within bounds
-    debug_assert!(bytes_written <= 182, "Wrote more bytes than buffer size");
+    // Assertion 9: Verify we stayed within display buffer bounds
+    debug_assert!(
+        bytes_written <= 182,
+        "Wrote {} bytes but buffer is only 182 bytes",
+        bytes_written
+    );
+
+    // Assertion 10: Verify display column stayed within bounds
+    debug_assert!(
+        display_col <= col_start + max_cols,
+        "Display column {} exceeds limit {}",
+        display_col,
+        col_start + max_cols
+    );
 
     Ok(bytes_written)
 }
@@ -3422,59 +3459,110 @@ pub fn execute_command(
     original_file_path: &Path,
 ) -> io::Result<bool> {
     match command {
-        Command::MoveDown(count) => {
-            // Scroll down by incrementing window start line
-            for _ in 0..count {
-                state.line_count_at_top_of_window += 1;
-
-                // TODO: Update file_position_of_topline_start by seeking to next line
-                // For now, just increment line counter
-            }
-
-            // Rebuild window with new position
-            build_windowmap_nowrap(state, original_file_path)?;
-            Ok(true)
-        }
-
-        Command::MoveUp(count) => {
-            // Scroll up by decrementing window start line
-            for _ in 0..count {
-                if state.line_count_at_top_of_window > 0 {
-                    state.line_count_at_top_of_window -= 1;
-                }
-
-                // TODO: Update file_position_of_topline_start
-            }
-
-            // Rebuild window
-            build_windowmap_nowrap(state, original_file_path)?;
-            Ok(true)
-        }
-
         Command::MoveLeft(count) => {
-            // Horizontal scroll left
-            state.horizontal_line_char_offset =
-                state.horizontal_line_char_offset.saturating_sub(count);
+            // Move CURSOR left within window (not window itself)
+            state.cursor.col = state.cursor.col.saturating_sub(count);
 
-            // Rebuild window with new offset
-            build_windowmap_nowrap(state, original_file_path)?;
+            // NO rebuild needed - just cursor moved!
             Ok(true)
         }
 
         Command::MoveRight(count) => {
-            // Horizontal scroll right
-            state.horizontal_line_char_offset += count;
+            // Move CURSOR right within window
+            let new_col = state.cursor.col + count;
 
-            // Defensive: Cap at reasonable limit
-            if state.horizontal_line_char_offset > 1000 {
-                state.horizontal_line_char_offset = 1000;
-            }
+            // Don't go past effective columns
+            state.cursor.col = new_col.min(state.effective_cols.saturating_sub(1));
 
-            // Rebuild window
-            build_windowmap_nowrap(state, original_file_path)?;
+            // NO rebuild needed!
             Ok(true)
         }
 
+        Command::MoveDown(count) => {
+            // Try to move cursor down within visible window first
+            let space_below = state.effective_rows.saturating_sub(state.cursor.row + 1);
+            let cursor_moves = count.min(space_below);
+
+            state.cursor.row += cursor_moves;
+
+            // If we need to move more, scroll the window
+            let remaining = count - cursor_moves;
+            if remaining > 0 {
+                state.line_count_at_top_of_window += remaining;
+                build_windowmap_nowrap(state, original_file_path)?;
+            }
+
+            Ok(true)
+        }
+
+        Command::MoveUp(count) => {
+            // Try to move cursor up within visible window first
+            let cursor_moves = count.min(state.cursor.row);
+
+            state.cursor.row -= cursor_moves;
+
+            // If we need to move more, scroll the window
+            let remaining = count - cursor_moves;
+            if remaining > 0 {
+                state.line_count_at_top_of_window =
+                    state.line_count_at_top_of_window.saturating_sub(remaining);
+                build_windowmap_nowrap(state, original_file_path)?;
+            }
+
+            Ok(true)
+        }
+        // Command::MoveDown(count) => {
+        //     // Scroll down by incrementing window start line
+        //     for _ in 0..count {
+        //         state.line_count_at_top_of_window += 1;
+
+        //         // TODO: Update file_position_of_topline_start by seeking to next line
+        //         // For now, just increment line counter
+        //     }
+
+        //     // Rebuild window with new position
+        //     build_windowmap_nowrap(state, original_file_path)?;
+        //     Ok(true)
+        // }
+
+        // Command::MoveUp(count) => {
+        //     // Scroll up by decrementing window start line
+        //     for _ in 0..count {
+        //         if state.line_count_at_top_of_window > 0 {
+        //             state.line_count_at_top_of_window -= 1;
+        //         }
+
+        //         // TODO: Update file_position_of_topline_start
+        //     }
+
+        //     // Rebuild window
+        //     build_windowmap_nowrap(state, original_file_path)?;
+        //     Ok(true)
+        // }
+
+        // Command::MoveLeft(count) => {
+        //     // Horizontal scroll left
+        //     state.horizontal_line_char_offset =
+        //         state.horizontal_line_char_offset.saturating_sub(count);
+
+        //     // Rebuild window with new offset
+        //     build_windowmap_nowrap(state, original_file_path)?;
+        //     Ok(true)
+        // }
+
+        // Command::MoveRight(count) => {
+        //     // Horizontal scroll right
+        //     state.horizontal_line_char_offset += count;
+
+        //     // Defensive: Cap at reasonable limit
+        //     if state.horizontal_line_char_offset > 1000 {
+        //         state.horizontal_line_char_offset = 1000;
+        //     }
+
+        //     // Rebuild window
+        //     build_windowmap_nowrap(state, original_file_path)?;
+        //     Ok(true)
+        // }
         Command::EnterInsertMode => {
             state.mode = EditorMode::Insert;
             Ok(true)
@@ -3713,6 +3801,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // Build initial window content
     let lines_processed = build_windowmap_nowrap(&mut state, &target_path)?;
     println!("Loaded {} lines", lines_processed);
+
+    // ADD THESE TWO LINES:
+    state.cursor.row = 0;
+    state.cursor.col = 0;
 
     // Main editor loop
     let stdin = io::stdin();
@@ -3995,19 +4087,42 @@ pub fn render_tui(state: &EditorState, input_buffer: &str) -> Result<()> {
     let legend = format_navigation_legend()?;
     println!("{}", legend);
 
-    // === MIDDLE: FILE CONTENT ===
-    // Render each content row
+    // // === MIDDLE: FILE CONTENT ===
+    // // Render each content row
+    // for row in 0..state.effective_rows {
+    //     if state.display_buffer_lengths[row] > 0 {
+    //         let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+
+    //         match std::str::from_utf8(row_content) {
+    //             Ok(row_str) => println!("{}", row_str),
+    //             Err(_) => println!("�"), // Invalid UTF-8 fallback
+    //         }
+    //     } else {
+    //         // Empty row - print newline to maintain spacing
+    //         println!();
+    //     }
+    // }
+
+    // === MIDDLE: FILE CONTENT WITH CURSOR ===
     for row in 0..state.effective_rows {
         if state.display_buffer_lengths[row] > 0 {
             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
 
             match std::str::from_utf8(row_content) {
-                Ok(row_str) => println!("{}", row_str),
-                Err(_) => println!("�"), // Invalid UTF-8 fallback
+                Ok(row_str) => {
+                    // ADD CURSOR HIGHLIGHTING HERE (was missing!)
+                    let display_str = render_row_with_cursor(state, row, row_str);
+                    println!("{}", display_str);
+                }
+                Err(_) => println!("�"),
             }
         } else {
-            // Empty row - print newline to maintain spacing
-            println!();
+            // Show cursor on empty rows if cursor is here
+            if row == state.cursor.row {
+                println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
+            } else {
+                println!();
+            }
         }
     }
 
@@ -4020,6 +4135,55 @@ pub fn render_tui(state: &EditorState, input_buffer: &str) -> Result<()> {
         .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
 
     Ok(())
+}
+
+/// Renders one row of the display with cursor highlighting
+///
+/// # Purpose
+/// Takes a display buffer row and adds cursor highlighting if cursor is on this row.
+/// Uses ANSI escape codes to show cursor position visually.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `row_index` - Which display row we're rendering (0-indexed)
+/// * `row_content` - The text content for this row
+///
+/// # Returns
+/// * `String` - The row with cursor highlighting applied
+fn render_row_with_cursor(state: &EditorState, row_index: usize, row_content: &str) -> String {
+    // Not on cursor row - return as-is
+    if row_index != state.cursor.row {
+        return row_content.to_string();
+    }
+
+    // On cursor row - highlight the cursor position
+    const BOLD: &str = "\x1b[1m";
+    const RED: &str = "\x1b[31m";
+    const BG_WHITE: &str = "\x1b[47m";
+    const RESET: &str = "\x1b[0m";
+
+    let chars: Vec<char> = row_content.chars().collect();
+    let mut result = String::with_capacity(row_content.len() + 20); // Extra for ANSI codes
+
+    // Defensive: Handle cursor beyond line end
+    let cursor_col = state.cursor.col.min(chars.len());
+
+    // Build string with cursor highlighting
+    for (i, &ch) in chars.iter().enumerate() {
+        if i == cursor_col {
+            // This is the cursor position - highlight it
+            result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
+        } else {
+            result.push(ch);
+        }
+    }
+
+    // If cursor is at/past end of line, show a space character as cursor
+    if cursor_col >= chars.len() {
+        result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
+    }
+
+    result
 }
 
 /// Renders TUI to a test writer (for testing without terminal)
@@ -4052,13 +4216,26 @@ pub fn render_tui_to_writer<W: Write>(
             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
 
             match std::str::from_utf8(row_content) {
-                Ok(row_str) => writeln!(writer, "{}", row_str),
+                Ok(row_str) => {
+                    // ONLY CHANGE: Apply cursor highlighting if cursor is on this row
+                    let display_str = render_row_with_cursor(state, row, row_str);
+                    writeln!(writer, "{}", display_str)
+                }
                 Err(_) => writeln!(writer, "�"),
             }
             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
         } else {
-            writeln!(writer)
-                .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+            // ONLY CHANGE: Show cursor on empty rows if cursor is here
+            if row == state.cursor.row {
+                writeln!(
+                    writer,
+                    "{}{}{}█{}",
+                    "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m"
+                )
+            } else {
+                writeln!(writer)
+            }
+            .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
         }
     }
 
@@ -4073,6 +4250,58 @@ pub fn render_tui_to_writer<W: Write>(
 
     Ok(())
 }
+
+// /// Renders TUI to a test writer (for testing without terminal)
+// ///
+// /// # Purpose
+// /// Same as render_tui but writes to provided writer instead of stdout.
+// /// Allows testing TUI layout without actual terminal.
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state
+// /// * `input_buffer` - Current user input
+// /// * `writer` - Where to write output (e.g., test buffer)
+// ///
+// /// # Returns
+// /// * `Ok(())` - Successfully rendered
+// /// * `Err(LinesError)` - Display operation failed
+// pub fn render_tui_to_writer<W: Write>(
+//     state: &EditorState,
+//     input_buffer: &str,
+//     writer: &mut W,
+// ) -> Result<()> {
+//     // Top legend
+//     let legend = format_navigation_legend()?;
+//     writeln!(writer, "{}", legend)
+//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+
+//     // Content rows
+//     for row in 0..state.effective_rows {
+//         if state.display_buffer_lengths[row] > 0 {
+//             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+
+//             match std::str::from_utf8(row_content) {
+//                 Ok(row_str) => writeln!(writer, "{}", row_str),
+//                 Err(_) => writeln!(writer, "�"),
+//             }
+//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+//         } else {
+//             writeln!(writer)
+//                 .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+//         }
+//     }
+
+//     // Bottom info bar
+//     let info_bar = format_info_bar(state, input_buffer)?;
+//     write!(writer, "{}", info_bar)
+//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+
+//     writer
+//         .flush()
+//         .map_err(|e| LinesError::DisplayError(format!("Flush failed: {}", e)))?;
+
+//     Ok(())
+// }
 
 /// Initializes the session directory structure for this editing session
 ///
