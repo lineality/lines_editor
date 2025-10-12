@@ -9,6 +9,7 @@ tmp/
 test/
 testing/
 tests/
+test_files/
 
 test_empty/
 test_temp/

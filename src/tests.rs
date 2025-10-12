@@ -1,0 +1,1184 @@
+// tests.rs (keen this in same directory as main.rs)
+use super::*;
+
+/// Creates test files in project ./test_files/ directory
+/// Files are NEVER deleted - they persist for manual inspection
+/// If files already exist, they are reused
+///
+/// # Directory Structure
+/// ```
+/// ./test_files/
+///   ├── basic_short.txt
+///   ├── long_lines.txt
+///   ├── mixed_utf8.txt
+///   └── edge_cases.txt
+/// ```
+///
+/// # Returns
+/// * `Ok(Vec<PathBuf>)` - Absolute paths to test files
+/// * `Err(io::Error)` - If directory creation or file writing fails
+fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
+    use std::fs::{self, File};
+    use std::io::Write;
+
+    // Get current working directory
+    let cwd = env::current_dir()?;
+
+    // Create test_files directory in project root
+    let test_dir = cwd.join("test_files");
+    fs::create_dir_all(&test_dir)?;
+
+    println!("Test files directory: {}", test_dir.display());
+
+    let mut test_files = Vec::with_capacity(4);
+
+    // Test File 1: basic_short.txt
+    {
+        let path = test_dir.join("basic_short.txt");
+
+        // Only create if it doesn't exist
+        if !path.exists() {
+            println!("Creating: {}", path.display());
+            let mut file = File::create(&path)?;
+
+            writeln!(file, "Line 1: Hello, world!")?;
+            writeln!(file, "Line 2: This is a test.")?;
+            writeln!(file, "Line 3: Short line.")?;
+            writeln!(file, "Line 4: Another short test line.")?;
+            writeln!(file, "Line 5: Fifth line here.")?;
+            writeln!(file, "Line 6: Almost done.")?;
+            writeln!(file, "Line 7: Lucky seven.")?;
+            writeln!(file, "Line 8: Eight is great.")?;
+            writeln!(file, "Line 9: Nine is fine.")?;
+            writeln!(file, "Line 10: Double digits!")?;
+            writeln!(file, "Line 11: Eleven.")?;
+            writeln!(file, "Line 12: Twelve.")?;
+            writeln!(file, "Line 13: Thirteen.")?;
+            writeln!(file, "Line 14: Fourteen.")?;
+            writeln!(file, "Line 15: Fifteen.")?;
+            writeln!(file, "Line 16: Sixteen.")?;
+            writeln!(file, "Line 17: Seventeen.")?;
+            writeln!(file, "Line 18: Eighteen.")?;
+            writeln!(file, "Line 19: Nineteen.")?;
+            writeln!(file, "Line 20: Twenty.")?;
+            writeln!(file, "Line 21: Twenty-one.")?;
+            writeln!(file, "Line 22: Twenty-two.")?;
+            writeln!(file, "Line 23: Last line for now.")?;
+
+            file.flush()?;
+        } else {
+            println!("Reusing existing: {}", path.display());
+        }
+
+        test_files.push(path);
+    }
+
+    // Test File 2: long_lines.txt
+    {
+        let path = test_dir.join("long_lines.txt");
+
+        if !path.exists() {
+            println!("Creating: {}", path.display());
+            let mut file = File::create(&path)?;
+
+            writeln!(file, "Line 1: {}", "A".repeat(100))?;
+            writeln!(
+                file,
+                "Line 2: The quick brown fox jumps over the lazy dog. The quick brown fox jumps over the lazy dog again."
+            )?;
+            writeln!(file, "Line 3: {}", "0123456789".repeat(12))?;
+            writeln!(file, "Line 4: Short.")?;
+            writeln!(file, "Line 5: {}", "Long_word_".repeat(15))?;
+
+            file.flush()?;
+        } else {
+            println!("Reusing existing: {}", path.display());
+        }
+
+        test_files.push(path);
+    }
+
+    // Test File 3: mixed_utf8.txt
+    {
+        let path = test_dir.join("mixed_utf8.txt");
+
+        if !path.exists() {
+            println!("Creating: {}", path.display());
+            let mut file = File::create(&path)?;
+
+            writeln!(file, "Line 1: Hello 世界")?;
+            writeln!(file, "Line 2: こんにちは")?;
+            writeln!(file, "Line 3: Test カタカナ Test")?;
+            writeln!(file, "Line 4: Café résumé")?;
+            writeln!(file, "Line 5: 한글 Korean")?;
+            writeln!(file, "Line 6: Mix 中文 and English")?;
+            writeln!(file, "Line 7: Numbers ０１２３４")?;
+
+            file.flush()?;
+        } else {
+            println!("Reusing existing: {}", path.display());
+        }
+
+        test_files.push(path);
+    }
+
+    // Test File 4: edge_cases.txt
+    {
+        let path = test_dir.join("edge_cases.txt");
+
+        if !path.exists() {
+            println!("Creating: {}", path.display());
+            let mut file = File::create(&path)?;
+
+            writeln!(file, "")?;
+            writeln!(file, "A")?;
+            writeln!(file, "\t")?;
+            writeln!(file, "Before\ttab\tafter")?;
+            writeln!(file, " ")?;
+            writeln!(file, "    Indented")?;
+            writeln!(file, "Trailing    ")?;
+            writeln!(file, "")?;
+            writeln!(file, "Normal line after empties")?;
+
+            file.flush()?;
+        } else {
+            println!("Reusing existing: {}", path.display());
+        }
+
+        test_files.push(path);
+    }
+
+    // Defensive: Verify all files exist and have content
+    for path in &test_files {
+        if !path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Test file does not exist: {:?}", path),
+            ));
+        }
+
+        let metadata = fs::metadata(path)?;
+        if metadata.len() == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Test file is empty: {:?}", path),
+            ));
+        }
+    }
+
+    Ok(test_files)
+}
+
+// /// Prints the expected window output for a test file
+// ///
+// /// # Purpose
+// /// Helper function to visualize what build_windowmap_nowrap SHOULD produce
+// /// for a given test file. This helps us verify our implementation.
+// ///
+// /// # Arguments
+// /// * `test_file` - Path to test file
+// /// * `start_line` - Line number to start display from (0-indexed)
+// /// * `horizontal_offset` - Character offset for NoWrap mode
+// ///
+// /// # Example Output
+// /// Shows what should appear in each display buffer row:
+// /// ```
+// /// Row 0: "1 Line 1: Hello, world!"
+// /// Row 1: "2 Line 2: This is a test."
+// /// ```
+// fn print_expected_window(
+//     test_file: &Path,
+//     start_line: usize,
+//     horizontal_offset: usize,
+// ) -> io::Result<()> {
+//     println!(
+//         "\nExpected window for: {:?}",
+//         test_file.file_name().unwrap_or_default()
+//     );
+//     println!(
+//         "Start line: {}, Horizontal offset: {}",
+//         start_line, horizontal_offset
+//     );
+
+//     let file = File::open(test_file)?;
+//     let reader = BufReader::new(file);
+//     let mut current_line = 0;
+//     let mut display_row = 0;
+//     const MAX_DISPLAY_ROWS: usize = 21;
+//     const MAX_DISPLAY_COLS: usize = 77; // 80 - 3 for UI elements
+
+//     for line in reader.lines() {
+//         let line = line?;
+
+//         // Skip lines before our window start
+//         if current_line < start_line {
+//             current_line += 1;
+//             continue;
+//         }
+
+//         // Stop if we've filled the display
+//         if display_row >= MAX_DISPLAY_ROWS {
+//             break;
+//         }
+
+//         // Format line number (starting from 1 for display)
+//         let line_num_str = format!("{} ", current_line + 1);
+//         let line_num_width = line_num_str.len();
+
+//         // Calculate available space for text after line number
+//         let available_width = MAX_DISPLAY_COLS.saturating_sub(line_num_width);
+
+//         // Get the portion of line to display (respecting horizontal offset)
+//         let line_chars: Vec<char> = line.chars().collect();
+//         let visible_text = if horizontal_offset < line_chars.len() {
+//             let end_idx = (horizontal_offset + available_width).min(line_chars.len());
+//             line_chars[horizontal_offset..end_idx]
+//                 .iter()
+//                 .collect::<String>()
+//         } else {
+//             String::new() // Horizontal offset past end of line
+//         };
+
+//         println!(
+//             "Row {:2}: \"{}{}\"",
+//             display_row, line_num_str, visible_text
+//         );
+
+//         display_row += 1;
+//         current_line += 1;
+//     }
+
+//     // Fill remaining rows with empty
+//     while display_row < MAX_DISPLAY_ROWS {
+//         println!("Row {:2}: (empty)", display_row);
+//         display_row += 1;
+//     }
+
+//     Ok(())
+// }
+
+/// Diagnostic function to print contents of test files
+fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
+    println!("=== File Contents: {} ===", file_path.display());
+    let file = File::open(file_path)?;
+    let reader = BufReader::new(file);
+
+    for (index, line) in reader.lines().enumerate() {
+        let line = line?;
+        println!("{:4}: {}", index + 1, line);
+    }
+
+    // Get file metadata
+    let metadata = std::fs::metadata(file_path)?;
+    println!("\nFile size: {} bytes", metadata.len());
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod display_window_tests2 {
+    use super::*;
+
+    #[test]
+    fn test_display_window_basic() -> io::Result<()> {
+        // Use unique test files
+        let test_files = create_test_files_with_id("display_basic")?;
+        let basic_file = &test_files[0];
+
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        let mut buffer = Vec::new();
+        display_window_to_writer(&state, &mut buffer)?;
+
+        let output = String::from_utf8_lossy(&buffer);
+
+        assert!(
+            output.contains("1 Line 1: Hello, world!"),
+            "Output should contain first line with line number"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_window_utf8() -> io::Result<()> {
+        // Use unique test files
+        let test_files = create_test_files_with_id("display_utf8")?;
+        let mixed_utf8_file = &test_files[2];
+
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        let mut buffer = Vec::new();
+        display_window_to_writer(&state, &mut buffer)?;
+
+        let output = String::from_utf8_lossy(&buffer);
+
+        assert!(
+            output.contains("1 Line 1: Hello 世界"),
+            "Should handle CJK characters with line number"
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test_file_tests3 {
+    use super::*;
+
+    #[test]
+    fn test_create_test_files() {
+        let result = create_test_files_with_id("test_create");
+        assert!(result.is_ok(), "Should create test files successfully");
+
+        let files = result.unwrap();
+        assert_eq!(files.len(), 4, "Should create 4 test files");
+
+        for path in &files {
+            assert!(path.exists(), "File {:?} should exist", path);
+
+            let metadata = std::fs::metadata(path).unwrap();
+            assert!(metadata.len() > 0, "File {:?} should have content", path);
+        }
+    }
+
+    #[test]
+    fn test_basic_short_content() {
+        let files = create_test_files_with_id("test_basic_short").unwrap();
+        let basic_short = &files[0];
+
+        let file = File::open(basic_short).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line).unwrap();
+
+        let trimmed = first_line.trim_end();
+        assert!(trimmed.len() < 40, "First line should be under 40 chars");
+        assert_eq!(trimmed, "Line 1: Hello, world!");
+    }
+}
+
+#[cfg(test)]
+mod build_window_tests4 {
+    use super::*;
+
+    #[test]
+    fn test_build_windowmap_nowrap_basic() {
+        // Use unique test files for this test
+        let test_files = create_test_files_with_id("build_window_test").unwrap();
+        let basic_file = &test_files[0];
+
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let result = build_windowmap_nowrap(&mut state, basic_file);
+        assert!(result.is_ok(), "Should build window successfully");
+
+        let lines_processed = result.unwrap();
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        assert!(
+            state.display_buffer_lengths[0] > 0,
+            "First row should have content"
+        );
+
+        let first_row = &state.display_buffers[0];
+        assert_eq!(first_row[0], b'1', "Should start with line number 1");
+        assert_eq!(first_row[1], b' ', "Should have space after line number");
+
+        let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+        assert!(map_entry.is_some(), "Character position should be mapped");
+    }
+}
+
+/// Debug helper for build_windowmap_nowrap test
+#[cfg(test)]
+mod build_window_tests3 {
+    use super::*;
+
+    #[test]
+    fn test_build_windowmap_nowrap_basic() {
+        // Create test file
+        let test_files = create_test_files_with_id("test_build_windowmap_nowrap_basic").unwrap();
+        let basic_file = &test_files[0]; // basic_short.txt
+
+        // Create editor state
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Debug: print file path
+        println!("Test file path: {:?}", basic_file);
+        println!("File exists: {}", basic_file.exists());
+
+        // Build window
+        let result = build_windowmap_nowrap(&mut state, basic_file);
+
+        // Debug: print detailed error if failed
+        if let Err(ref e) = result {
+            println!("Build window failed: {}", e);
+        }
+
+        assert!(result.is_ok(), "Should build window successfully");
+
+        let lines_processed = result.unwrap();
+        println!("Lines processed: {}", lines_processed);
+
+        // Debug: print buffer contents
+        for i in 0..5 {
+            if state.display_buffer_lengths[i] > 0 {
+                let content = &state.display_buffers[i][..state.display_buffer_lengths[i]];
+                println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
+            }
+        }
+
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        // Verify first line has content
+        assert!(
+            state.display_buffer_lengths[0] > 0,
+            "First row should have content"
+        );
+
+        // Verify line number "1 " appears at start
+        let first_row = &state.display_buffers[0];
+        assert_eq!(first_row[0], b'1', "Should start with line number 1");
+        assert_eq!(first_row[1], b' ', "Should have space after line number");
+
+        // Verify WindowMap has been populated
+        let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+        assert!(map_entry.is_some(), "Character position should be mapped");
+    }
+}
+
+#[cfg(test)]
+mod editor_state_tests {
+    use super::*;
+
+    #[test]
+    fn test_editor_state_creation() {
+        let state = EditorState::new();
+        assert_eq!(state.mode, EditorMode::Normal);
+        assert_eq!(state.terminal_rows, DEFAULT_ROWS);
+        assert_eq!(state.terminal_cols, DEFAULT_COLS);
+        assert_eq!(state.window_buffer_used, 0);
+        assert!(!state.is_modified);
+    }
+
+    #[test]
+    fn test_resize_terminal_valid() {
+        let mut state = EditorState::new();
+        let result = state.resize_terminal(30, 100);
+        assert!(result.is_ok());
+        assert_eq!(state.terminal_rows, 30);
+        assert_eq!(state.terminal_cols, 100);
+        assert_eq!(state.effective_rows, 27); // 30 - 3
+        assert_eq!(state.effective_cols, 97); // 100 - 3
+    }
+
+    #[test]
+    fn test_resize_terminal_too_large() {
+        let mut state = EditorState::new();
+        let result = state.resize_terminal(200, 100); // 200 > MAX_ROWS
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_window_map_bounds_checking() {
+        let map = WindowMap::new();
+
+        // Valid access
+        let result = map.get_file_position(0, 0);
+        assert!(result.is_ok());
+
+        // Out of bounds access
+        let result = map.get_file_position(DEFAULT_ROWS, 0);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod test_file_tests {
+    use super::*;
+
+    #[test]
+    fn test_create_test_files() {
+        let result = create_test_files_with_id("test_create_test_files");
+        assert!(result.is_ok(), "Should create test files successfully");
+
+        let files = result.unwrap();
+        assert_eq!(files.len(), 4, "Should create 4 test files");
+
+        // Verify each file exists and has content
+        for path in &files {
+            assert!(path.exists(), "File {:?} should exist", path);
+
+            let metadata = std::fs::metadata(path).unwrap();
+            assert!(metadata.len() > 0, "File {:?} should have content", path);
+        }
+    }
+
+    #[test]
+    fn test_basic_short_content() {
+        let files = create_test_files_with_id("test_basic_short_content").unwrap();
+        let basic_short = &files[0];
+
+        // Read first line and verify it's short
+        let file = File::open(basic_short).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut first_line = String::new();
+        reader.read_line(&mut first_line).unwrap();
+
+        // Remove newline
+        let trimmed = first_line.trim_end();
+        assert!(trimmed.len() < 40, "First line should be under 40 chars");
+        assert_eq!(trimmed, "Line 1: Hello, world!");
+    }
+}
+
+#[cfg(test)]
+mod char_width_tests {
+    use super::double_width::*;
+
+    #[test]
+    fn test_ascii_characters() {
+        // All ASCII characters should be single-width
+        for c in 0x20..0x7F {
+            let ch = char::from_u32(c).expect("Valid ASCII character");
+            assert_eq!(
+                is_double_width(ch),
+                false,
+                "ASCII '{}' should be single-width",
+                ch
+            );
+        }
+    }
+
+    #[test]
+    fn test_cjk_ideographs() {
+        // Common CJK characters should be double-width
+        let test_chars = ['中', '文', '字', '日', '本', '語', '한', '글'];
+        for &c in &test_chars {
+            assert_eq!(
+                is_double_width(c),
+                true,
+                "CJK '{}' should be double-width",
+                c
+            );
+        }
+    }
+
+    #[test]
+    fn test_hiragana_katakana() {
+        // Hiragana
+        assert_eq!(is_double_width('あ'), true);
+        assert_eq!(is_double_width('い'), true);
+        assert_eq!(is_double_width('う'), true);
+
+        // Katakana
+        assert_eq!(is_double_width('ア'), true);
+        assert_eq!(is_double_width('イ'), true);
+        assert_eq!(is_double_width('ウ'), true);
+    }
+
+    #[test]
+    fn test_fullwidth_forms() {
+        // Fullwidth Latin letters
+        assert_eq!(is_double_width('Ａ'), true);
+        assert_eq!(is_double_width('Ｂ'), true);
+        assert_eq!(is_double_width('１'), true);
+        assert_eq!(is_double_width('２'), true);
+    }
+
+    #[test]
+    fn test_calculate_display_width() {
+        assert_eq!(calculate_display_width("Hello"), Some(5));
+        assert_eq!(calculate_display_width("你好"), Some(4));
+        assert_eq!(calculate_display_width("Hello世界"), Some(9));
+        assert_eq!(calculate_display_width(""), Some(0));
+        assert_eq!(calculate_display_width("ＡＢＣ"), Some(6));
+    }
+
+    #[test]
+    fn test_mixed_width_string() {
+        let mixed = "Hello 世界 World";
+        let expected = 5 + 1 + 2 + 2 + 1 + 5; // "Hello" + " " + "世界" + " " + "World"
+        assert_eq!(calculate_display_width(mixed), Some(expected));
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Control characters
+        assert_eq!(is_double_width('\n'), false);
+        assert_eq!(is_double_width('\t'), false);
+        assert_eq!(is_double_width('\r'), false);
+
+        // Space
+        assert_eq!(is_double_width(' '), false);
+
+        // Emoji (most are not double-width in our definition)
+        assert_eq!(is_double_width('😀'), false);
+    }
+}
+
+/// integration tests for display_window
+#[cfg(test)]
+mod display_window_tests1 {
+    use super::*;
+
+    #[test]
+    fn test_display_window_basic() -> io::Result<()> {
+        // Create test files
+        let test_files = create_test_files_with_id("test_display_window_basic")?;
+        let basic_file = &test_files[0]; // basic_short.txt
+
+        // Create and populate editor state
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Build window map
+        let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        // Capture output using the writer version
+        let mut buffer = Vec::new();
+        display_window_to_writer(&state, &mut buffer)?;
+
+        // Convert captured output to string
+        let output = String::from_utf8_lossy(&buffer);
+
+        // Debug: print what we captured
+        println!("Captured output:\n{}", output);
+
+        // Verify content
+        assert!(
+            output.contains("1 Line 1: Hello, world!"),
+            "Output should contain first line with line number"
+        );
+        assert!(
+            output.lines().count() >= 18,
+            "Should have at least 18 lines"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_display_window_utf8() -> io::Result<()> {
+        let test_files = create_test_files_with_id("test_display_window_utf8")?;
+        let mixed_utf8_file = &test_files[2]; // mixed_utf8.txt
+
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Build window map
+        let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
+        assert!(lines_processed > 0, "Should process at least one line");
+
+        // Capture output using the writer version
+        let mut buffer = Vec::new();
+        display_window_to_writer(&state, &mut buffer)?;
+
+        // Convert captured output to string
+        let output = String::from_utf8_lossy(&buffer);
+
+        // Debug: print what we captured
+        println!("Captured UTF-8 output:\n{}", output);
+
+        // Verify UTF-8 content - check the actual formatted line
+        assert!(
+            output.contains("1 Line 1: Hello 世界"),
+            "Should handle CJK characters with line number"
+        );
+        assert!(
+            output.contains("2 Line 2: こんにちは"),
+            "Should handle Hiragana with line number"
+        );
+
+        Ok(())
+    }
+}
+
+// Modify the test to include more diagnostics
+#[test]
+fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
+    // Create test files
+    let test_files = create_test_files_with_id("test_build_windowmap_nowrap_basic")?;
+    let basic_file = &test_files[0]; // basic_short.txt
+
+    // Print file contents for debugging
+    print_test_file_contents(basic_file)?;
+
+    // Create editor state
+    let mut state = EditorState::new();
+    state.line_count_at_top_of_window = 0;
+    state.file_position_of_topline_start = 0;
+    state.horizontal_line_char_offset = 0;
+
+    // Debug: print file path and existence
+    println!("Test file path: {:?}", basic_file);
+    println!("File exists: {}", basic_file.exists());
+
+    // Verify file is readable
+    let file = File::open(basic_file)?;
+    let reader = BufReader::new(file);
+    let line_count = reader.lines().count();
+    println!("Line count in file: {}", line_count);
+
+    // Build window
+    let result = build_windowmap_nowrap(&mut state, basic_file);
+
+    // Debug: print detailed error if failed
+    if let Err(ref e) = result {
+        println!("Build window failed: {}", e);
+    }
+
+    assert!(result.is_ok(), "Should build window successfully");
+
+    let lines_processed = result.unwrap();
+    println!("Lines processed: {}", lines_processed);
+
+    // Debug: print buffer contents
+    for i in 0..5 {
+        if state.display_buffer_lengths[i] > 0 {
+            let content = &state.display_buffers[i][..state.display_buffer_lengths[i]];
+            println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
+        }
+    }
+
+    assert!(lines_processed > 0, "Should process at least one line");
+
+    // Verify first line has content
+    assert!(
+        state.display_buffer_lengths[0] > 0,
+        "First row should have content"
+    );
+
+    // Verify line number "1 " appears at start
+    let first_row = &state.display_buffers[0];
+    assert_eq!(first_row[0], b'1', "Should start with line number 1");
+    assert_eq!(first_row[1], b' ', "Should have space after line number");
+
+    // Verify WindowMap has been populated
+    let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+    assert!(map_entry.is_some(), "Character position should be mapped");
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod revised_critical_distinction_tests {
+    use super::*;
+
+    #[test]
+    fn test_bytes_vs_chars_vs_columns() -> io::Result<()> {
+        // This test demonstrates the three different measurements
+        let test_files = create_test_files_with_id("measurements")?;
+        let test_path = &test_files[2]; // mixed_utf8.txt
+
+        // mixed_utf8.txt has:
+        // "Line 1: Hello 世界" where:
+        // - 世界 = 6 bytes, 2 chars, 4 display columns
+        let content = "Hello 世界";
+
+        // Verify measurements on the string itself
+        let bytes = content.as_bytes();
+        assert_eq!(bytes.len(), 12, "Should be 12 bytes total");
+
+        let char_count = content.chars().count();
+        assert_eq!(char_count, 8, "Should be 8 characters total");
+
+        let display_width =
+            double_width::calculate_display_width(content).expect("Should calculate width");
+        assert_eq!(display_width, 10, "Should be 10 display columns total");
+
+        // Now test with the editor
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+        assert!(result.is_ok(), "Build window should succeed");
+
+        // The display buffer should contain the line with line number
+        let first_row_len = state.display_buffer_lengths[0];
+        assert!(first_row_len > 0, "First row should have content");
+
+        // Verify content is valid UTF-8
+        let first_row_content = &state.display_buffers[0][..first_row_len];
+        let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
+
+        // Should contain the line number "1 " and the text
+        assert!(
+            first_row_str.starts_with("1 "),
+            "Should start with line number"
+        );
+        assert!(
+            first_row_str.contains("世界"),
+            "Should contain Chinese characters"
+        );
+
+        // Display width should fit within terminal
+        let row_display_width = double_width::calculate_display_width(first_row_str)
+            .expect("Should calculate display width");
+        assert!(
+            row_display_width <= 80,
+            "Display width {} should not exceed terminal width 80",
+            row_display_width
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_buffer_vs_terminal_size() -> io::Result<()> {
+        // This test verifies buffer size is independent of terminal size
+        let test_files = create_test_files_with_id("buffer_terminal")?;
+        let test_path = &test_files[2]; // mixed_utf8.txt has double-width chars
+
+        // Test with NARROW terminal
+        let mut state = EditorState::new();
+        state
+            .resize_terminal(24, 40)
+            .expect("Failed to resize to narrow");
+
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+        assert!(result.is_ok(), "Should handle narrow terminal");
+
+        // First row should be limited by display columns (40), not buffer size (182)
+        let first_row_len = state.display_buffer_lengths[0];
+        assert!(first_row_len <= 182, "Should not exceed buffer size");
+        assert!(first_row_len > 0, "Should have content");
+
+        let first_row_content = &state.display_buffers[0][..first_row_len];
+        let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
+
+        let display_width =
+            double_width::calculate_display_width(first_row_str).expect("Should calculate width");
+
+        assert!(
+            display_width <= 40,
+            "Display width {} should not exceed terminal width 40",
+            display_width
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod revised_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn test_double_width_at_boundary() -> io::Result<()> {
+        // Create a custom test file for this specific case
+        let test_dir = env::current_dir()?.join("test_files");
+        fs::create_dir_all(&test_dir)?;
+        let test_path = test_dir.join("boundary_test.txt");
+
+        // Create a line with double-width character near terminal edge
+        let mut line = String::from("x").repeat(75);
+        line.push('中'); // Double-width character (takes 2 display columns)
+        line.push_str("yyy");
+
+        fs::write(&test_path, &line)?;
+
+        // ADD DIAGNOSTIC: Show what we created
+        println!("Created boundary test file: {}", test_path.display());
+        println!("Line content: {:?}", line);
+        println!("Line byte length: {}", line.len());
+        println!("Line char count: {}", line.chars().count());
+
+        // Calculate expected display width
+        let expected_display_width = 75 + 2 + 3; // 75 x's + 中(2 cols) + 3 y's = 80
+        println!("Expected display width: {}", expected_display_width);
+
+        // Create 80-column terminal
+        let mut state = EditorState::new();
+        state.resize_terminal(24, 80)?;
+
+        // ADD DIAGNOSTIC: Show state after resize
+        println!("Terminal cols: {}", state.terminal_cols);
+        println!("Effective cols: {}", state.effective_cols);
+        println!("WindowMap valid_cols: {}", state.window_map.valid_cols);
+
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Build window
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+
+        // Debug output if it fails
+        if let Err(ref e) = result {
+            println!("Build window error: {}", e);
+            println!("Error details: {:?}", e);
+
+            // ADD DIAGNOSTIC: Show where in the process we failed
+            println!("\nState at failure:");
+            println!(
+                "- display_buffer_lengths[0]: {}",
+                state.display_buffer_lengths[0]
+            );
+            if state.display_buffer_lengths[0] > 0 {
+                let partial_content = &state.display_buffers[0][..state.display_buffer_lengths[0]];
+                if let Ok(s) = std::str::from_utf8(partial_content) {
+                    println!("- Partial row content: {:?}", s);
+                }
+            }
+        }
+
+        assert!(result.is_ok(), "Should build window successfully");
+
+        // Verify no invalid UTF-8 (which would indicate a split)
+        let row_content = &state.display_buffers[0][..state.display_buffer_lengths[0]];
+        let parse_result = std::str::from_utf8(row_content);
+
+        assert!(
+            parse_result.is_ok(),
+            "Row should not contain split UTF-8 sequences: {:?}",
+            parse_result.err()
+        );
+
+        // REMOVED THE FAULTY WINDOW MAP CHECK that tried to access column 77
+        // when valid columns are 0-76 (77 total, but 0-indexed)
+
+        // Instead, let's verify what actually got placed in the window
+        let row_str = parse_result.unwrap();
+        println!("Final row content: {:?}", row_str);
+        println!(
+            "Final row display width: {:?}",
+            double_width::calculate_display_width(row_str)
+        );
+
+        // The row should fit within terminal width
+        let display_width =
+            double_width::calculate_display_width(row_str).expect("Should calculate display width");
+        assert!(
+            display_width <= 80,
+            "Display width {} should not exceed terminal width 80",
+            display_width
+        );
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod revised_terminal_width_tests {
+    use super::*;
+
+    #[test]
+    fn test_terminal_width_limiting() -> io::Result<()> {
+        // Use long_lines.txt which has lines exceeding 80 chars
+        let test_files = create_test_files_with_id("width_limiting")?;
+        let test_path = &test_files[1]; // long_lines.txt
+
+        // Create editor state with specific terminal size
+        let mut state = EditorState::new();
+        state.resize_terminal(24, 80)?;
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Build window
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+        assert!(result.is_ok(), "Should build window successfully");
+
+        // Verify no row exceeds terminal width
+        for row in 0..state.effective_rows {
+            if state.display_buffer_lengths[row] > 0 {
+                let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+
+                // Verify valid UTF-8
+                let row_str = std::str::from_utf8(row_content)
+                    .expect(&format!("Row {} should be valid UTF-8", row));
+
+                // Check display width
+                let display_width = double_width::calculate_display_width(row_str)
+                    .expect(&format!("Row {} should have calculable width", row));
+
+                assert!(
+                    display_width <= 80,
+                    "Row {} display width {} exceeds terminal width 80",
+                    row,
+                    display_width
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_various_terminal_sizes() -> io::Result<()> {
+        let test_files = create_test_files_with_id("various_sizes")?;
+        let test_path = &test_files[0]; // basic_short.txt
+
+        // Test multiple terminal sizes
+        let terminal_sizes = vec![
+            (24, 40),  // Narrow
+            (24, 80),  // Standard
+            (24, 120), // Wide
+            (45, 157), // Maximum
+        ];
+
+        for (rows, cols) in terminal_sizes {
+            let mut state = EditorState::new();
+            state.resize_terminal(rows, cols)?;
+            state.line_count_at_top_of_window = 0;
+            state.file_position_of_topline_start = 0;
+            state.horizontal_line_char_offset = 0;
+
+            let result = build_windowmap_nowrap(&mut state, &test_path);
+            assert!(
+                result.is_ok(),
+                "Should build window for terminal size {}x{}",
+                cols,
+                rows
+            );
+
+            // Verify all rows respect terminal width
+            for row in 0..state.effective_rows {
+                if state.display_buffer_lengths[row] > 0 {
+                    let row_content =
+                        &state.display_buffers[row][..state.display_buffer_lengths[row]];
+                    let row_str = std::str::from_utf8(row_content)
+                        .expect(&format!("Row {} should be valid UTF-8", row));
+                    let display_width =
+                        double_width::calculate_display_width(row_str).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("Could not calculate width for row {}", row),
+                            )
+                        })?;
+
+                    assert!(
+                        display_width <= cols,
+                        "Row {} width {} exceeds terminal width {} for size {}x{}",
+                        row,
+                        display_width,
+                        cols,
+                        cols,
+                        rows
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod revised_display_integration_tests {
+    use super::*;
+
+    #[test]
+    fn test_double_width_character_display() -> io::Result<()> {
+        // Use mixed_utf8.txt which has various character widths
+        let test_files = create_test_files_with_id("double_width_display")?;
+        let test_path = &test_files[2]; // mixed_utf8.txt
+
+        // Create editor state
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        // Build window with the test file
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+        assert!(result.is_ok(), "Should build window successfully");
+        let lines_processed = result.unwrap();
+
+        // Verify display (capture to buffer for testing)
+        let mut buffer = Vec::new();
+        let display_result = display_window_to_writer(&state, &mut buffer);
+        assert!(display_result.is_ok(), "Should display successfully");
+
+        let output = String::from_utf8_lossy(&buffer);
+
+        // Verify specific content
+        assert!(output.contains("世界"), "Should display Chinese characters");
+        assert!(output.contains("こんにちは"), "Should display Hiragana");
+        assert!(output.contains("한글"), "Should display Hangul");
+
+        // Verify line numbers are present
+        assert!(output.contains("1 "), "Should have line number 1");
+        assert!(output.contains("2 "), "Should have line number 2");
+
+        // Verify WindowMap was populated for double-width characters
+        // Check that Chinese characters in first line are properly mapped
+        for row in 0..3 {
+            if state.display_buffer_lengths[row] > 0 {
+                // Check that we can get file positions from the map
+                let pos = state.window_map.get_file_position(row, 5)?;
+                assert!(
+                    pos.is_some() || row >= lines_processed,
+                    "Row {} col 5 should have file position or be empty",
+                    row
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_empty_lines_display() -> io::Result<()> {
+        // Use edge_cases.txt which has empty lines
+        let test_files = create_test_files_with_id("empty_lines")?;
+        let test_path = &test_files[3]; // edge_cases.txt
+
+        let mut state = EditorState::new();
+        state.line_count_at_top_of_window = 0;
+        state.file_position_of_topline_start = 0;
+        state.horizontal_line_char_offset = 0;
+
+        let result = build_windowmap_nowrap(&mut state, &test_path);
+        assert!(result.is_ok(), "Should handle empty lines");
+
+        // Verify we processed multiple lines including empties
+        let lines_processed = result.unwrap();
+        assert!(lines_processed > 1, "Should process multiple lines");
+
+        // Capture display output
+        let mut buffer = Vec::new();
+        display_window_to_writer(&state, &mut buffer)?;
+        let output = String::from_utf8_lossy(&buffer);
+
+        // Empty lines should still have line numbers
+        let line_count = output.lines().count();
+        assert!(
+            line_count >= lines_processed,
+            "Should display all processed lines"
+        );
+
+        Ok(())
+    }
+}
