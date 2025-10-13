@@ -559,15 +559,19 @@ mod tests;
 const WINDOW_BUFFER_SIZE: usize = 8192; // 2**13=8192
 
 /// Maximum number of rows (lines) in largest supported terminal
-const MAX_ROWS: usize = 45;
+/// of which 45 can be file rows (there are 45 tui line buffers)
+const MAX_TUI_ROWS: usize = 48;
 
 /// Maximum number of columns (utf-8 char across) in largest supported TUI
-const MAX_COLS: usize = 157;
+/// of which 157 can be file text
+const MAX_TUI_COLS: usize = 160;
 
-/// Default TUI text dimensions + 3 header footer,
-/// + at least 3 for line numbers
-const DEFAULT_ROWS: usize = 21;
-const DEFAULT_COLS: usize = 77;
+/// Default terminal is 24 x 80
+/// Default TUI text dimensions will be
+/// +/- 3 header footer,
+/// +/- at least 3 for line numbers
+const DEFAULT_ROWS: usize = 24;
+const DEFAULT_COLS: usize = 80;
 
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
@@ -591,7 +595,7 @@ mod limits {
     pub const FILE_SEEK_BYTES: usize = 10_000_000;
 
     /// Maximum lines to process when building window display
-    /// Should match or exceed MAX_ROWS (45) with generous margin
+    /// Should match or exceed MAX_TUI_ROWS (45) with generous margin
     pub const WINDOW_BUILD_LINES: usize = 1000;
 
     /// Maximum bytes to read when processing a single line
@@ -1123,7 +1127,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave|{}u{}ndo|{}n{}orm {}i{}ns {}v{}is|{}d{}el {}w{}rap {}r{}elative {}r{}aw {}b{}yte|{}w{}rd,{}b{},{}e{}nd|{}/{}commnt {}hjkl{} {}",
+        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is|{}wrap{} {}raw{} {}r{}lativ {}b{}yte|{}w{}rd,{}b{},{}e{}nd {}/{}cmmnt {}[]{}rpt {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -1151,6 +1155,8 @@ fn format_navigation_legend() -> Result<String> {
         YELLOW, // RED p + YELLOW ,
         RED,
         YELLOW, // RED str + YELLOW ...
+        RED,
+        YELLOW, // RED enter + YELLOW ...
         RED,
         YELLOW, // RED enter + YELLOW ...
         RED,
@@ -1545,7 +1551,7 @@ pub struct WindowPosition {
 pub struct WindowMap {
     /// Pre-allocated mapping array [row][col] -> Option<FilePosition>
     /// None means this position is empty/padding
-    positions: [[Option<FilePosition>; MAX_COLS]; MAX_ROWS],
+    positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
     /// Number of valid rows in current window
     valid_rows: usize,
     /// Number of valid columns in current window
@@ -1556,7 +1562,7 @@ impl WindowMap {
     /// Creates a new WindowMap with all positions set to None
     pub fn new() -> Self {
         WindowMap {
-            positions: [[None; MAX_COLS]; MAX_ROWS],
+            positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
             valid_rows: DEFAULT_ROWS,
             valid_cols: DEFAULT_COLS,
         }
@@ -1606,16 +1612,16 @@ impl WindowMap {
         file_pos: Option<FilePosition>,
     ) -> io::Result<()> {
         // Defensive: Check bounds
-        if row >= MAX_ROWS {
+        if row >= MAX_TUI_ROWS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds maximum {}", row, MAX_ROWS),
+                format!("Row {} exceeds maximum {}", row, MAX_TUI_ROWS),
             ));
         }
-        if col >= MAX_COLS {
+        if col >= MAX_TUI_COLS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Column {} exceeds maximum {}", col, MAX_COLS),
+                format!("Column {} exceeds maximum {}", col, MAX_TUI_COLS),
             ));
         }
 
@@ -1626,8 +1632,8 @@ impl WindowMap {
     /// Clears all mappings
     pub fn clear(&mut self) {
         // Defensive: explicit loop with bounds
-        for row in 0..MAX_ROWS {
-            for col in 0..MAX_COLS {
+        for row in 0..MAX_TUI_ROWS {
+            for col in 0..MAX_TUI_COLS {
                 self.positions[row][col] = None;
             }
         }
@@ -1950,16 +1956,16 @@ impl EditorState {
     /// * `Err(io::Error)` - If dimensions exceed maximums
     pub fn resize_terminal(&mut self, rows: usize, cols: usize) -> io::Result<()> {
         // Defensive: Validate dimensions
-        if rows > MAX_ROWS {
+        if rows > MAX_TUI_ROWS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Rows {} exceeds maximum {}", rows, MAX_ROWS),
+                format!("Rows {} exceeds maximum {}", rows, MAX_TUI_ROWS),
             ));
         }
-        if cols > MAX_COLS {
+        if cols > MAX_TUI_COLS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("Columns {} exceeds maximum {}", cols, MAX_COLS),
+                format!("Columns {} exceeds maximum {}", cols, MAX_TUI_COLS),
             ));
         }
 
@@ -4859,31 +4865,26 @@ fn create_a_readcopy_of_file(
 /// Displays usage information and available commands.
 /// Called when user runs `lines --help`.
 fn print_help() {
-    println!("Lines - Minimal Text Editor");
-    println!();
+    println!("Lines Editor - The Helps");
     println!("USAGE:");
     println!("    lines [OPTIONS] [FILE]");
-    println!();
     println!("OPTIONS:");
     println!("    --help, -h      Show this help message");
     println!("    --version, -v   Show version information");
-    println!("    --files         Open file manager (memo mode only)");
-    println!();
+    println!("    --files         Open file manager");
     println!("MODES:");
-    println!("    Memo Mode:      Run from home directory");
+    println!("    Memo Mode:      Run from home directory, Append-only quickie");
     println!("                    Creates dated files in ~/Documents/lines_editor/");
-    println!("                    Append-only quick notes");
-    println!();
     println!("    Full Editor:    Run from any other directory");
     println!("                    Requires file path argument");
-    println!("                    Full editing capabilities");
-    println!();
-    println!("EXAMPLES:");
-    println!("    lines                  Memo mode (if in home)");
-    println!("    lines notes.txt        Create/open notes.txt");
-    println!("    lines /path/to/file    Open specific file");
-    println!("    lines ./mydir/         Create new file in directory");
-    println!("    lines --files          Open memo files in file manager");
+    println!("NAVIGATION:");
+    println!("    hjkl        Move cursor");
+    println!("    5j, 10l     Move with repeat count");
+    println!("    [Empty Enter]     Repeat last command (Normal/Visual/ ...?)");
+    println!("EXAMPLES in terminal/shell");
+    println!("  lines                  Memo mode (if in home)");
+    println!("  lines notes.txt        Create/open notes.txt");
+    println!("  lines ./mydir/         Create new file in directory");
 }
 
 /// Formats the bottom info bar with current editor state
@@ -5429,25 +5430,9 @@ fn main() -> io::Result<()> {
 
             // Check for special commands
             match arg.as_str() {
-                "--files" | "files" => {
-                    if in_home {
-                        // Open file manager in memo directory
-                        let memo_dir = get_default_filepath(None)?
-                            .parent()
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::NotFound,
-                                    "Cannot determine memo directory",
-                                )
-                            })?
-                            .to_path_buf();
-                        memo_mode_open_in_file_manager(&memo_dir, None)
-                    } else {
-                        eprintln!("Error: --files command only available in memo mode");
-                        eprintln!("       (Run from home directory for memo mode)");
-                        std::process::exit(2);
-                    }
-                }
+                // ??? maybe future micro-file manager...
+                // "--files" | "files" => {
+                // }
                 "--help" | "-h" | "help" => {
                     print_help();
                     Ok(())
@@ -5483,13 +5468,16 @@ fn main() -> io::Result<()> {
 /*
 Exciting Build!
 
-100 cap?
 
-# idea!
-- in state (maybe) store 'last commend'
-and if the user hits empty enter in Normal mode,
-...maybe or visual mode it repeats the same command...
-e.g. move over 5, move down ten, next word etc.
+show 18 minor issue
+start off screen?? issue?
+
+note: skip int-space for ...map tui to file?
+
+add 'the last command!' to instructions...help
+top bar?
+
+Enter->repeat ...space...
 
 # Idea!
 let user import a file into another file
@@ -5526,6 +5514,10 @@ Next section:
 6. scroll right (see unwrapped long lines)
 7. scroll back to left
 
+
+Todo...
+replace or remove --file command
+e.g. mini file-picker maybe
 
 
 */
