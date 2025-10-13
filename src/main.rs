@@ -580,6 +580,47 @@ const YELLOW: &str = "\x1b[33m";
 // const ITALIC: &str = "\x1b[3m";
 // const UNDERLINE: &str = "\x1b[4m";
 
+/// Defensive programming limits to prevent infinite loops and resource exhaustion
+/// Following NASA Power of 10 rules: all loops must have explicit upper bounds
+mod limits {
+    /// Maximum iterations for binary search through double-width character ranges
+    /// Based on: log2(128) = 7, rounded up to 8 for safety margin
+    pub const DOUBLE_WIDTH_BINARY_SEARCH: usize = 8;
+
+    /// Maximum bytes to scan when seeking to a line number
+    /// Prevents infinite loops on corrupted files or extremely large files
+    /// 10 million bytes = ~10MB, reasonable for text files
+    pub const FILE_SEEK_BYTES: usize = 10_000_000;
+
+    /// Maximum lines to process when building window display
+    /// Should match or exceed MAX_ROWS (45) with generous margin
+    pub const WINDOW_BUILD_LINES: usize = 1000;
+
+    /// Maximum bytes to read when processing a single line
+    /// Matches the line buffer size
+    pub const LINE_READ_BYTES: usize = 4096;
+
+    /// Maximum iterations when skipping characters for horizontal offset
+    /// Allows scrolling very far right in long lines
+    pub const HORIZONTAL_SCROLL_CHARS: usize = 10_000;
+
+    /// Maximum cursor movement iterations in a single command
+    /// Allows "1000j" type commands while preventing integer overflow issues
+    pub const CURSOR_MOVEMENT_STEPS: usize = 1_000_000;
+
+    /// Maximum iterations in main editor loop
+    /// Effectively unlimited (100k commands per session is very generous)
+    pub const MAIN_EDITOR_LOOP_COMMANDS: usize = 100_000;
+
+    /// Maximum bytes to scan when finding UTF-8 character boundaries
+    /// UTF-8 characters are at most 4 bytes
+    pub const MAX_UTF8_BOUNDARY_SCAN: usize = 4;
+
+    /// Maximum iterations when parsing command input strings
+    /// Allows up to 20-digit repeat counts (e.g., "12345678901234567890j")
+    pub const COMMAND_PARSE_MAX_CHARS: usize = 20;
+}
+
 /// Creates a timestamp string specifically for archive file naming
 ///
 /// # Purpose
@@ -1617,6 +1658,16 @@ pub enum WrapMode {
     NoWrap,
 }
 
+/// Maximum size for insert mode input buffer (512 bytes)
+/// Allows ~512 ASCII chars or ~170 3-byte UTF-8 chars per insert
+/// I know, I know, too generous.
+/// Don't spend in all in one place now.
+/// TODO...should be 256?
+/// 1 byte?
+/// 1 word...
+/// a nibble!
+const INSERT_BUFFER_SIZE: usize = 512;
+
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
     ///where lines files for this session are stored
@@ -1696,6 +1747,13 @@ pub struct EditorState {
     /// Actual bytes used in each display buffer
     /// Since lines can be shorter than 80 chars, we track actual usage
     pub display_buffer_lengths: [usize; 45],
+
+    /// Pre-allocated buffer for insert mode text input
+    /// Used to capture user input before inserting into file
+    pub insert_input_buffer: [u8; INSERT_BUFFER_SIZE],
+
+    /// Number of valid bytes in insert_input_buffer
+    pub insert_input_buffer_used: usize,
 }
 
 impl EditorState {
@@ -1742,7 +1800,56 @@ impl EditorState {
             // Display buffers - initialized to zero
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
+
+            insert_input_buffer: [0u8; INSERT_BUFFER_SIZE],
+            insert_input_buffer_used: 0,
         }
+    }
+
+    /// Clears the insert input buffer
+    pub fn clear_insert_buffer(&mut self) {
+        for i in 0..INSERT_BUFFER_SIZE {
+            self.insert_input_buffer[i] = 0;
+        }
+        self.insert_input_buffer_used = 0;
+    }
+
+    /// Adds text to insert buffer, returns true if it fits
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Text added successfully
+    /// * `Ok(false)` - Buffer full, text not added
+    /// * `Err(io::Error)` - Invalid UTF-8 or other error
+    pub fn add_to_insert_buffer(&mut self, text: &str) -> io::Result<bool> {
+        let text_bytes = text.as_bytes();
+
+        // Check if text fits in remaining buffer space
+        let space_available = INSERT_BUFFER_SIZE - self.insert_input_buffer_used;
+
+        if text_bytes.len() > space_available {
+            return Ok(false); // Buffer full
+        }
+
+        // Copy text into buffer
+        let start = self.insert_input_buffer_used;
+        let end = start + text_bytes.len();
+
+        self.insert_input_buffer[start..end].copy_from_slice(text_bytes);
+        self.insert_input_buffer_used = end;
+
+        Ok(true)
+    }
+
+    /// Gets the current insert buffer content as a string
+    pub fn get_insert_buffer_string(&self) -> io::Result<String> {
+        let valid_bytes = &self.insert_input_buffer[..self.insert_input_buffer_used];
+
+        String::from_utf8(valid_bytes.to_vec()).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid UTF-8 in insert buffer: {}", e),
+            )
+        })
     }
 
     /// Initialize changelog for the current file
@@ -2327,6 +2434,7 @@ fn memo_mode_open_in_file_manager(
 /// - Memory-safe with no dynamic allocation
 /// - Based on Unicode 15.0 East Asian Width property
 pub mod double_width {
+    use crate::limits;
 
     /// Maximum number of double-width character ranges we support.
     /// Pre-allocated to avoid dynamic memory allocation per NASA Power of 10 rules.
@@ -2551,12 +2659,11 @@ pub mod double_width {
         // Binary search through our sorted ranges
         // Loop counter for NASA Power of 10 rule #2
         let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 8; // log2(128) rounded up
 
         let mut left = 0;
         let mut right = MAX_RANGES;
 
-        while left < right && iterations < MAX_ITERATIONS {
+        while left < right && iterations < limits::DOUBLE_WIDTH_BINARY_SEARCH {
             iterations += 1;
 
             let mid = left + (right - left) / 2;
@@ -2584,7 +2691,7 @@ pub mod double_width {
 
         // Defensive assertion: we should have checked all relevant ranges
         debug_assert!(
-            iterations <= MAX_ITERATIONS,
+            iterations <= limits::DOUBLE_WIDTH_BINARY_SEARCH,
             "Binary search exceeded maximum iterations"
         );
 
@@ -2613,7 +2720,7 @@ pub mod double_width {
     pub fn calculate_display_width(text: &str) -> Option<usize> {
         let mut width = 0usize;
         let mut char_count = 0;
-        const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2
+        const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2 TODO: math other MAX_CHARS?
 
         for c in text.chars() {
             // Prevent infinite loops with character count limit
@@ -2637,6 +2744,80 @@ pub mod double_width {
 
         Some(width)
     }
+}
+
+/// Seeks to a specific line number in the file and returns the byte position
+///
+/// # Purpose
+/// Efficiently finds the byte offset where a specific line starts in the file.
+/// This allows us to seek directly to that position for display.
+///
+/// # Arguments
+/// * `file` - Open file handle to read from
+/// * `target_line` - Line number to seek to (0-indexed)
+///
+/// # Returns
+/// * `Ok(byte_position)` - Byte offset where the target line starts
+/// * `Err(io::Error)` - If file operations fail
+///
+/// # Defensive Programming
+/// - Limits iterations to prevent infinite loops
+/// - Returns error if target line exceeds file length
+/// - Handles EOF gracefully
+fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Start at beginning of file
+    file.seek(SeekFrom::Start(0))?;
+
+    if target_line == 0 {
+        return Ok(0); // Already at start
+    }
+
+    let mut current_line = 0usize;
+    let mut byte_position = 0u64;
+    let mut buffer = [0u8; 1];
+
+    // Defensive: Limit iterations
+    let mut iterations = 0;
+
+    // Read byte by byte looking for newlines
+    while current_line < target_line && iterations < limits::FILE_SEEK_BYTES {
+        iterations += 1;
+
+        match file.read(&mut buffer)? {
+            0 => {
+                // EOF before reaching target line
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "File only has {} lines, requested line {}",
+                        current_line, target_line
+                    ),
+                ));
+            }
+            1 => {
+                byte_position += 1;
+                if buffer[0] == b'\n' {
+                    current_line += 1;
+                }
+            }
+            _ => unreachable!("Single byte read returned unexpected count"),
+        }
+    }
+
+    // Defensive: Check iteration limit
+    if iterations >= limits::FILE_SEEK_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Maximum iterations exceeded while seeking to line",
+        ));
+    }
+
+    // Assertion: We should have found the target line
+    debug_assert_eq!(current_line, target_line, "Should have reached target line");
+
+    Ok(byte_position)
 }
 
 /// Builds the window-to-file mapping for NoWrap mode
@@ -2706,14 +2887,19 @@ pub fn build_windowmap_nowrap(
     // Open file for reading
     let mut file = File::open(original_file_path)?;
 
-    // Seek to window start position
-    use std::io::{Seek, SeekFrom};
-    file.seek(SeekFrom::Start(state.file_position_of_topline_start))?;
+    // // Seek to window start position
+    // use std::io::{Seek, SeekFrom};
+    // file.seek(SeekFrom::Start(state.file_position_of_topline_start))?;
+
+    // *** FIX: Calculate byte position for the target line ***
+    let byte_position = seek_to_line_number(&mut file, state.line_count_at_top_of_window)?;
+
+    // Update state with the correct byte position
+    state.file_position_of_topline_start = byte_position;
 
     // Pre-allocate read buffer for one line at a time
     // Max line we'll try to read (defensive limit)
-    const MAX_LINE_BYTES: usize = 4096;
-    let mut line_buffer = [0u8; MAX_LINE_BYTES];
+    let mut line_buffer = [0u8; limits::LINE_READ_BYTES];
 
     let mut current_display_row = 0usize;
     let mut current_line_number = state.line_count_at_top_of_window;
@@ -2721,11 +2907,11 @@ pub fn build_windowmap_nowrap(
     let mut file_byte_position = state.file_position_of_topline_start;
 
     // Defensive: Limit iterations to prevent infinite loops
-    const MAX_ITERATIONS: usize = 1000;
     let mut iteration_count = 0;
 
     // Process lines until display is full or file ends
-    while current_display_row < state.effective_rows && iteration_count < MAX_ITERATIONS {
+    while current_display_row < state.effective_rows && iteration_count < limits::WINDOW_BUILD_LINES
+    {
         iteration_count += 1;
 
         // Assertion: We should not exceed our display buffer count
@@ -2776,7 +2962,7 @@ pub fn build_windowmap_nowrap(
     }
 
     // Defensive: Check we didn't hit iteration limit
-    if iteration_count >= MAX_ITERATIONS {
+    if iteration_count >= limits::WINDOW_BUILD_LINES {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             "Maximum iterations exceeded in build_windowmap_nowrap",
@@ -2821,10 +3007,9 @@ fn read_single_line<'a>(
     let mut single_byte = [0u8; 1];
 
     // Defensive: Limit iterations
-    const MAX_ITERATIONS: usize = 4096;
     let mut iterations = 0;
 
-    while bytes_read < buffer.len() && iterations < MAX_ITERATIONS {
+    while bytes_read < buffer.len() && iterations < limits::LINE_READ_BYTES {
         iterations += 1;
 
         // Diagnostic: print bytes read so far
@@ -2861,7 +3046,7 @@ fn read_single_line<'a>(
     // Assertion: We should have stayed within bounds
     debug_assert!(bytes_read <= buffer.len(), "Read exceeded buffer size");
     debug_assert!(
-        iterations <= MAX_ITERATIONS,
+        iterations <= limits::LINE_READ_BYTES,
         "Too many iterations in line read"
     );
 
@@ -2913,12 +3098,11 @@ fn process_line_with_offset(
     let mut chars_skipped = 0usize;
 
     // Defensive: Limit iterations
-    const MAX_ITERATIONS: usize = 10000;
     let mut iterations = 0;
 
     while byte_index < line_bytes.len()
         && chars_skipped < horizontal_offset
-        && iterations < MAX_ITERATIONS
+        && iterations < limits::HORIZONTAL_SCROLL_CHARS
     {
         iterations += 1;
 
@@ -2968,7 +3152,7 @@ fn process_line_with_offset(
     while byte_index < line_bytes.len()
         // Reserve 1 or 2 columns to prevent double-width overflow
         && display_col < col_start + max_cols - 1
-        && iterations < MAX_ITERATIONS
+        && iterations < limits::HORIZONTAL_SCROLL_CHARS
     {
         iterations += 1;
 
@@ -3068,7 +3252,7 @@ fn process_line_with_offset(
     }
 
     // Defensive: Check iteration limit
-    if iterations >= MAX_ITERATIONS {
+    if iterations >= limits::HORIZONTAL_SCROLL_CHARS {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             "Maximum iterations exceeded in line processing",
@@ -3342,7 +3526,15 @@ pub enum Command {
     // Mode changes
     EnterInsertMode, // i
     EnterVisualMode, // v
-    EnterNormalMode, // Esc or Ctrl-[
+    EnterNormalMode, // n or Esc or ??? -> Ctrl-[
+
+    // Text editing
+    InsertNewline(char), // Insert single \n at cursor's file-position
+    InsertText(String),  // Insert input buffer string at cursor
+    DeleteChar,          // Delete character at cursor
+    Backspace,           // Delete character before cursor
+
+    // Select? up down left right byte count? or... to position?
 
     // File operations
     Save,        // s
@@ -3368,7 +3560,15 @@ pub enum Command {
 /// # Format
 /// - Single char: `j` -> MoveDown(1)
 /// - With count: `5j` -> MoveDown(5)
+/// - Count then command: `10l` -> MoveRight(10)
 /// - Mode commands: `i` -> EnterInsertMode
+///
+/// # Examples
+/// - "j" -> MoveDown(1)
+/// - "5j" -> MoveDown(5)
+/// - "10k" -> MoveUp(10)
+/// - "3h" -> MoveLeft(3)
+/// - "7l" -> MoveRight(7)
 pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     let trimmed = input.trim();
 
@@ -3379,7 +3579,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     // In insert mode, most keys are text, not commands
     if current_mode == EditorMode::Insert {
         // Check for escape sequences to exit insert mode
-        if trimmed == "\x1b" || trimmed == "ESC" {
+        if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "n" {
             return Command::EnterNormalMode;
         }
         // Everything else is text input (handled separately)
@@ -3390,13 +3590,13 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     let mut chars = trimmed.chars();
     let mut count = 0usize;
     let mut command_char = None;
+    // let mut found_command = false;
 
-    // Defensive: Limit iteration
-    const MAX_CHARS: usize = 10;
+    // Defensive: Limit iteration on input parsing (not movement)
     let mut iterations = 0;
 
     while let Some(ch) = chars.next() {
-        if iterations >= MAX_CHARS {
+        if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
             return Command::None; // Too long to be valid command
         }
         iterations += 1;
@@ -3421,25 +3621,152 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         count = 1;
     }
 
-    // Match command character
-    match command_char {
-        Some('h') => Command::MoveLeft(count),
-        Some('j') => Command::MoveDown(count),
-        Some('k') => Command::MoveUp(count),
-        Some('l') => Command::MoveRight(count),
-        Some('i') => Command::EnterInsertMode,
-        Some('v') => Command::EnterVisualMode,
-        Some('q') => Command::Quit,
-        Some('s') => Command::Save,
-        Some('w') => {
-            if current_mode == EditorMode::Normal {
-                Command::ToggleWrap
-            } else {
-                Command::SaveAndQuit
-            }
+    // TODO
+    // maybe better to have a if current_mode == EditorMode::Normal etc based command sets?
+
+    if current_mode == EditorMode::Normal {
+        // Match command character
+        match command_char {
+            // if normal mode, move, if visial select?
+            Some('h') => Command::MoveLeft(count),
+            Some('j') => Command::MoveDown(count),
+            Some('k') => Command::MoveUp(count),
+            Some('l') => Command::MoveRight(count),
+
+            Some('i') => Command::EnterInsertMode,
+            Some('v') => Command::EnterVisualMode,
+            Some('q') => Command::Quit,
+            Some('s') => Command::Save,
+
+            // Some('wrap') => {
+            //     if current_mode == EditorMode::Normal {
+            //         Command::ToggleWrap
+            //     } else {
+            //         // Command::SaveAndQuit
+            //         print("");
+            //     }
+            // }
+            _ => Command::None,
         }
-        _ => Command::None,
+    } else if current_mode == EditorMode::Visual {
+        match command_char {
+            Some('i') => Command::EnterInsertMode,
+            Some('v') => Command::EnterVisualMode,
+            Some('q') => Command::Quit,
+            Some('s') => Command::Save,
+            Some('n') => Command::EnterNormalMode,
+            Some('v') => Command::EnterVisualMode,
+            // Some('w') => Command::SelectNextWord,
+            // Some('b') => Command::SelectPreviousWordBeginning,
+            // Some('e') => Command::SelectNextWordEnd,
+            //
+            // Some('h') => Command::SelectLeft(count),
+            // Some('j') => Command::SelectDown(count),
+            // Some('k') => Command::SelectUp(count),
+            // Some('l') => Command::SelectRight(count),
+            _ => Command::None,
+        }
+    } else {
+        // if current_mode == EditorMode::Insert {
+        match command_char {
+            // TODO: --flag commands? not letters?
+            // Some('i') => Command::EnterInsertMode,
+            // Some('v') => Command::EnterVisualMode,
+            // Some('q') => Command::Quit,
+            // Some('s') => Command::Save,
+            // Some('n') => Command::EnterNormalMode,
+            // Some('v') => Command::EnterVisualMode,
+            // Some('w') => Command::SelectNextWord,
+            // Some('b') => Command::SelectPreviousWordBeginning,
+            // Some('e') => Command::SelectNextWordEnd,
+            _ => Command::None,
+        }
     }
+}
+
+/// Inserts a character at the cursor position in the file
+///
+/// # Purpose
+/// Handles single character insertion in insert mode. This is the MVP
+/// implementation that modifies the read-copy file directly.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `ch` - Character to insert
+/// * `read_copy_path` - Path to the read-copy file being edited
+///
+/// # Returns
+/// * `Ok(())` - Character inserted successfully
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Process
+/// 1. Read entire file into memory (MVP approach)
+/// 2. Calculate byte position from cursor position using WindowMap
+/// 3. Insert character at that position
+/// 4. Write modified content back to read-copy
+/// 5. Rebuild window to show change
+///
+/// # Future Optimization
+/// TODO: Implement gap buffer or piece table for efficient insertions
+/// without reading entire file into memory
+fn insert_char_at_cursor(
+    state: &mut EditorState,
+    ch: char,
+    read_copy_path: &Path,
+) -> io::Result<()> {
+    // Step 1: Get file position from cursor using WindowMap
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor not on valid file position",
+            )
+        })?;
+
+    // Step 2: Read entire file (MVP approach)
+    let mut content = fs::read_to_string(read_copy_path)?;
+
+    // Step 3: Convert char to string for insertion
+    let char_string = ch.to_string();
+
+    // Defensive: Validate byte offset is within bounds
+    let insert_position = file_pos.byte_offset as usize;
+    if insert_position > content.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Insert position {} exceeds file length {}",
+                insert_position,
+                content.len()
+            ),
+        ));
+    }
+
+    // Step 4: Insert character at position
+    content.insert_str(insert_position, &char_string);
+
+    // Step 5: Write modified content back to read-copy
+    fs::write(read_copy_path, content)?;
+
+    // Step 6: Mark file as modified
+    state.is_modified = true;
+
+    // TODO
+    // Step 7: Log the edit for undo functionality
+    if let Some(ref log_path) = state.changelog_path {
+        let log_entry = format!(
+            "INSERT line:{} byte:{} char:'{}'",
+            file_pos.line_number, file_pos.byte_offset, ch
+        );
+        state.log_edit(&log_entry)?;
+    }
+
+    // Step 8: Move cursor right (after inserted character)
+    state.cursor.col += 1;
+
+    Ok(())
 }
 
 /// Executes a command and updates editor state
@@ -3458,6 +3785,14 @@ pub fn execute_command(
     command: Command,
     original_file_path: &Path,
 ) -> io::Result<bool> {
+    let base_edit_filepath: PathBuf = state
+        .read_copy_path
+        .as_ref()
+        .map(|p| p.clone()) // Clone the PathBuf
+        .unwrap_or_else(|| original_file_path.to_path_buf()); // path -> buff
+
+    let edit_file_path = Path::new(&base_edit_filepath); // buff -> path!!
+
     match command {
         Command::MoveLeft(count) => {
             // Vim-like behavior: move cursor left, scroll window if at edge
@@ -3466,10 +3801,9 @@ pub fn execute_command(
             let mut needs_rebuild = false;
 
             // Defensive: Limit iterations to prevent infinite loops
-            const MAX_ITERATIONS: usize = 1000;
             let mut iterations = 0;
 
-            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+            while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
                 if state.cursor.col > 0 {
@@ -3490,7 +3824,7 @@ pub fn execute_command(
             }
 
             // Defensive: Check iteration limit
-            if iterations >= MAX_ITERATIONS {
+            if iterations >= limits::CURSOR_MOVEMENT_STEPS {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveLeft",
@@ -3512,10 +3846,9 @@ pub fn execute_command(
             let mut needs_rebuild = false;
 
             // Defensive: Limit iterations
-            const MAX_ITERATIONS: usize = 1000;
             let mut iterations = 0;
 
-            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+            while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
                 // Calculate space available before right edge
@@ -3531,10 +3864,10 @@ pub fn execute_command(
                 } else {
                     // Cursor at right edge, scroll window right
                     // Cap scroll to prevent excessive horizontal offset
-                    const MAX_HORIZONTAL_OFFSET: usize = 1000;
 
-                    if state.horizontal_line_char_offset < MAX_HORIZONTAL_OFFSET {
-                        let max_scroll = MAX_HORIZONTAL_OFFSET - state.horizontal_line_char_offset;
+                    if state.horizontal_line_char_offset < limits::CURSOR_MOVEMENT_STEPS {
+                        let max_scroll =
+                            limits::CURSOR_MOVEMENT_STEPS - state.horizontal_line_char_offset;
                         let scroll_amount = remaining_moves.min(max_scroll);
                         state.horizontal_line_char_offset += scroll_amount;
                         remaining_moves -= scroll_amount;
@@ -3547,7 +3880,7 @@ pub fn execute_command(
             }
 
             // Defensive: Check iteration limit
-            if iterations >= MAX_ITERATIONS {
+            if iterations >= limits::CURSOR_MOVEMENT_STEPS {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveRight",
@@ -3569,10 +3902,9 @@ pub fn execute_command(
             let mut needs_rebuild = false;
 
             // Defensive: Limit iterations
-            const MAX_ITERATIONS: usize = 1000;
             let mut iterations = 0;
 
-            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+            while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
                 // Calculate space available before bottom edge
@@ -3595,7 +3927,7 @@ pub fn execute_command(
             }
 
             // Defensive: Check iteration limit
-            if iterations >= MAX_ITERATIONS {
+            if iterations >= limits::CURSOR_MOVEMENT_STEPS {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveDown",
@@ -3620,10 +3952,9 @@ pub fn execute_command(
             let mut needs_rebuild = false;
 
             // Defensive: Limit iterations
-            const MAX_ITERATIONS: usize = 1000;
             let mut iterations = 0;
 
-            while remaining_moves > 0 && iterations < MAX_ITERATIONS {
+            while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
                 if state.cursor.row > 0 {
@@ -3644,7 +3975,7 @@ pub fn execute_command(
             }
 
             // Defensive: Check iteration limit
-            if iterations >= MAX_ITERATIONS {
+            if iterations >= limits::CURSOR_MOVEMENT_STEPS {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveUp",
@@ -3655,6 +3986,47 @@ pub fn execute_command(
             if needs_rebuild {
                 build_windowmap_nowrap(state, original_file_path)?;
             }
+
+            Ok(true)
+        }
+
+        Command::InsertNewline(_) => {
+            insert_newline_at_cursor(state, edit_file_path)?;
+
+            // Rebuild window to show the change
+            build_windowmap_nowrap(state, edit_file_path)?;
+
+            Ok(true)
+        }
+
+        Command::InsertText(_) => {
+            // Insert buffer contents at cursor
+            let chars_inserted = insert_text_at_cursor(state, edit_file_path)?;
+
+            if chars_inserted > 0 {
+                // Rebuild window to show the changes
+                build_windowmap_nowrap(state, edit_file_path)?;
+            }
+
+            Ok(true)
+        }
+
+        Command::DeleteChar => {
+            // Delete character at cursor position
+            delete_char_at_cursor(state, edit_file_path)?;
+
+            // Rebuild window to show the change
+            build_windowmap_nowrap(state, edit_file_path)?;
+
+            Ok(true)
+        }
+
+        Command::Backspace => {
+            // Delete character before cursor position
+            backspace_at_cursor(state, edit_file_path)?;
+
+            // Rebuild window to show the change
+            build_windowmap_nowrap(state, edit_file_path)?;
 
             Ok(true)
         }
@@ -3717,184 +4089,365 @@ pub fn execute_command(
     }
 }
 
-// /// Executes a command and updates editor state
-// ///
-// /// # Arguments
-// /// * `state` - Current editor state to modify
-// /// * `command` - Command to execute
-// /// * `original_file_path` - Path to the file being edited
-// ///
-// /// # Returns
-// /// * `Ok(true)` - Continue editor loop
-// /// * `Ok(false)` - Exit editor loop
-// /// * `Err(io::Error)` - Command execution failed
-// pub fn execute_command(
-//     state: &mut EditorState,
-//     command: Command,
-//     original_file_path: &Path,
-// ) -> io::Result<bool> {
-//     match command {
-//         Command::MoveLeft(count) => {
-//             // Move CURSOR left within window (not window itself)
-//             state.cursor.col = state.cursor.col.saturating_sub(count);
+/// Deletes the character at the cursor position (like vim's 'x')
+///
+/// # Purpose
+/// Deletes the character under the cursor. Cursor stays at same position.
+/// If at end of line, does nothing.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(())` - Character deleted successfully (or nothing to delete)
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Behavior
+/// - Deletes UTF-8 character at cursor (handles multi-byte)
+/// - If cursor at end of line, does nothing
+/// - If deleting last char on line, cursor stays
+/// - Marks file as modified
+fn delete_char_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get file position from cursor
+    let file_pos = match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+    {
+        Some(pos) => pos,
+        None => {
+            // Cursor not on valid position (e.g., past end of line)
+            return Ok(()); // Nothing to delete
+        }
+    };
 
-//             // NO rebuild needed - just cursor moved!
-//             Ok(true)
-//         }
+    // Step 2: Read entire file (MVP approach)
+    let mut content = fs::read_to_string(file_path)?;
 
-//         Command::MoveRight(count) => {
-//             // Move CURSOR right within window
-//             let new_col = state.cursor.col + count;
+    // Step 3: Validate byte offset
+    let delete_position = file_pos.byte_offset as usize;
+    if delete_position >= content.len() {
+        // At or past end of file
+        return Ok(()); // Nothing to delete
+    }
 
-//             // Don't go past effective columns
-//             state.cursor.col = new_col.min(state.effective_cols.saturating_sub(1));
+    // Step 4: Find the character at this position and its byte length
+    let char_at_pos = content[delete_position..].chars().next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid UTF-8 at delete position",
+        )
+    })?;
 
-//             // NO rebuild needed!
-//             Ok(true)
-//         }
+    let char_byte_len = char_at_pos.len_utf8();
 
-//         Command::MoveDown(count) => {
-//             // Try to move cursor down within visible window first
-//             let space_below = state.effective_rows.saturating_sub(state.cursor.row + 1);
-//             let cursor_moves = count.min(space_below);
+    // Defensive: Ensure we don't go past end
+    let end_position = (delete_position + char_byte_len).min(content.len());
 
-//             state.cursor.row += cursor_moves;
+    // Step 5: Remove the character
+    content.drain(delete_position..end_position);
 
-//             // If we need to move more, scroll the window
-//             let remaining = count - cursor_moves;
-//             if remaining > 0 {
-//                 state.line_count_at_top_of_window += remaining;
-//                 build_windowmap_nowrap(state, original_file_path)?;
-//             }
+    // Step 6: Write modified content back
+    fs::write(file_path, content)?;
 
-//             Ok(true)
-//         }
+    // Step 7: Mark file as modified
+    state.is_modified = true;
 
-//         Command::MoveUp(count) => {
-//             // Try to move cursor up within visible window first
-//             let cursor_moves = count.min(state.cursor.row);
+    // Step 8: Log the edit
+    state.log_edit(&format!(
+        "DELETE_CHAR line:{} byte:{} char:'{}'",
+        file_pos.line_number, file_pos.byte_offset, char_at_pos
+    ))?;
 
-//             state.cursor.row -= cursor_moves;
+    // Step 9: Cursor stays at same position
+    // (the character after deleted one is now under cursor)
 
-//             // If we need to move more, scroll the window
-//             let remaining = count - cursor_moves;
-//             if remaining > 0 {
-//                 state.line_count_at_top_of_window =
-//                     state.line_count_at_top_of_window.saturating_sub(remaining);
-//                 build_windowmap_nowrap(state, original_file_path)?;
-//             }
+    Ok(())
+}
 
-//             Ok(true)
-//         }
-//         // Command::MoveDown(count) => {
-//         //     // Scroll down by incrementing window start line
-//         //     for _ in 0..count {
-//         //         state.line_count_at_top_of_window += 1;
+/// Deletes the character before the cursor position (like vim's backspace)
+///
+/// # Purpose
+/// Deletes the character before the cursor and moves cursor back one position.
+/// If at start of line, deletes the newline (joins with previous line).
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(())` - Character deleted successfully (or nothing to delete)
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Behavior
+/// - Deletes UTF-8 character before cursor (handles multi-byte)
+/// - Cursor moves back one position
+/// - If at start of line, joins with previous line
+/// - If at start of file, does nothing
+fn backspace_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Check if we're at start of file
+    if state.cursor.row == 0 && state.cursor.col == 0 {
+        return Ok(()); // Nothing before cursor
+    }
 
-//         //         // TODO: Update file_position_of_topline_start by seeking to next line
-//         //         // For now, just increment line counter
-//         //     }
+    // Step 2: Get file position from cursor
+    let file_pos = match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+    {
+        Some(pos) => pos,
+        None => {
+            // If cursor is past end of line, move back to end of line first
+            if state.cursor.col > 0 {
+                state.cursor.col -= 1;
+            }
+            return Ok(());
+        }
+    };
 
-//         //     // Rebuild window with new position
-//         //     build_windowmap_nowrap(state, original_file_path)?;
-//         //     Ok(true)
-//         // }
+    // Step 3: Read entire file (MVP approach)
+    let mut content = fs::read_to_string(file_path)?;
 
-//         // Command::MoveUp(count) => {
-//         //     // Scroll up by decrementing window start line
-//         //     for _ in 0..count {
-//         //         if state.line_count_at_top_of_window > 0 {
-//         //             state.line_count_at_top_of_window -= 1;
-//         //         }
+    // Step 4: Find the character BEFORE cursor position
+    let current_position = file_pos.byte_offset as usize;
 
-//         //         // TODO: Update file_position_of_topline_start
-//         //     }
+    if current_position == 0 {
+        return Ok(()); // At start of file
+    }
 
-//         //     // Rebuild window
-//         //     build_windowmap_nowrap(state, original_file_path)?;
-//         //     Ok(true)
-//         // }
+    // Find the start of the previous UTF-8 character
+    let mut prev_char_start = current_position - 1;
 
-//         // Command::MoveLeft(count) => {
-//         //     // Horizontal scroll left
-//         //     state.horizontal_line_char_offset =
-//         //         state.horizontal_line_char_offset.saturating_sub(count);
+    // Defensive: Limit iterations for finding UTF-8 boundary
+    let mut iterations = 0;
 
-//         //     // Rebuild window with new offset
-//         //     build_windowmap_nowrap(state, original_file_path)?;
-//         //     Ok(true)
-//         // }
+    // Walk backward to find UTF-8 character boundary
+    while prev_char_start > 0
+        && iterations < limits::MAX_UTF8_BOUNDARY_SCAN
+        && (content.as_bytes()[prev_char_start] & 0b1100_0000) == 0b1000_0000
+    {
+        // This is a UTF-8 continuation byte, keep going back
+        prev_char_start -= 1;
+        iterations += 1;
+    }
 
-//         // Command::MoveRight(count) => {
-//         //     // Horizontal scroll right
-//         //     state.horizontal_line_char_offset += count;
+    // Get the character we're about to delete (for logging)
+    let char_to_delete = content[prev_char_start..]
+        .chars()
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 before cursor"))?;
 
-//         //     // Defensive: Cap at reasonable limit
-//         //     if state.horizontal_line_char_offset > 1000 {
-//         //         state.horizontal_line_char_offset = 1000;
-//         //     }
+    // Step 5: Remove the character
+    content.drain(prev_char_start..current_position);
 
-//         //     // Rebuild window
-//         //     build_windowmap_nowrap(state, original_file_path)?;
-//         //     Ok(true)
-//         // }
-//         Command::EnterInsertMode => {
-//             state.mode = EditorMode::Insert;
-//             Ok(true)
-//         }
+    // Step 6: Write modified content back
+    fs::write(file_path, content)?;
 
-//         Command::EnterNormalMode => {
-//             state.mode = EditorMode::Normal;
-//             Ok(true)
-//         }
+    // Step 7: Mark file as modified
+    state.is_modified = true;
 
-//         Command::EnterVisualMode => {
-//             state.mode = EditorMode::Visual;
-//             // Set selection start at current cursor position
-//             if let Ok(Some(file_pos)) = state
-//                 .window_map
-//                 .get_file_position(state.cursor.row, state.cursor.col)
-//             {
-//                 state.selection_start = Some(file_pos);
-//             }
-//             Ok(true)
-//         }
+    // Step 8: Log the edit
+    state.log_edit(&format!(
+        "BACKSPACE line:{} byte:{} char:'{}'",
+        file_pos.line_number, prev_char_start, char_to_delete
+    ))?;
 
-//         Command::Save => {
-//             // TODO: Implement save logic
-//             println!("Save not yet implemented");
-//             Ok(true)
-//         }
+    // Step 9: Move cursor back
+    if char_to_delete == '\n' {
+        // Deleted a newline - move to end of previous line
+        if state.cursor.row > 0 {
+            state.cursor.row -= 1;
+            // TODO: Set cursor.col to end of previous line
+            // For now, just move to a reasonable position
+            if state.cursor.col > 0 {
+                state.cursor.col -= 1;
+            }
+        }
+    } else {
+        // Deleted a regular character - move back one column
+        if state.cursor.col > 0 {
+            state.cursor.col -= 1;
+        }
+    }
 
-//         Command::Quit => {
-//             if state.is_modified {
-//                 println!("Warning: Unsaved changes! Use 'w' to save and quit.");
-//                 Ok(true)
-//             } else {
-//                 Ok(false) // Signal to exit loop
-//             }
-//         }
+    Ok(())
+}
 
-//         Command::SaveAndQuit => {
-//             // TODO: Implement save logic
-//             println!("Save and quit not yet implemented");
-//             Ok(false) // Signal to exit after save
-//         }
+/// Inserts a newline character at the cursor position
+///
+/// # Purpose
+/// MVP implementation of newline insertion. This is the simplest insertion
+/// case - just insert a single '\n' character at cursor position.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(())` - Newline inserted successfully
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Process
+/// 1. Get byte position from cursor
+/// 2. Read file into memory
+/// 3. Insert '\n' at position
+/// 4. Write back to file
+/// 5. Update cursor position (move to start of new line)
+///
+/// # Note
+/// This reads entire file into memory (MVP approach).
+/// For large files, this will be slow. Future: use gap buffer.
+fn insert_newline_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get file position from cursor
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor not on valid file position",
+            )
+        })?;
 
-//         Command::ToggleWrap => {
-//             state.wrap_mode = match state.wrap_mode {
-//                 WrapMode::Wrap => WrapMode::NoWrap,
-//                 WrapMode::NoWrap => WrapMode::Wrap,
-//             };
+    // Step 2: Read entire file (MVP approach)
+    let mut content = fs::read_to_string(file_path)?;
 
-//             // Rebuild window with new wrap mode
-//             build_windowmap_nowrap(state, original_file_path)?;
-//             Ok(true)
-//         }
+    // Step 3: Validate byte offset
+    let insert_position = file_pos.byte_offset as usize;
+    if insert_position > content.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Insert position {} exceeds file length {}",
+                insert_position,
+                content.len()
+            ),
+        ));
+    }
 
-//         Command::None => Ok(true),
-//     }
-// }
+    // Step 4: Insert newline at position
+    content.insert(insert_position, '\n');
+
+    // Step 5: Write modified content back
+    fs::write(file_path, content)?;
+
+    // Step 6: Mark file as modified
+    state.is_modified = true;
+
+    // Step 7: Log the edit
+    state.log_edit(&format!(
+        "INSERT_NEWLINE line:{} byte:{}",
+        file_pos.line_number, file_pos.byte_offset
+    ))?;
+
+    // Step 8: Update cursor - move to start of new line
+    state.cursor.row += 1;
+    state.cursor.col = 0;
+    state.line_count_at_top_of_window += 1;
+
+    Ok(())
+}
+
+/// Inserts text from the insert buffer at cursor position
+///
+/// # Purpose
+/// Inserts the contents of state.insert_input_buffer at the cursor position.
+/// This handles multi-character insertion.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position and insert buffer
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(chars_inserted)` - Number of characters successfully inserted
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Process
+/// 1. Get text from insert buffer
+/// 2. Get byte position from cursor
+/// 3. Read file into memory
+/// 4. Insert text at position
+/// 5. Write back to file
+/// 6. Update cursor position (move to end of inserted text)
+/// 7. Clear insert buffer for next input
+fn insert_text_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
+    // Step 1: Get text from insert buffer
+    let text_to_insert = state.get_insert_buffer_string()?;
+
+    if text_to_insert.is_empty() {
+        return Ok(0); // Nothing to insert
+    }
+
+    // Step 2: Get file position from cursor
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor not on valid file position",
+            )
+        })?;
+
+    // Step 3: Read entire file (MVP approach)
+    let mut content = fs::read_to_string(file_path)?;
+
+    // Step 4: Validate byte offset
+    let insert_position = file_pos.byte_offset as usize;
+    if insert_position > content.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Insert position {} exceeds file length {}",
+                insert_position,
+                content.len()
+            ),
+        ));
+    }
+
+    // Step 5: Insert text at position
+    content.insert_str(insert_position, &text_to_insert);
+
+    // Step 6: Write modified content back
+    fs::write(file_path, content)?;
+
+    // Step 7: Mark file as modified
+    state.is_modified = true;
+
+    // Step 8: Log the edit
+    state.log_edit(&format!(
+        "INSERT_TEXT line:{} byte:{} length:{} text:'{}'",
+        file_pos.line_number,
+        file_pos.byte_offset,
+        text_to_insert.len(),
+        text_to_insert.chars().take(50).collect::<String>() // Log first 50 chars
+    ))?;
+
+    // Step 9: Calculate cursor movement
+    // Count characters and newlines in inserted text
+    let char_count = text_to_insert.chars().count();
+    let newline_count = text_to_insert.chars().filter(|&c| c == '\n').count();
+
+    if newline_count > 0 {
+        // Text contains newlines - cursor moves to new line
+        state.cursor.row += newline_count;
+
+        // Find position after last newline
+        if let Some(last_line) = text_to_insert.split('\n').last() {
+            state.cursor.col = last_line.chars().count();
+        } else {
+            state.cursor.col = 0;
+        }
+    } else {
+        // No newlines - cursor moves horizontally
+        state.cursor.col += char_count;
+    }
+
+    // Step 10: Clear insert buffer for next input
+    state.clear_insert_buffer();
+
+    Ok(char_count)
+}
 
 /// Full-featured editor mode for editing files
 ///
@@ -4087,10 +4640,9 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     let mut continue_editing = true;
 
     // Defensive: Limit loop iterations to prevent infinite loops
-    const MAX_ITERATIONS: usize = 100000;
     let mut iteration_count = 0;
 
-    while continue_editing && iteration_count < MAX_ITERATIONS {
+    while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
         // Clear input buffer for new command
@@ -4103,6 +4655,59 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         // Read user input
         stdin.read_line(&mut input_buffer)?;
 
+        // Handle input based on mode
+        if state.mode == EditorMode::Insert {
+            let trimmed = input_buffer.trim();
+
+            // Check for exit insert mode commands
+            if trimmed == "n" || trimmed == "\x1b" || trimmed == "ESC" {
+                // Execute pending insert if buffer has content
+                if state.insert_input_buffer_used > 0 {
+                    continue_editing = execute_command(
+                        &mut state,
+                        Command::InsertText(String::new()),
+                        &target_path,
+                    )?;
+                }
+
+                // Exit insert mode
+                continue_editing =
+                    execute_command(&mut state, Command::EnterNormalMode, &target_path)?;
+            } else if trimmed.is_empty() {
+                // Empty line = newline insertion
+                continue_editing =
+                    execute_command(&mut state, Command::InsertNewline('\n'), &target_path)?;
+            } else {
+                // Try to add text to buffer
+                match state.add_to_insert_buffer(trimmed) {
+                    Ok(true) => {
+                        // Text added to buffer successfully
+                        // Don't insert yet - wait for more input or exit command
+                    }
+                    Ok(false) => {
+                        // Buffer full - insert what we have, then add this text
+                        execute_command(
+                            &mut state,
+                            Command::InsertText(String::new()),
+                            &target_path,
+                        )?;
+
+                        // Try again with empty buffer
+                        if !state.add_to_insert_buffer(trimmed)? {
+                            eprintln!("Warning: Input too large even for empty buffer");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error adding to buffer: {}", e);
+                    }
+                }
+            }
+        } else {
+            // Normal/Visual mode: parse as command
+            let command = parse_command(&input_buffer, state.mode);
+            continue_editing = execute_command(&mut state, command, &target_path)?;
+        }
+
         // Parse command based on current mode
         let command = parse_command(&input_buffer, state.mode);
 
@@ -4111,12 +4716,12 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     }
 
     // Defensive: Check if we hit iteration limit
-    if iteration_count >= MAX_ITERATIONS {
+    if iteration_count >= limits::MAIN_EDITOR_LOOP_COMMANDS {
         eprintln!("Warning: Editor loop exceeded maximum iterations");
     }
 
     // Clean exit
-    println!("\nExiting Lines editor...");
+    println!("\nExciting Lines Editor!");
 
     // Clean up read-copy if it exists
     if let Some(read_copy) = state.read_copy_path {

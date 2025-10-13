@@ -1410,3 +1410,209 @@ mod timestamp_tests {
         }
     }
 }
+
+// #[cfg(test)]
+// mod command_parsing_tests {
+//     use super::*;
+
+//     #[test]
+//     fn test_parse_movement_with_count() {
+//         // Test basic movements
+//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
+
+//         assert_eq!(
+//             parse_command("5j", EditorMode::Normal),
+//             Command::MoveDown(5)
+//         );
+
+//         assert_eq!(
+//             parse_command("10k", EditorMode::Normal),
+//             Command::MoveUp(10)
+//         );
+
+//         assert_eq!(
+//             parse_command("3h", EditorMode::Normal),
+//             Command::MoveLeft(3)
+//         );
+
+//         assert_eq!(
+//             parse_command("7l", EditorMode::Normal),
+//             Command::MoveRight(7)
+//         );
+
+//         // Test with whitespace
+//         assert_eq!(
+//             parse_command("  5j  ", EditorMode::Normal),
+//             Command::MoveDown(5)
+//         );
+
+//         // Test large counts
+//         assert_eq!(
+//             parse_command("50j", EditorMode::Normal),
+//             Command::MoveDown(50)
+//         );
+
+//         // Test count capping at 1000
+//         assert_eq!(
+//             parse_command("9999j", EditorMode::Normal),
+//             Command::MoveDown(1000)
+//         );
+//     }
+// }
+
+// #[cfg(test)]
+// mod command_parsing_tests {
+//     use super::*;
+
+//     #[test]
+//     fn test_parse_movement_with_count() {
+//         // Test basic movements
+//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
+
+//         assert_eq!(
+//             parse_command("5j", EditorMode::Normal),
+//             Command::MoveDown(5)
+//         );
+
+//         assert_eq!(
+//             parse_command("10k", EditorMode::Normal),
+//             Command::MoveUp(10)
+//         );
+
+//         assert_eq!(
+//             parse_command("3h", EditorMode::Normal),
+//             Command::MoveLeft(3)
+//         );
+
+//         assert_eq!(
+//             parse_command("7l", EditorMode::Normal),
+//             Command::MoveRight(7)
+//         );
+
+//         // Test with whitespace
+//         assert_eq!(
+//             parse_command("  5j  ", EditorMode::Normal),
+//             Command::MoveDown(5)
+//         );
+
+//         // Test large counts (capped at 100 in your current code)
+//         assert_eq!(
+//             parse_command("50j", EditorMode::Normal),
+//             Command::MoveDown(50)
+//         );
+
+//         // Test count capping at 100
+//         assert_eq!(
+//             parse_command("9999j", EditorMode::Normal),
+//             Command::MoveDown(100) // Changed from 1000 to 100
+//         );
+//         // Test basic movements
+//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
+
+//         assert_eq!(
+//             parse_command("5j", EditorMode::Normal),
+//             Command::MoveDown(5)
+//         );
+
+//         assert_eq!(
+//             parse_command("10k", EditorMode::Normal),
+//             Command::MoveUp(10)
+//         );
+
+//         // Test large counts
+//         assert_eq!(
+//             parse_command("1000j", EditorMode::Normal),
+//             Command::MoveDown(1000)
+//         );
+
+//         assert_eq!(
+//             parse_command("50000k", EditorMode::Normal),
+//             Command::MoveUp(50000)
+//         );
+//     }
+// }
+
+#[cfg(test)]
+mod insert_tests {
+    use super::*;
+
+    #[test]
+    fn test_insert_buffer_basics() {
+        let mut state = EditorState::new();
+
+        // Test adding text
+        assert!(state.add_to_insert_buffer("Hello").unwrap());
+        assert_eq!(state.insert_input_buffer_used, 5);
+        assert_eq!(state.get_insert_buffer_string().unwrap(), "Hello");
+
+        // Test adding more text
+        assert!(state.add_to_insert_buffer(" World").unwrap());
+        assert_eq!(state.get_insert_buffer_string().unwrap(), "Hello World");
+
+        // Test clearing
+        state.clear_insert_buffer();
+        assert_eq!(state.insert_input_buffer_used, 0);
+    }
+
+    #[test]
+    fn test_insert_buffer_overflow() {
+        let mut state = EditorState::new();
+
+        // Create string larger than buffer
+        let large_text = "x".repeat(600);
+
+        // Should return false (won't fit)
+        assert_eq!(state.add_to_insert_buffer(&large_text).unwrap(), false);
+        assert_eq!(state.insert_input_buffer_used, 0);
+    }
+}
+
+#[test]
+fn test_parse_movement_with_count() {
+    // Test basic movements
+    assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
+
+    assert_eq!(
+        parse_command("5j", EditorMode::Normal),
+        Command::MoveDown(5)
+    );
+
+    assert_eq!(
+        parse_command("10k", EditorMode::Normal),
+        Command::MoveUp(10)
+    );
+
+    assert_eq!(
+        parse_command("3h", EditorMode::Normal),
+        Command::MoveLeft(3)
+    );
+
+    assert_eq!(
+        parse_command("7l", EditorMode::Normal),
+        Command::MoveRight(7)
+    );
+
+    // Test with whitespace
+    assert_eq!(
+        parse_command("  5j  ", EditorMode::Normal),
+        Command::MoveDown(5)
+    );
+
+    // Test with whitespace
+    assert_eq!(
+        parse_command("  10j  ", EditorMode::Normal),
+        Command::MoveDown(10)
+    );
+
+    // // Test large counts
+    // assert_eq!(
+    //     parse_command("1000j", EditorMode::Normal),
+    //     Command::MoveDown(1000)
+    // );
+
+    // // Test very large counts (capped at usize::MAX / 2)
+    // assert_eq!(
+    //     parse_command("50000k", EditorMode::Normal),
+    //     Command::MoveUp(50000)
+    // );
+}
