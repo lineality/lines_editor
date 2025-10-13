@@ -28,16 +28,27 @@ lines_editor_module(option(path)) is the main lines application-wrapper, called 
 lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
 2. save paths in state:
 - original file path
-- readcopy file path
+[done] - readcopy file path
+
+[done] - added timestamps (made timestamp crate) (from ff)
+[done] - added abs exe parent-relative paths (From ff)
 
 3. modular command handling:
-- modes
-- --help
-- any new command modules added
+[done]- modes ( look at ff mode/command-modules )
+[done]- --help (super mvp)
+?done? - any new command modules added
+- add source-it
 
-4. TUI with legend header, probably info-bar at bottom: in total no more than three lines other than file-lines. No filler lines, period.
-
-4. "Plus Enter" cursor system.
+4. Cursor system: "Plus Enter" cursor system.
+[done] 1. Add cursor etc. (from POC)
+- int+letter, move N spaces (in POC, but backwards from vim, use vim int+letter)
+2. **Add scroll down** - Increment line number, rebuild window
+3. **Add scroll up** - Decrement line number, rebuild window
+4. **Test** - Verify line numbers track correctly
+5. scroll right (see unwrapped long lines)
+6. scroll back to left
+7. w,e,b, normal mode move
+8. select code (even if select doesn't do anything now) ( visual mode, works in POC)
 
 5. insert:
 - start of insert mode: user types into buffer
@@ -62,31 +73,13 @@ maybe add another item into state:
 
 10. calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
 
+
 ...
 
-
-
 TODO:
-- add error logging
-
-
-### Phase 3: Navigation
-1. clean up TUI
-- remove clutter (no filler lines)
-- add legend top bar
-- maybe bottom info bar with path & info, cursor-position in file
-window state summary: line, position, mode.
-maybe command on info-bar line, not under it
-
-2. Add cursor etc. (from POC)
-- move-N spaces (in POC)
-- select code (even if select doesn't do anything now) (in POC)
-3. **Add scroll down** - Increment line number, rebuild window
-4. **Add scroll up** - Decrement line number, rebuild window
-5. **Test** - Verify line numbers track correctly
-6. scroll right (see unwrapped long lines)
-7. scroll back to left
-
+fix bug, at some point a move*2 bug was introduced
+one space is 2, 10l move 20
+uniform across up down left right... odd
 
 ...
 
@@ -95,7 +88,7 @@ maybe command on info-bar line, not under it
 - Opening files (creating new, opening existing)
 - Viewing file contents in a "sliding window" (80×24 default, up to 320×96)
 - Navigation (hjkl, word boundaries, goto line)
-- Basic editing (insert characters, delete characters)
+- Basic editing (insert characters & newlines, delete characters)
 - Line operations (delete line, comment/uncomment)
 - Save operations (save, save-as)
 - File safety (read-copies, timestamped archives)
@@ -111,6 +104,10 @@ maybe command on info-bar line, not under it
 
 ## Future/Probably Scope:
 - relative lines
+- fancier delete options: array slice of char, array slice of lines (relative) (absolute?)
+- simple raw hex bytes view
+- raw text view (seeing escape characters)
+- comment-line / un-comment line (command is '/+enter'), file extension for standard languages should make this simple .py .rs .js .toml etc.
 - Character encoding awareness
 - extended delete (line array slice)
 - Undo (optional, with constrained history buffers)
@@ -127,6 +124,7 @@ maybe command on info-bar line, not under it
 - super-mini directory file manager, for if "lines ." open in dir (list file/dir by number, if select file open in lines, if select dir show fiies, option 1 is back, option)
 - Byte viewing mode
 - Byte editing
+- some way to 'view raw characters' e.g. so that escape characters are shown and ideally entered to
 
 */
 
@@ -3606,10 +3604,11 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             let digit = (ch as usize) - ('0' as usize);
             count = count.saturating_mul(10).saturating_add(digit);
 
-            // Defensive: Cap repeat count
-            if count > 100 {
-                count = 100;
-            }
+            // // TODO is this capping.. movement?
+            // // Defensive: Cap repeat count
+            // if count > 100 {
+            //     count = 100;
+            // }
         } else {
             command_char = Some(ch);
             break; // Found the command character
@@ -3859,6 +3858,10 @@ pub fn execute_command(
                     // Cursor can move right within visible window
                     let space_available = right_edge - state.cursor.col;
                     let cursor_moves = remaining_moves.min(space_available);
+
+                    // inspection
+                    println!("Inspection cursor_moves-> {:?}", &cursor_moves);
+
                     state.cursor.col += cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else {
@@ -4707,12 +4710,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             let command = parse_command(&input_buffer, state.mode);
             continue_editing = execute_command(&mut state, command, &target_path)?;
         }
-
-        // Parse command based on current mode
-        let command = parse_command(&input_buffer, state.mode);
-
-        // Execute command and check if we should continue
-        continue_editing = execute_command(&mut state, command, &target_path)?;
     }
 
     // Defensive: Check if we hit iteration limit
@@ -5460,7 +5457,18 @@ fn main() -> io::Result<()> {
 /*
 Exciting Build!
 
+100 cap?
+
+idea!
+- in state (maybe) store 'last commend'
+and if the user hits empty enter in Normal mode,
+...maybe or visual mode it repeats the same command...
+e.g. move over 5, move down ten, next word etc.
+
+
 Current todo steps:
+
+
 
 3. modular command handling system:
 (probably ff main loop for reference)
