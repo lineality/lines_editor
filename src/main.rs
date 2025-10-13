@@ -1668,6 +1668,17 @@ const INSERT_BUFFER_SIZE: usize = 512;
 
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
+    /// It's...The Last Command!
+    /// or the most recent past command
+    /// that the user asked for / was executed
+    /// (so you can do stuff again easily with
+    /// an empty enter on norma/visual mode)
+    /// "When you got nothing, then your on...
+    /// The Last Command!"
+    /// None if no command has been executed yet
+    ///
+    pub the_last_command: Option<Command>,
+
     ///where lines files for this session are stored
     pub session_directory_path: Option<PathBuf>,
 
@@ -1765,6 +1776,7 @@ impl EditorState {
         let effective_rows = DEFAULT_ROWS.saturating_sub(3);
 
         EditorState {
+            the_last_command: None,
             session_directory_path: None,
             mode: EditorMode::Normal,
             wrap_mode: WrapMode::Wrap,
@@ -3594,6 +3606,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     let mut iterations = 0;
 
     while let Some(ch) = chars.next() {
+        // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
         if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
             return Command::None; // Too long to be valid command
         }
@@ -3603,12 +3616,6 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             // Build up count
             let digit = (ch as usize) - ('0' as usize);
             count = count.saturating_mul(10).saturating_add(digit);
-
-            // // TODO is this capping.. movement?
-            // // Defensive: Cap repeat count
-            // if count > 100 {
-            //     count = 100;
-            // }
         } else {
             command_char = Some(ch);
             break; // Found the command character
@@ -3619,9 +3626,6 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     if count == 0 {
         count = 1;
     }
-
-    // TODO
-    // maybe better to have a if current_mode == EditorMode::Normal etc based command sets?
 
     if current_mode == EditorMode::Normal {
         // Match command character
@@ -4706,9 +4710,31 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 }
             }
         } else {
+            // // Normal/Visual mode: parse as command
+            // let command = parse_command(&input_buffer, state.mode);
+            // continue_editing = execute_command(&mut state, command, &target_path)?;
+
             // Normal/Visual mode: parse as command
-            let command = parse_command(&input_buffer, state.mode);
-            continue_editing = execute_command(&mut state, command, &target_path)?;
+            let trimmed = input_buffer.trim();
+
+            let command = if trimmed.is_empty() {
+                // Empty enter: repeat last command
+                match state.the_last_command.clone() {
+                    Some(cmd) => cmd,
+                    None => Command::None, // No previous command
+                }
+            } else {
+                // Parse new command
+                parse_command(&input_buffer, state.mode)
+            };
+
+            // Execute command
+            continue_editing = execute_command(&mut state, command.clone(), &target_path)?;
+
+            // Store command for repeat (only if it's not Command::None)
+            if command != Command::None {
+                state.the_last_command = Some(command);
+            }
         }
     }
 
@@ -5459,12 +5485,21 @@ Exciting Build!
 
 100 cap?
 
-idea!
+# idea!
 - in state (maybe) store 'last commend'
 and if the user hits empty enter in Normal mode,
 ...maybe or visual mode it repeats the same command...
 e.g. move over 5, move down ten, next word etc.
 
+# Idea!
+let user import a file into another file
+e.g. not cut-past huge text amount
+e.g. merge data files...
+option... skip header... interesting...
+
+
+Q: Should every clone have a pre-allocated buffer?
+...or something?
 
 Current todo steps:
 
