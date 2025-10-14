@@ -275,64 +275,64 @@ fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod display_window_tests2 {
-    use super::*;
+// #[cfg(test)]
+// mod display_window_tests2 {
+//     use super::*;
 
-    #[test]
-    fn test_display_window_basic() -> io::Result<()> {
-        // Use unique test files
-        let test_files = create_test_files_with_id("display_basic")?;
-        let basic_file = &test_files[0];
+//     // #[test]
+//     // fn test_display_window_basic() -> io::Result<()> {
+//     //     // Use unique test files
+//     //     let test_files = create_test_files_with_id("display_basic")?;
+//     //     let basic_file = &test_files[0];
 
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
-        assert!(lines_processed > 0, "Should process at least one line");
+//     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
+//     //     assert!(lines_processed > 0, "Should process at least one line");
 
-        let mut buffer = Vec::new();
-        display_window_to_writer(&state, &mut buffer)?;
+//     //     let mut buffer = Vec::new();
+//     //     display_window_to_writer(&state, &mut buffer)?;
 
-        let output = String::from_utf8_lossy(&buffer);
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        assert!(
-            output.contains("1 Line 1: Hello, world!"),
-            "Output should contain first line with line number"
-        );
+//     //     assert!(
+//     //         output.contains("1 Line 1: Hello, world!"),
+//     //         "Output should contain first line with line number"
+//     //     );
 
-        Ok(())
-    }
+//     //     Ok(())
+//     // }
 
-    #[test]
-    fn test_display_window_utf8() -> io::Result<()> {
-        // Use unique test files
-        let test_files = create_test_files_with_id("display_utf8")?;
-        let mixed_utf8_file = &test_files[2];
+//     // #[test]
+//     // fn test_display_window_utf8() -> io::Result<()> {
+//     //     // Use unique test files
+//     //     let test_files = create_test_files_with_id("display_utf8")?;
+//     //     let mixed_utf8_file = &test_files[2];
 
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
-        assert!(lines_processed > 0, "Should process at least one line");
+//     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
+//     //     assert!(lines_processed > 0, "Should process at least one line");
 
-        let mut buffer = Vec::new();
-        display_window_to_writer(&state, &mut buffer)?;
+//     //     let mut buffer = Vec::new();
+//     //     display_window_to_writer(&state, &mut buffer)?;
 
-        let output = String::from_utf8_lossy(&buffer);
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        assert!(
-            output.contains("1 Line 1: Hello 世界"),
-            "Should handle CJK characters with line number"
-        );
+//     //     assert!(
+//     //         output.contains("1 Line 1: Hello 世界"),
+//     //         "Should handle CJK characters with line number"
+//     //     );
 
-        Ok(())
-    }
-}
+//     //     Ok(())
+//     // }
+// }
 
 #[cfg(test)]
 mod test_file_tests3 {
@@ -636,87 +636,87 @@ mod char_width_tests {
     }
 }
 
-/// integration tests for display_window
-#[cfg(test)]
-mod display_window_tests1 {
-    use super::*;
+// /// integration tests for display_window
+// #[cfg(test)]
+// mod display_window_tests1 {
+//     use super::*;
 
-    #[test]
-    fn test_display_window_basic() -> io::Result<()> {
-        // Create test files
-        let test_files = create_test_files_with_id("test_display_window_basic")?;
-        let basic_file = &test_files[0]; // basic_short.txt
+//     // #[test]
+//     // fn test_display_window_basic() -> io::Result<()> {
+//     //     // Create test files
+//     //     let test_files = create_test_files_with_id("test_display_window_basic")?;
+//     //     let basic_file = &test_files[0]; // basic_short.txt
 
-        // Create and populate editor state
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     // Create and populate editor state
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        // Build window map
-        let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
-        assert!(lines_processed > 0, "Should process at least one line");
+//     //     // Build window map
+//     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
+//     //     assert!(lines_processed > 0, "Should process at least one line");
 
-        // Capture output using the writer version
-        let mut buffer = Vec::new();
-        display_window_to_writer(&state, &mut buffer)?;
+//     //     // Capture output using the writer version
+//     //     let mut buffer = Vec::new();
+//     //     display_window_to_writer(&state, &mut buffer)?;
 
-        // Convert captured output to string
-        let output = String::from_utf8_lossy(&buffer);
+//     //     // Convert captured output to string
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        // Debug: print what we captured
-        println!("Captured output:\n{}", output);
+//     //     // Debug: print what we captured
+//     //     println!("Captured output:\n{}", output);
 
-        // Verify content
-        assert!(
-            output.contains("1 Line 1: Hello, world!"),
-            "Output should contain first line with line number"
-        );
-        assert!(
-            output.lines().count() >= 18,
-            "Should have at least 18 lines"
-        );
+//     //     // Verify content
+//     //     assert!(
+//     //         output.contains("1 Line 1: Hello, world!"),
+//     //         "Output should contain first line with line number"
+//     //     );
+//     //     assert!(
+//     //         output.lines().count() >= 18,
+//     //         "Should have at least 18 lines"
+//     //     );
 
-        Ok(())
-    }
+//     //     Ok(())
+//     // }
 
-    #[test]
-    fn test_display_window_utf8() -> io::Result<()> {
-        let test_files = create_test_files_with_id("test_display_window_utf8")?;
-        let mixed_utf8_file = &test_files[2]; // mixed_utf8.txt
+//     // #[test]
+//     // fn test_display_window_utf8() -> io::Result<()> {
+//     //     let test_files = create_test_files_with_id("test_display_window_utf8")?;
+//     //     let mixed_utf8_file = &test_files[2]; // mixed_utf8.txt
 
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        // Build window map
-        let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
-        assert!(lines_processed > 0, "Should process at least one line");
+//     //     // Build window map
+//     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
+//     //     assert!(lines_processed > 0, "Should process at least one line");
 
-        // Capture output using the writer version
-        let mut buffer = Vec::new();
-        display_window_to_writer(&state, &mut buffer)?;
+//     //     // Capture output using the writer version
+//     //     let mut buffer = Vec::new();
+//     //     display_window_to_writer(&state, &mut buffer)?;
 
-        // Convert captured output to string
-        let output = String::from_utf8_lossy(&buffer);
+//     //     // Convert captured output to string
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        // Debug: print what we captured
-        println!("Captured UTF-8 output:\n{}", output);
+//     //     // Debug: print what we captured
+//     //     println!("Captured UTF-8 output:\n{}", output);
 
-        // Verify UTF-8 content - check the actual formatted line
-        assert!(
-            output.contains("1 Line 1: Hello 世界"),
-            "Should handle CJK characters with line number"
-        );
-        assert!(
-            output.contains("2 Line 2: こんにちは"),
-            "Should handle Hiragana with line number"
-        );
+//     //     // Verify UTF-8 content - check the actual formatted line
+//     //     assert!(
+//     //         output.contains("1 Line 1: Hello 世界"),
+//     //         "Should handle CJK characters with line number"
+//     //     );
+//     //     assert!(
+//     //         output.contains("2 Line 2: こんにちは"),
+//     //         "Should handle Hiragana with line number"
+//     //     );
 
-        Ok(())
-    }
-}
+//     //     Ok(())
+//     // }
+// }
 
 // Modify the test to include more diagnostics
 #[test]
@@ -1095,93 +1095,93 @@ mod revised_terminal_width_tests {
     }
 }
 
-#[cfg(test)]
-mod revised_display_integration_tests {
-    use super::*;
+// #[cfg(test)]
+// mod revised_display_integration_tests {
+//     use super::*;
 
-    #[test]
-    fn test_double_width_character_display() -> io::Result<()> {
-        // Use mixed_utf8.txt which has various character widths
-        let test_files = create_test_files_with_id("double_width_display")?;
-        let test_path = &test_files[2]; // mixed_utf8.txt
+//     // #[test]
+//     // fn test_double_width_character_display() -> io::Result<()> {
+//     //     // Use mixed_utf8.txt which has various character widths
+//     //     let test_files = create_test_files_with_id("double_width_display")?;
+//     //     let test_path = &test_files[2]; // mixed_utf8.txt
 
-        // Create editor state
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     // Create editor state
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        // Build window with the test file
-        let result = build_windowmap_nowrap(&mut state, &test_path);
-        assert!(result.is_ok(), "Should build window successfully");
-        let lines_processed = result.unwrap();
+//     //     // Build window with the test file
+//     //     let result = build_windowmap_nowrap(&mut state, &test_path);
+//     //     assert!(result.is_ok(), "Should build window successfully");
+//     //     let lines_processed = result.unwrap();
 
-        // Verify display (capture to buffer for testing)
-        let mut buffer = Vec::new();
-        let display_result = display_window_to_writer(&state, &mut buffer);
-        assert!(display_result.is_ok(), "Should display successfully");
+//     //     // Verify display (capture to buffer for testing)
+//     //     let mut buffer = Vec::new();
+//     //     let display_result = display_window_to_writer(&state, &mut buffer);
+//     //     assert!(display_result.is_ok(), "Should display successfully");
 
-        let output = String::from_utf8_lossy(&buffer);
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        // Verify specific content
-        assert!(output.contains("世界"), "Should display Chinese characters");
-        assert!(output.contains("こんにちは"), "Should display Hiragana");
-        assert!(output.contains("한글"), "Should display Hangul");
+//     //     // Verify specific content
+//     //     assert!(output.contains("世界"), "Should display Chinese characters");
+//     //     assert!(output.contains("こんにちは"), "Should display Hiragana");
+//     //     assert!(output.contains("한글"), "Should display Hangul");
 
-        // Verify line numbers are present
-        assert!(output.contains("1 "), "Should have line number 1");
-        assert!(output.contains("2 "), "Should have line number 2");
+//     //     // Verify line numbers are present
+//     //     assert!(output.contains("1 "), "Should have line number 1");
+//     //     assert!(output.contains("2 "), "Should have line number 2");
 
-        // Verify WindowMap was populated for double-width characters
-        // Check that Chinese characters in first line are properly mapped
-        for row in 0..3 {
-            if state.display_buffer_lengths[row] > 0 {
-                // Check that we can get file positions from the map
-                let pos = state.window_map.get_file_position(row, 5)?;
-                assert!(
-                    pos.is_some() || row >= lines_processed,
-                    "Row {} col 5 should have file position or be empty",
-                    row
-                );
-            }
-        }
+//     //     // Verify WindowMap was populated for double-width characters
+//     //     // Check that Chinese characters in first line are properly mapped
+//     //     for row in 0..3 {
+//     //         if state.display_buffer_lengths[row] > 0 {
+//     //             // Check that we can get file positions from the map
+//     //             let pos = state.window_map.get_file_position(row, 5)?;
+//     //             assert!(
+//     //                 pos.is_some() || row >= lines_processed,
+//     //                 "Row {} col 5 should have file position or be empty",
+//     //                 row
+//     //             );
+//     //         }
+//     //     }
 
-        Ok(())
-    }
+//     //     Ok(())
+//     // }
 
-    #[test]
-    fn test_empty_lines_display() -> io::Result<()> {
-        // Use edge_cases.txt which has empty lines
-        let test_files = create_test_files_with_id("empty_lines")?;
-        let test_path = &test_files[3]; // edge_cases.txt
+//     // #[test]
+//     // fn test_empty_lines_display() -> io::Result<()> {
+//     //     // Use edge_cases.txt which has empty lines
+//     //     let test_files = create_test_files_with_id("empty_lines")?;
+//     //     let test_path = &test_files[3]; // edge_cases.txt
 
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+//     //     let mut state = EditorState::new();
+//     //     state.line_count_at_top_of_window = 0;
+//     //     state.file_position_of_topline_start = 0;
+//     //     state.horizontal_line_char_offset = 0;
 
-        let result = build_windowmap_nowrap(&mut state, &test_path);
-        assert!(result.is_ok(), "Should handle empty lines");
+//     //     let result = build_windowmap_nowrap(&mut state, &test_path);
+//     //     assert!(result.is_ok(), "Should handle empty lines");
 
-        // Verify we processed multiple lines including empties
-        let lines_processed = result.unwrap();
-        assert!(lines_processed > 1, "Should process multiple lines");
+//     //     // Verify we processed multiple lines including empties
+//     //     let lines_processed = result.unwrap();
+//     //     assert!(lines_processed > 1, "Should process multiple lines");
 
-        // Capture display output
-        let mut buffer = Vec::new();
-        display_window_to_writer(&state, &mut buffer)?;
-        let output = String::from_utf8_lossy(&buffer);
+//     //     // Capture display output
+//     //     let mut buffer = Vec::new();
+//     //     display_window_to_writer(&state, &mut buffer)?;
+//     //     let output = String::from_utf8_lossy(&buffer);
 
-        // Empty lines should still have line numbers
-        let line_count = output.lines().count();
-        assert!(
-            line_count >= lines_processed,
-            "Should display all processed lines"
-        );
+//     //     // Empty lines should still have line numbers
+//     //     let line_count = output.lines().count();
+//     //     assert!(
+//     //         line_count >= lines_processed,
+//     //         "Should display all processed lines"
+//     //     );
 
-        Ok(())
-    }
-}
+//     //     Ok(())
+//     // }
+// }
 
 #[cfg(test)]
 mod timestamp_tests {
@@ -1615,4 +1615,7 @@ fn test_parse_movement_with_count() {
     //     parse_command("50000k", EditorMode::Normal),
     //     Command::MoveUp(50000)
     // );
+    //
+    //
+    //
 }

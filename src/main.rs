@@ -2231,32 +2231,49 @@ fn append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
 /// * `Err(io::Error)` - File operation failed
 ///
 /// # Memory Safety
-/// - Uses pre-allocated 8K buffer for file operations
+/// - Uses pre-allocated 8K buffers ONLY (no heap allocation)
 /// - Does NOT load entire file into memory
 /// - Reads/writes in chunks
 ///
 /// # Process
-/// 1. Read stdin input (Rust's String allocation, not Lines')
+/// 1. Read stdin into pre-allocated buffer
 /// 2. Get cursor file position from WindowMap
-/// 3. Read bytes after cursor into 8K buffer
+/// 3. Read bytes after cursor into separate 8K buffer
 /// 4. Write new text at cursor position
 /// 5. Write shifted bytes after new text
 /// 6. Flush to ensure write completes
 fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    // Step 1: Read from stdin
+    // Step 1: Read from stdin into pre-allocated buffer
     let stdin = io::stdin();
-    let mut input_line = String::new();
-    stdin.read_line(&mut input_line)?;
+    let mut stdin_handle = stdin.lock();
+    let mut input_buffer = [0u8; 8192];
 
-    let trimmed = input_line.trim();
-    let text_bytes = trimmed.as_bytes();
+    // Read up to 8K from stdin
+    let bytes_read = stdin_handle.read(&mut input_buffer)?;
 
-    // Defensive: Check for empty input
-    if text_bytes.is_empty() {
-        return Ok(0);
+    if bytes_read == 0 {
+        return Ok(0); // Empty input
     }
+
+    // Find the newline to get single line (if present)
+    let line_end = input_buffer[..bytes_read]
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(bytes_read);
+
+    // Trim trailing whitespace from the line
+    let mut text_len = line_end;
+    while text_len > 0 && input_buffer[text_len - 1].is_ascii_whitespace() {
+        text_len -= 1;
+    }
+
+    if text_len == 0 {
+        return Ok(0); // Empty after trimming
+    }
+
+    let text_bytes = &input_buffer[..text_len];
 
     // Step 2: Get cursor file position
     let file_pos = state
@@ -2274,7 +2291,7 @@ fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> 
     // Step 3: Open file for read+write
     let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
 
-    // Step 4: Read bytes AFTER insert point into 8K buffer
+    // Step 4: Read bytes AFTER insert point into separate 8K buffer
     let mut after_buffer = [0u8; 8192];
     file.seek(SeekFrom::Start(insert_position))?;
     let bytes_after = file.read(&mut after_buffer)?;
@@ -2293,7 +2310,7 @@ fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> 
     // Step 7: Update state
     state.is_modified = true;
 
-    Ok(text_bytes.len())
+    Ok(text_len)
 }
 
 /// Main editing loop for the lines text editor
@@ -2421,131 +2438,6 @@ fn get_default_filepath(custom_name: Option<&str>) -> io::Result<PathBuf> {
 
     // Join the base path with the filename
     Ok(base_path.join(filename))
-}
-
-/// Represents supported file managers and their launch commands
-#[derive(Debug)]
-enum FileManager {
-    Nautilus,
-    Dolphin,
-    Thunar,
-    Explorer,
-    Finder,
-}
-
-impl FileManager {
-    /// Converts the FileManager enum to its launch command string
-    fn get_command(&self) -> &str {
-        match self {
-            FileManager::Nautilus => "nautilus",
-            FileManager::Dolphin => "dolphin",
-            FileManager::Thunar => "thunar",
-            FileManager::Explorer => "explorer",
-            FileManager::Finder => "open",
-        }
-    }
-}
-
-/// Detects the operating system and returns appropriate default file manager
-/// Detects and returns the default file manager for the current operating system
-///
-/// # Returns
-/// - `Ok(FileManager)` - Enum variant matching the system's default file manager
-/// - `Err(io::Error)` - If operating system is unsupported
-///
-/// # Platform-Specific Behavior
-/// ## Linux
-/// - GNOME: Returns Nautilus
-/// - KDE: Returns Dolphin
-/// - XFCE: Returns Thunar
-/// - Default/Unknown: Falls back to Nautilus
-///
-/// ## Windows
-/// - Returns Explorer
-///
-/// ## macOS
-/// - Returns Finder
-///
-/// # Environment Variables Used
-/// - `XDG_CURRENT_DESKTOP`: Used on Linux to detect desktop environment
-///
-/// # Errors
-/// Returns error if:
-/// - Operating system is not Linux, Windows, or macOS
-/// - Unable to determine desktop environment on Linux
-///
-/// # Usage Example
-/// ```no_run
-/// let file_manager = get_default_file_manager()?;
-/// let command = file_manager.get_command();
-/// // Use command to open files/directories
-/// ```
-///
-fn get_default_file_manager() -> io::Result<FileManager> {
-    let os = env::consts::OS;
-    match os {
-        "linux" => {
-            // Check for common Linux desktop environments
-            if let Ok(desktop) = env::var("XDG_CURRENT_DESKTOP") {
-                match desktop.to_uppercase().as_str() {
-                    "GNOME" => Ok(FileManager::Nautilus),
-                    "KDE" => Ok(FileManager::Dolphin),
-                    "XFCE" => Ok(FileManager::Thunar),
-                    _ => Ok(FileManager::Nautilus), // Default to Nautilus
-                }
-            } else {
-                Ok(FileManager::Nautilus)
-            }
-        }
-        "windows" => Ok(FileManager::Explorer),
-        "macos" => Ok(FileManager::Finder),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            format!("Unsupported operating system: {}", os),
-        )),
-    }
-}
-
-/// Opens the specified directory in the system's file manager
-///
-/// # Arguments
-/// * `directory` - Path to the directory to open
-/// * `file_manager` - Optional specific file manager to use
-///
-/// # Returns
-/// * `io::Result<()>` - Success or error opening the file manager
-fn memo_mode_open_in_file_manager(
-    directory: &Path,
-    file_manager: Option<FileManager>,
-) -> io::Result<()> {
-    // Ensure the directory exists
-    if !directory.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Directory does not exist",
-        ));
-    }
-
-    let fm = match file_manager {
-        Some(fm) => fm,
-        None => get_default_file_manager()?,
-    };
-
-    // Prepare the command and arguments
-    let command = fm.get_command();
-    let dir_str = directory.to_string_lossy();
-
-    // Execute the file manager command
-    match std::process::Command::new(command).arg(&*dir_str).spawn() {
-        Ok(_) => {
-            println!("Opened {} in {:?}", dir_str, fm);
-            Ok(())
-        }
-        Err(e) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to open file manager: {}", e),
-        )),
-    }
 }
 
 /// Module for detecting double-width (full-width) UTF-8 characters in terminal display.
@@ -3476,65 +3368,6 @@ fn process_line_with_offset(
     Ok(bytes_written)
 }
 
-/// Renders the current window content to a writer (for testability)
-///
-/// # Purpose
-/// Prints the pre-populated display buffers to the provided writer.
-/// This allows both terminal output and test capture.
-///
-/// # Arguments
-/// * `state` - Current editor state with display buffers
-/// * `writer` - Where to write the output (stdout or test buffer)
-///
-/// # Returns
-/// * `io::Result<()>` - Success or error in displaying content
-fn display_window_to_writer<W: Write>(state: &EditorState, writer: &mut W) -> io::Result<()> {
-    // Clear screen escape codes (only for actual terminal)
-    // Don't include in test output as it makes verification harder
-
-    // Render each row in the display buffer
-    for row in 0..state.effective_rows {
-        // Only render rows that have content
-        if state.display_buffer_lengths[row] > 0 {
-            let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
-
-            // Safely convert to UTF-8 string
-            match std::str::from_utf8(row_content) {
-                Ok(row_str) => writeln!(writer, "{}", row_str)?,
-                Err(_) => {
-                    // Fallback for invalid UTF-8: show replacement character
-                    writeln!(writer, "�")?;
-                }
-            }
-        } else {
-            // Empty rows, just print newline to maintain vertical spacing
-            writeln!(writer)?;
-        }
-    }
-
-    writer.flush()?;
-    Ok(())
-}
-
-/// Renders the current window content to the terminal
-///
-/// # Purpose
-/// Prints the pre-populated display buffers to stdout with screen clearing.
-///
-/// # Arguments
-/// * `state` - Current editor state with display buffers
-///
-/// # Returns
-/// * `io::Result<()>` - Success or error in displaying content
-fn display_window(state: &EditorState) -> io::Result<()> {
-    // Clear screen before rendering
-    print!("\x1B[2J\x1B[H");
-    io::stdout().flush()?;
-
-    // Use the writer version with stdout
-    display_window_to_writer(state, &mut io::stdout())
-}
-
 /// Determines if the current working directory is the user's home directory
 ///
 /// # Purpose
@@ -3848,7 +3681,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             Some('q') => Command::Quit,
             Some('s') => Command::Save,
             Some('n') => Command::EnterNormalMode,
-            Some('v') => Command::EnterVisualMode,
+            // Some('v') => Command::EnterVisualMode,
             // Some('w') => Command::SelectNextWord,
             // Some('b') => Command::SelectPreviousWordBeginning,
             // Some('e') => Command::SelectNextWordEnd,
@@ -3875,91 +3708,6 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             _ => Command::None,
         }
     }
-}
-
-/// Inserts a character at the cursor position in the file
-///
-/// # Purpose
-/// Handles single character insertion in insert mode. This is the MVP
-/// implementation that modifies the read-copy file directly.
-///
-/// # Arguments
-/// * `state` - Editor state with cursor position
-/// * `ch` - Character to insert
-/// * `read_copy_path` - Path to the read-copy file being edited
-///
-/// # Returns
-/// * `Ok(())` - Character inserted successfully
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Process
-/// 1. Read entire file into memory (MVP approach)
-/// 2. Calculate byte position from cursor position using WindowMap
-/// 3. Insert character at that position
-/// 4. Write modified content back to read-copy
-/// 5. Rebuild window to show change
-///
-/// # Future Optimization
-/// TODO: Implement gap buffer or piece table for efficient insertions
-/// without reading entire file into memory
-fn insert_char_at_cursor(
-    state: &mut EditorState,
-    ch: char,
-    read_copy_path: &Path,
-) -> io::Result<()> {
-    // Step 1: Get file position from cursor using WindowMap
-    let file_pos = state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cursor not on valid file position",
-            )
-        })?;
-
-    // Step 2: Read entire file (MVP approach)
-    let mut content = fs::read_to_string(read_copy_path)?;
-
-    // Step 3: Convert char to string for insertion
-    let char_string = ch.to_string();
-
-    // Defensive: Validate byte offset is within bounds
-    let insert_position = file_pos.byte_offset as usize;
-    if insert_position > content.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "Insert position {} exceeds file length {}",
-                insert_position,
-                content.len()
-            ),
-        ));
-    }
-
-    // Step 4: Insert character at position
-    content.insert_str(insert_position, &char_string);
-
-    // Step 5: Write modified content back to read-copy
-    fs::write(read_copy_path, content)?;
-
-    // Step 6: Mark file as modified
-    state.is_modified = true;
-
-    // TODO
-    // Step 7: Log the edit for undo functionality
-    if let Some(ref log_path) = state.changelog_path {
-        let log_entry = format!(
-            "INSERT line:{} byte:{} char:'{}'",
-            file_pos.line_number, file_pos.byte_offset, ch
-        );
-        state.log_edit(&log_entry)?;
-    }
-
-    // Step 8: Move cursor right (after inserted character)
-    state.cursor.col += 1;
-
-    Ok(())
 }
 
 /// Executes a command and updates editor state
@@ -4746,107 +4494,6 @@ fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> i
     );
 
     Ok(bytes_written)
-}
-
-/// Inserts text from the insert buffer at cursor position
-///
-/// # Purpose
-/// Inserts the contents of state.fileinsert_input_buffer at the cursor position.
-/// This handles multi-character insertion.
-///
-/// # Arguments
-/// * `state` - Editor state with cursor position and insert buffer
-/// * `file_path` - Path to the file being edited (read-copy)
-///
-/// # Returns
-/// * `Ok(chars_inserted)` - Number of characters successfully inserted
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Process
-/// 1. Get text from insert buffer
-/// 2. Get byte position from cursor
-/// 3. Read file into memory
-/// 4. Insert text at position
-/// 5. Write back to file
-/// 6. Update cursor position (move to end of inserted text)
-/// 7. Clear insert buffer for next input
-fn insert_text_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
-    // Step 1: Get text from insert buffer
-    let text_to_insert = state.get_insert_buffer_string()?;
-
-    if text_to_insert.is_empty() {
-        return Ok(0); // Nothing to insert
-    }
-
-    // Step 2: Get file position from cursor
-    let file_pos = state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cursor not on valid file position",
-            )
-        })?;
-
-    // Step 3: Read entire file (MVP approach)
-    let mut content = fs::read_to_string(file_path)?;
-
-    // Step 4: Validate byte offset
-    let insert_position = file_pos.byte_offset as usize;
-    if insert_position > content.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "Insert position {} exceeds file length {}",
-                insert_position,
-                content.len()
-            ),
-        ));
-    }
-
-    // Step 5: Insert text at position
-    content.insert_str(insert_position, &text_to_insert);
-
-    // Step 6: Write modified content back
-    fs::write(file_path, content)?;
-
-    // Step 7: Mark file as modified
-    state.is_modified = true;
-
-    // Step 8: Log the edit
-    state.log_edit(&format!(
-        "INSERT_TEXT line:{} byte:{} length:{} text:'{}'",
-        file_pos.line_number,
-        file_pos.byte_offset,
-        text_to_insert.len(),
-        text_to_insert.chars().take(50).collect::<String>() // Log first 50 chars
-    ))?;
-
-    // Step 9: Calculate cursor movement
-    // Count characters and newlines in inserted text
-    let char_count = text_to_insert.chars().count();
-    let newline_count = text_to_insert.chars().filter(|&c| c == '\n').count();
-
-    if newline_count > 0 {
-        // Text contains newlines - cursor moves to new line
-        state.cursor.row += newline_count;
-
-        // Find position after last newline
-        if let Some(last_line) = text_to_insert.split('\n').last() {
-            state.cursor.col = last_line.chars().count();
-        } else {
-            state.cursor.col = 0;
-        }
-    } else {
-        // No newlines - cursor moves horizontally
-        state.cursor.col += char_count;
-    }
-
-    // Step 10: Clear insert buffer for next input
-    state.clear_insert_buffer();
-
-    Ok(char_count)
 }
 
 /// Full-featured editor mode for editing files
@@ -6031,14 +5678,7 @@ larger buffere for insert 512bytes
 
 
 uses of read_line()
-```
-fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
-    use std::io::{Read, Seek, SeekFrom, Write};
 
-    // Step 1: Read from stdin
-    let stdin = io::stdin();
-    let mut input_line = String::new();
-    stdin.read_line(&mut input_line)?;
 
 ```
 fn editor_loop(original_file_path: &Path) -> io::Result<()> {
@@ -6071,5 +5711,19 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 stdin.read_line(&mut input_buffer)?;
 
 ```
+
+todo: put a small message bar in the info bar
+
+e.g.
+insert mode -n -v -s/-w -wq
+
+
+the plan is to not use read_line() - maybe uses heap
+use small chunkbuffer for commands
+use larger chunk buffer for insert filewrite and changelog file write
+
+todo:
+remove un-used function especially for write-file...
+
 
 */
