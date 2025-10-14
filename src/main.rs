@@ -3573,16 +3573,19 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         match command_str {
             // Single character commands
             "h" => Command::MoveLeft(count),
+            "\x1b[D" => Command::MoveLeft(count),
             "j" => Command::MoveDown(count),
+            "\x1b[A" => Command::MoveDown(count),
             "k" => Command::MoveUp(count),
+            "\x1b[B" => Command::MoveUp(count),
             "l" => Command::MoveRight(count),
+            "\x1b[C" => Command::MoveRight(count),
             "i" => Command::EnterInsertMode,
             "v" => Command::EnterVisualMode,
-            "q" => Command::Quit,
-            "s" | "w" => Command::Save,
-
             // Multi-character commands
             "wq" => Command::SaveAndQuit,
+            "s" | "w" => Command::Save,
+            "q" => Command::Quit,
             // "wrap" => Command::ToggleWrap,
             // "gg" => Command::MoveToTop,
             // "dd" => Command::DeleteLine(count),
@@ -5208,6 +5211,9 @@ fn main() -> io::Result<()> {
 /*
 Build Notes:
 Current todo steps:
+
+1. select...
+2.
 
 
 All clone() heap use, or read_lie() that can be re-done in a stack based should/must be:
