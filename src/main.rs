@@ -1675,15 +1675,22 @@ pub enum WrapMode {
     NoWrap,
 }
 
+/// Command input buffer for Normal/Visual mode (64 bytes)
+/// Handles movement commands, counts, and mode switches
+const COMMAND_BUFFER_SIZE: usize = 64;
+
 /// Maximum size for insert mode input buffer (512 bytes)
 /// Allows ~512 ASCII chars or ~170 3-byte UTF-8 chars per insert
 /// I know, I know, too generous.
 /// Don't spend in all in one place now.
-/// TODO...should be 256?
-/// 1 byte?
-/// 1 word...
-/// a nibble!
-const INSERT_BUFFER_SIZE: usize = 512;
+///
+/// This is for a chunked process of moving std-in
+/// text from the user to
+/// A: file
+/// B: change-log
+/// without whole-loading things into buffers.
+/// Towers of Hanoy
+const FILE_INSERT_BUFFER_SIZE: usize = 512;
 
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
@@ -1776,12 +1783,16 @@ pub struct EditorState {
     /// Since lines can be shorter than 80 chars, we track actual usage
     pub display_buffer_lengths: [usize; 45],
 
+    /// Buffer for command input (Normal/Visual mode)
+    pub command_input_buffer: [u8; COMMAND_BUFFER_SIZE],
+    pub command_input_buffer_used: usize,
+
     /// Pre-allocated buffer for insert mode text input
     /// Used to capture user input before inserting into file
-    pub insert_input_buffer: [u8; INSERT_BUFFER_SIZE],
+    pub fileinsert_input_buffer: [u8; FILE_INSERT_BUFFER_SIZE],
 
-    /// Number of valid bytes in insert_input_buffer
-    pub insert_input_buffer_used: usize,
+    /// Number of valid bytes in fileinsert_input_buffer
+    pub file_insertinput_buffer_used: usize,
 }
 
 impl EditorState {
@@ -1830,17 +1841,20 @@ impl EditorState {
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
 
-            insert_input_buffer: [0u8; INSERT_BUFFER_SIZE],
-            insert_input_buffer_used: 0,
+            command_input_buffer: [0u8; COMMAND_BUFFER_SIZE],
+            command_input_buffer_used: 0,
+
+            fileinsert_input_buffer: [0u8; FILE_INSERT_BUFFER_SIZE],
+            file_insertinput_buffer_used: 0,
         }
     }
 
     /// Clears the insert input buffer
     pub fn clear_insert_buffer(&mut self) {
-        for i in 0..INSERT_BUFFER_SIZE {
-            self.insert_input_buffer[i] = 0;
+        for i in 0..FILE_INSERT_BUFFER_SIZE {
+            self.fileinsert_input_buffer[i] = 0;
         }
-        self.insert_input_buffer_used = 0;
+        self.file_insertinput_buffer_used = 0;
     }
 
     /// Adds text to insert buffer, returns true if it fits
@@ -1853,25 +1867,25 @@ impl EditorState {
         let text_bytes = text.as_bytes();
 
         // Check if text fits in remaining buffer space
-        let space_available = INSERT_BUFFER_SIZE - self.insert_input_buffer_used;
+        let space_available = FILE_INSERT_BUFFER_SIZE - self.file_insertinput_buffer_used;
 
         if text_bytes.len() > space_available {
             return Ok(false); // Buffer full
         }
 
         // Copy text into buffer
-        let start = self.insert_input_buffer_used;
+        let start = self.file_insertinput_buffer_used;
         let end = start + text_bytes.len();
 
-        self.insert_input_buffer[start..end].copy_from_slice(text_bytes);
-        self.insert_input_buffer_used = end;
+        self.fileinsert_input_buffer[start..end].copy_from_slice(text_bytes);
+        self.file_insertinput_buffer_used = end;
 
         Ok(true)
     }
 
     /// Gets the current insert buffer content as a string
     pub fn get_insert_buffer_string(&self) -> io::Result<String> {
-        let valid_bytes = &self.insert_input_buffer[..self.insert_input_buffer_used];
+        let valid_bytes = &self.fileinsert_input_buffer[..self.file_insertinput_buffer_used];
 
         String::from_utf8(valid_bytes.to_vec()).map_err(|e| {
             io::Error::new(
@@ -2198,6 +2212,88 @@ fn append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
             Err(e)
         }
     }
+}
+
+/// Inserts stdin text at cursor position using pre-allocated buffer
+/// Reads/writes in 8K chunks to avoid loading whole file
+///
+/// # Purpose
+/// Writes text from stdin directly to the read-copy file at cursor position.
+/// Uses chunked reading to shift bytes after insertion point without loading
+/// entire file into memory. Follows pre-allocated memory rules.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position and pre-allocated buffers
+/// * `file_path` - Path to read-copy file being edited
+///
+/// # Returns
+/// * `Ok(bytes_written)` - Number of bytes successfully written
+/// * `Err(io::Error)` - File operation failed
+///
+/// # Memory Safety
+/// - Uses pre-allocated 8K buffer for file operations
+/// - Does NOT load entire file into memory
+/// - Reads/writes in chunks
+///
+/// # Process
+/// 1. Read stdin input (Rust's String allocation, not Lines')
+/// 2. Get cursor file position from WindowMap
+/// 3. Read bytes after cursor into 8K buffer
+/// 4. Write new text at cursor position
+/// 5. Write shifted bytes after new text
+/// 6. Flush to ensure write completes
+fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    // Step 1: Read from stdin
+    let stdin = io::stdin();
+    let mut input_line = String::new();
+    stdin.read_line(&mut input_line)?;
+
+    let trimmed = input_line.trim();
+    let text_bytes = trimmed.as_bytes();
+
+    // Defensive: Check for empty input
+    if text_bytes.is_empty() {
+        return Ok(0);
+    }
+
+    // Step 2: Get cursor file position
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor not on valid file position",
+            )
+        })?;
+
+    let insert_position = file_pos.byte_offset;
+
+    // Step 3: Open file for read+write
+    let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
+
+    // Step 4: Read bytes AFTER insert point into 8K buffer
+    let mut after_buffer = [0u8; 8192];
+    file.seek(SeekFrom::Start(insert_position))?;
+    let bytes_after = file.read(&mut after_buffer)?;
+
+    // Assertion: Verify we didn't overflow buffer
+    debug_assert!(bytes_after <= 8192, "Read exceeded buffer size");
+
+    // Step 5: Write new text at insert position
+    file.seek(SeekFrom::Start(insert_position))?;
+    file.write_all(text_bytes)?;
+
+    // Step 6: Write the shifted bytes back
+    file.write_all(&after_buffer[..bytes_after])?;
+    file.flush()?;
+
+    // Step 7: Update state
+    state.is_modified = true;
+
+    Ok(text_bytes.len())
 }
 
 /// Main editing loop for the lines text editor
@@ -4526,7 +4622,7 @@ fn write_input_buffer_to_file(
 /// Inserts text from the insert buffer at cursor position (NO HEAP VERSION)
 ///
 /// # Purpose
-/// Inserts the contents of state.insert_input_buffer at the cursor position
+/// Inserts the contents of state.fileinsert_input_buffer at the cursor position
 /// WITHOUT reading the entire file into memory. Uses direct file manipulation.
 ///
 /// # Arguments
@@ -4539,7 +4635,7 @@ fn write_input_buffer_to_file(
 ///
 /// # Memory Safety
 /// - NO heap allocation
-/// - Uses pre-allocated insert_input_buffer
+/// - Uses pre-allocated fileinsert_input_buffer
 /// - Does NOT load entire file into memory
 /// - Direct file I/O at specific position
 ///
@@ -4559,10 +4655,10 @@ fn write_input_buffer_to_file(
 /// - Undo functionality (requires tracking changes)
 fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
     // Step 1: Get slice of used portion of buffer (NO ALLOCATION)
-    let bytes_to_insert = &state.insert_input_buffer[..state.insert_input_buffer_used];
+    let bytes_to_insert = &state.fileinsert_input_buffer[..state.file_insertinput_buffer_used];
 
     // Defensive: Check if there's anything to insert
-    if state.insert_input_buffer_used == 0 {
+    if state.file_insertinput_buffer_used == 0 {
         return Ok(0); // Nothing to insert
     }
 
@@ -4645,7 +4741,7 @@ fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> i
 
     // Assertion: Buffer should be empty after clearing
     debug_assert_eq!(
-        state.insert_input_buffer_used, 0,
+        state.file_insertinput_buffer_used, 0,
         "Insert buffer should be empty after clearing"
     );
 
@@ -4655,7 +4751,7 @@ fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> i
 /// Inserts text from the insert buffer at cursor position
 ///
 /// # Purpose
-/// Inserts the contents of state.insert_input_buffer at the cursor position.
+/// Inserts the contents of state.fileinsert_input_buffer at the cursor position.
 /// This handles multi-character insertion.
 ///
 /// # Arguments
@@ -5914,5 +6010,66 @@ maybe some kind of smart-status
 for not letting cursor go into the number lines?
 or... if red... not writing?
 (maybe latter)
+
+todo:
+using command buffer?
+or not?
+
+But read() writes directly into your pre-allocated byte array.
+So the answer to your ORIGINAL question:
+
+
+Plan A:
+
+use read() with pre-allocated small chunk_buffers.
+
+do NOT user real_line() which uses the heap.
+
+small buffere for commands 64byte
+
+larger buffere for insert 512bytes
+
+
+uses of read_line()
+```
+fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    // Step 1: Read from stdin
+    let stdin = io::stdin();
+    let mut input_line = String::new();
+    stdin.read_line(&mut input_line)?;
+
+```
+fn editor_loop(original_file_path: &Path) -> io::Result<()> {
+...
+    loop {
+        input.clear();
+        print!("\n> "); // Add a prompt
+        io::stdout().flush()?; // Ensure prompt is displayed
+
+        if let Err(e) = stdin.read_line(&mut input) {
+```
+
+fn prompt_for_filename() -> io::Result<String> {
+    use std::io::{Write, stdin, stdout};
+
+    println!("\n=== Create New File ===");
+    println!("Enter filename (or 'q' to quit):");
+    print!("> ");
+    stdout().flush()?;
+
+    let mut input = String::new();
+    stdin().read_line(&mut input)?;
+    let trimmed = input.trim();
+```
+
+```
+pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> {
+...
+// Read user input
+stdin.read_line(&mut input_buffer)?;
+
+```
 
 */

@@ -1542,7 +1542,7 @@ mod insert_tests {
 
         // Test adding text
         assert!(state.add_to_insert_buffer("Hello").unwrap());
-        assert_eq!(state.insert_input_buffer_used, 5);
+        assert_eq!(state.file_insertinput_buffer_used, 5);
         assert_eq!(state.get_insert_buffer_string().unwrap(), "Hello");
 
         // Test adding more text
@@ -1551,7 +1551,7 @@ mod insert_tests {
 
         // Test clearing
         state.clear_insert_buffer();
-        assert_eq!(state.insert_input_buffer_used, 0);
+        assert_eq!(state.file_insertinput_buffer_used, 0);
     }
 
     #[test]
@@ -1563,7 +1563,7 @@ mod insert_tests {
 
         // Should return false (won't fit)
         assert_eq!(state.add_to_insert_buffer(&large_text).unwrap(), false);
-        assert_eq!(state.insert_input_buffer_used, 0);
+        assert_eq!(state.file_insertinput_buffer_used, 0);
     }
 }
 
