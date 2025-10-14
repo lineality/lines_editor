@@ -3534,6 +3534,8 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
 
     // Parse numeric prefix
     while let Some(&ch) = chars.peek() {
+        // Check for size of number for actions:
+        // this might be done more cleanly but is maybe ok.
         // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
         if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
             return Command::None; // Too long to be valid command
