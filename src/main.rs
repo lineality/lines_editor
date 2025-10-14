@@ -4815,7 +4815,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             ...
             if current_mode == ...
             ```
-             */
+            */
+
+            // note: this removes spaces AND the newline
+            // which is a mixed bag
             let trimmed = input_buffer.trim();
 
             // Check for exit insert mode commands
@@ -4854,18 +4857,35 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             } else if trimmed == "\x1b[3~" {
                 // Do nothing if delete key entered...
                 continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
-            } else if trimmed.is_empty() {
+            } else if input_buffer.is_empty() {
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
                 // Read stdin and insert text
+                // Remove ONLY the trailing newline, keep leading/trailing spaces
+                let text = if input_buffer.ends_with('\n') {
+                    &input_buffer[..input_buffer.len() - 1]
+                } else {
+                    &input_buffer[..]
+                };
+
+                // Also handle \r\n on Windows
+                let text = if text.ends_with('\r') {
+                    &text[..text.len() - 1]
+                } else {
+                    text
+                };
+
+                let text_bytes = text.as_bytes();
+
+                // Read stdin and insert text
                 // It's text! - insert it directly without re-reading stdin
-                let text_bytes = trimmed.as_bytes();
+                // let text_bytes = input_buffer.as_bytes();
                 insert_text_chunk_at_cursor_position(&mut state, &read_copy, text_bytes)?;
                 build_windowmap_nowrap(&mut state, &read_copy)?;
             }
         } else {
-            // IF in  Normal/Visual mode: parse as command
+            // IF in Normal/Visual mode: parse as command
             // let command = parse_command(&input_buffer, state.mode);
             // continue_editing = execute_command(&mut state, command, &target_path)?;
 
