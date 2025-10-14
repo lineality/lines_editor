@@ -17,6 +17,11 @@ returning to the last non-failed step. It is the user's choice to try again or n
 4. Error messages use pre-allocated buffers are are very terse for terminal,
 longer errors can be appended to log files. No heap.
 
+5. The main edge-case exception to strongly favoring pre-allocated memory
+is using stdin and  read_line() as heap based. This functionality is
+deliberately the core of the +Enter system.
+
+
 
 Rust rules:
 Always best practice.
@@ -33,6 +38,16 @@ Never use unwrap.
 Load what is needed when it is needed: Do not ever load a whole file,
 rarely load a whole anything. increment and load only what is required pragmatically.
 
+Always defensive best practice
+
+Always error handling: everything will fail at some point,
+if only because of cosmic-ray bit-flips (which are actually common),
+there must always be fail-safe error handling.
+
+Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
+
+No third party libraries (or strictly avoid third party libraries where possible).
+
 Following NASA's 'Power of 10 rules' (updated for 2025 and Rust):
 1. no unsafe stuff:
 - no recursion
@@ -45,65 +60,53 @@ Following NASA's 'Power of 10 rules' (updated for 2025 and Rust):
 3. Pre-allocate all memory (no dynamic memory allocation)
 
 4. functions have narrow focus
-s
+
 5. Defensive programming:
 - average to a minimum of two assertions per function
 - cargo tests
 - error handling details
 - uses of Option
 
-
 6. ? Is this about ownership of variables?
 
 7. manage return values:
 null-void return values & checking non-void-null returns
 
-8.
+8. ...
 9. Communicate:
 doc strings, comments, use case, edge case,
 
 
-Always defensive best practice:
-Always error handling: everything will fail at some point,
-if only because of cosmic-ray bit-flips (which are actually common),
-there must always be fail-safe error handling.
-
-Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
-
-No third party libraries (or strictly avoid third party libraries where possible).
 
 */
 
 /*
-
-
 This code is under construction! Some code below may not be correct.
 Any code that violates the roles and policies is wrong or placeholder-code.
 
-
-
-# Build-Plan A
+# Build plan A
 
 
 Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
 
 1. open a read-copy file: call lines from cli with a file-path
-- use function input path from argument handled by wrapper
-- make timestamped session directory in exe relative abs path directory lines_data/tmp/sessions/{timestamp}/
-- save read-copy of file
+[Done]- use function input path from argument handled by wrapper
+[Done]- make timestamped session directory in exe relative abs path directory lines_data/tmp/sessions/{timestamp}/
+[Done]- save read-copy of file
 
-main() is a wrapper that handles arguments, e.g. get path from argument and feed it in, later help menu, etc.
+[Done]main() is a wrapper that handles arguments, e.g. get path from argument and feed it in, later help menu, etc.
 
-lines_editor_module(option(path)) is the main lines application-wrapper, called by main (or called by another application into which the lines editor is added as a module)
+[Done]lines_editor_module(option(path)) is the main lines application-wrapper, called by main (or called by another application into which the lines editor is added as a module)
+
+[Done]lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
 
 
-lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
-2. save paths in state:
-- original file path
+2. save paths in state: [Done]
+[Done]- original file path
 [done] - readcopy file path
-
 [done] - added timestamps (made timestamp crate) (from ff)
 [done] - added abs exe parent-relative paths (From ff)
+
 
 3. modular command handling:
 [done]- modes ( look at ff mode/command-modules )
@@ -111,47 +114,73 @@ lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
 ?done? - any new command modules added
 - add source-it
 
+
 4. Cursor system: "Plus Enter" cursor system.
 [done] 1. Add cursor etc. (from POC)
 - int+letter, move N spaces (in POC, but backwards from vim, use vim int+letter)
-2. **Add scroll down** - Increment line number, rebuild window
-3. **Add scroll up** - Decrement line number, rebuild window
-4. **Test** - Verify line numbers track correctly
-5. scroll right (see unwrapped long lines)
-6. scroll back to left
+[Done]2. **Add scroll down** - Increment line number, rebuild window
+[Done]3. **Add scroll up** - Decrement line number, rebuild window
+[Done]4. **Test** - Verify line numbers track correctly
+[Done]5. scroll right (see unwrapped long lines)
+[Done]6. scroll back to left
+
+
 7. w,e,b, normal mode move
+
+
 8. select code (even if select doesn't do anything now) ( visual mode, works in POC)
 
+
 5. insert:
-- start of insert mode: user types into buffer
-- user types into input buffer,
-- add input buffer byte to file at mapped cursor location: changes made to file
-- reload window from newly changed file
+[Done]- start of insert mode:
+[Done]- user types into input buffer,
+[Done]- add input buffer bytes to file at mapped cursor location: changes made to file
+[Done] - reload window from newly changed file
 maybe add another item into state:
 ( maybe step to store in state last number of cursor spaces in input buffer
 - move cursor to end of new addition,
 - back to start of insert mode
-- probably leave insert mode with reserved command strings: -n -v --normal --visual -s --save (saves and returns to normal?) (or -w --write, or -wq --writequit
-
-6. s/w command to save changes to original file
-- first makes a backup of the original file in same parent /archive/{timestamp}_{filename} (or, thought of differently, moves the original file as is and re-names it)
-- replaces the old file with the new one (copies the read-copy to the original location
-
-7. works on: linux, android-termux, BSD-MacOS, windows, redox, etc.
-
-8. For MVP, calling Lines with path argument in home directory launches the ultra-minimal legacy Memo-Mode which is simple and stable (that does not need to launch full-lines with state etc.)
-
-9. calling lines not in home directory should...first ask for file name?
-
-10. calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
+[Done] Empty insert is newline add \n
+[Done] - commands in visual -n -v -s -w -wq
 
 
-...
+6. Saving File
+[Done] s/w command to save changes to original file
+[Done]- first makes a backup of the original file in same parent /archive/{timestamp}_{filename} (or, thought of differently, moves the original file as is and re-names it)
+[Done]- replaces the old file with the new one (copies the read-copy to the original location
+[Done] - '-wq' in insert mode
 
-TODO:
-fix bug, at some point a move*2 bug was introduced
-one space is 2, 10l move 20
-uniform across up down left right... odd
+- add multiple-letter commands in Normal/visual mode: wq/~Esc, arrows, etc.
+- 'wq' in Normal/Visual mode
+
+
+7. works on:
+- linux,
+- android-termux,
+- BSD-MacOS,
+- windows,
+- redox,
+etc.:
+
+
+8. Legacy 'Memo-Mode & Append functionality'
+Very practical, very useful.
+- For MVP, calling Lines with path argument in home directory launches the ultra-minimal legacy Memo-Mode which is simple and stable (that does not need to launch full-lines with state etc.)
+- add 'a' append mode, which is like memo-mode
+- jump to end of file
+- show last part of last lines of text (last 5-10 lines, or whatever fits in top 5 lines of TUI
+- whatever user types, append as a new line
+- cli argument -a --append to open file into append mode
+
+
+9. new file name prompt
+[Done]- calling lines not in home directory should...first ask for file name?
+
+
+10. new paths
+[Almost Done] - calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
+- Why is it making/saving an archive directory in the new directory???
+- oh...archiving... new new file? ok... but check this... save-archives... maybe.
 
 ...
 
@@ -3495,29 +3524,30 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         return Command::None;
     }
 
-    // Parse potential repeat count
-    let mut chars = trimmed.chars();
+    // Parse potential repeat count and command
+    let mut chars = trimmed.chars().peekable();
     let mut count = 0usize;
-    let mut command_char = None;
-    // let mut found_command = false;
+    let mut command_start = 0;
 
-    // Defensive: Limit iteration on input parsing (not movement)
+    // // Defensive: Limit iteration on input parsing (not movement)
     let mut iterations = 0;
 
-    while let Some(ch) = chars.next() {
+    // Parse numeric prefix
+    while let Some(&ch) = chars.peek() {
         // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
         if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
             return Command::None; // Too long to be valid command
         }
         iterations += 1;
 
-        if ch.is_ascii_digit() && command_char.is_none() {
-            // Build up count
-            let digit = (ch as usize) - ('0' as usize);
-            count = count.saturating_mul(10).saturating_add(digit);
+        if ch.is_ascii_digit() {
+            count = count
+                .saturating_mul(10)
+                .saturating_add((ch as usize) - ('0' as usize));
+            chars.next();
+            command_start += 1;
         } else {
-            command_char = Some(ch);
-            break; // Found the command character
+            break;
         }
     }
 
@@ -3526,39 +3556,37 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         count = 1;
     }
 
-    if current_mode == EditorMode::Normal {
-        // Match command character
-        match command_char {
-            // if normal mode, move, if visial select?
-            // TODO wq? two letters? word commands?
-            Some('h') => Command::MoveLeft(count),
-            Some('j') => Command::MoveDown(count),
-            Some('k') => Command::MoveUp(count),
-            Some('l') => Command::MoveRight(count),
+    // Get the command string (everything after the number)
+    let command_str = &trimmed[command_start..];
 
-            Some('i') => Command::EnterInsertMode,
-            Some('v') => Command::EnterVisualMode,
-            Some('q') => Command::Quit,
-            Some('s') => Command::Save,
-            Some('w') => Command::Save,
-            // Some('wrap') => {
-            //     if current_mode == EditorMode::Normal {
-            //         Command::ToggleWrap
-            //     } else {
-            //         // Command::SaveAndQuit
-            //         print("");
-            //     }
-            // }
+    if current_mode == EditorMode::Normal {
+        match command_str {
+            // Single character commands
+            "h" => Command::MoveLeft(count),
+            "j" => Command::MoveDown(count),
+            "k" => Command::MoveUp(count),
+            "l" => Command::MoveRight(count),
+            "i" => Command::EnterInsertMode,
+            "v" => Command::EnterVisualMode,
+            "q" => Command::Quit,
+            "s" | "w" => Command::Save,
+
+            // Multi-character commands
+            "wq" => Command::SaveAndQuit,
+            // "wrap" => Command::ToggleWrap,
+            // "gg" => Command::MoveToTop,
+            // "dd" => Command::DeleteLine(count),
             _ => Command::None,
         }
     } else if current_mode == EditorMode::Visual {
-        match command_char {
-            Some('i') => Command::EnterInsertMode,
-            Some('v') => Command::EnterVisualMode,
-            Some('q') => Command::Quit,
-            Some('s') => Command::Save,
-            Some('n') => Command::EnterNormalMode,
-            // Some('v') => Command::EnterVisualMode,
+        match command_str {
+            "i" => Command::EnterInsertMode,
+            "q" => Command::Quit,
+            "s" | "w" => Command::Save,
+            "n" | "\x1b" => Command::EnterNormalMode,
+            "wq" => Command::SaveAndQuit,
+
+            // // TODO: Make These, Command::Select...
             // Some('w') => Command::SelectNextWord,
             // Some('b') => Command::SelectPreviousWordBeginning,
             // Some('e') => Command::SelectNextWordEnd,
@@ -3571,17 +3599,9 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         }
     } else {
         // if current_mode == EditorMode::Insert {
-        match command_char {
-            // TODO: --flag commands? not letters?
-            // Some('i') => Command::EnterInsertMode,
-            // Some('v') => Command::EnterVisualMode,
-            // Some('q') => Command::Quit,
-            // Some('s') => Command::Save,
-            // Some('n') => Command::EnterNormalMode,
-            // Some('v') => Command::EnterVisualMode,
-            // Some('w') => Command::SelectNextWord,
-            // Some('b') => Command::SelectPreviousWordBeginning,
-            // Some('e') => Command::SelectNextWordEnd,
+        // This is an edge case, see above
+        // (length limit not apply?)
+        match command_str {
             _ => Command::None,
         }
     }
@@ -3599,11 +3619,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
 /// * `Ok(false)` - Exit editor loop
 /// * `Err(io::Error)` - Command execution failed
 pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<bool> {
-    // let base_edit_filepath: PathBuf = state
-    //     .read_copy_path
-    //     .as_ref()
-    //     .map(|p| p.clone()) // Clone the PathBuf
-    //     .unwrap_or_else(|| original_file_path.to_path_buf()); // path -> buff
+    // Get read-copy path
     let base_edit_filepath: PathBuf = state
         .read_copy_path
         .as_ref()
@@ -3620,7 +3636,6 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
     match command {
         Command::MoveLeft(count) => {
             // Vim-like behavior: move cursor left, scroll window if at edge
-
             let mut remaining_moves = count;
             let mut needs_rebuild = false;
 
@@ -4328,7 +4343,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         ));
     }
 
-    println!("\n=== Opening Lines Editor ===");
+    println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
     println!("File: {}", target_path.display());
 
     // Create file if it doesn't exist
@@ -4387,26 +4402,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     state.original_file_path = Some(target_path.clone());
     state.read_copy_path = Some(read_copy_path);
 
-    // // TODO: Replace with full editor loop when ready
-    // // For now, use the test display functionality
-    // println!("\n--- File Preview (first 21 lines) ---");
-    // state.line_count_at_top_of_window = 0;
-    // state.file_position_of_topline_start = 0;
-    // state.horizontal_line_char_offset = 0;
-
-    // let lines_processed = build_windowmap_nowrap(&mut state, &target_path)?;
-    // println!("Lines in window: {}", lines_processed);
-    // println!("{}", "-".repeat(40));
-
-    // display_window(&state)?;
-
-    // println!("\n[Full editor mode will be implemented here]");
-
-    // // Initialize editor state
-    // let mut state = EditorState::new();
-    // state.original_file_path = Some(target_path.clone());
-    // state.read_copy_path = Some(read_copy_path);
-
     // Initialize window position
     state.line_count_at_top_of_window = 0;
     state.file_position_of_topline_start = 0;
@@ -4421,8 +4416,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
     // Now we can mutably borrow state
     let lines_processed = build_windowmap_nowrap(&mut state, &read_copy)?;
-    // build_windowmap_nowrap(&mut state, &target_path)?;
-    println!("Loaded {} lines", lines_processed);
+
+    println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
 
     // ADD THESE TWO LINES:
     state.cursor.row = 0;
@@ -4447,27 +4442,28 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
         // Read user input
-        // TODO: this is against spec, against scope
-        // this MUST be changed
+        // NOTE: This is by design the main exception
+        // to using preallocated memory.
+        // The +Enter system is build on this as is.
         //
+        // TODO: A stretch goal or other experiment
+        // as it might be entirely different in operation
+        // is a byte-stream using system. with stdin.read(bytes...
         stdin.read_line(&mut input_buffer)?;
 
-        // Handle input based on mode
         // TODO: these should be tested
         // to find the least-bad way to implement
         // fewer-collisions with normal text entry
         // balanced with being memorable
-        // possibly an added info-line blurb hint -n -s -v -wq
+        // possibly an added info-line blurb hint -n -s -v -wq -w
+        // bare letters likely collide too much
+        // and --long-form is too time consuming
         if state.mode == EditorMode::Insert {
             let trimmed = input_buffer.trim();
 
             // Check for exit insert mode commands
             if trimmed == "-n" || trimmed == "\x1b" {
-                // // Exit insert mode
-                // continue_editing =
-                //     execute_command(&mut state, Command::EnterNormalMode, &target_path)?;
-                // // Rebuild window to refresh the TUI display
-                // build_windowmap_nowrap(&mut state, &target_path)?;
+                // Exit insert mode
                 continue_editing = execute_command(&mut state, Command::EnterNormalMode)?;
 
                 // Get the read_copy path BEFORE the mutable borrow
@@ -4500,18 +4496,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
                 // Read stdin and insert text
-                // match read_stdin_and_insert_to_file(&mut state, &read_copy)? {
-                //     Some(command) => {
-                //         // Input was a command - execute it
-                //         continue_editing = execute_command(&mut state, command)?;
-                //     }
-                //     None => {
-                //         // Text was inserted - rebuild window
-                //         build_windowmap_nowrap(&mut state, &read_copy)?;
-                //     }
-                // }
-                // Read and process stdin directly
-                // It's text - insert it directly without re-reading stdin
+                // It's text! - insert it directly without re-reading stdin
                 let text_bytes = trimmed.as_bytes();
                 insert_text_chunk_at_cursor_position(&mut state, &read_copy, text_bytes)?;
                 build_windowmap_nowrap(&mut state, &read_copy)?;
@@ -4956,58 +4941,6 @@ pub fn render_tui_to_writer<W: Write>(
     Ok(())
 }
 
-// /// Renders TUI to a test writer (for testing without terminal)
-// ///
-// /// # Purpose
-// /// Same as render_tui but writes to provided writer instead of stdout.
-// /// Allows testing TUI layout without actual terminal.
-// ///
-// /// # Arguments
-// /// * `state` - Current editor state
-// /// * `input_buffer` - Current user input
-// /// * `writer` - Where to write output (e.g., test buffer)
-// ///
-// /// # Returns
-// /// * `Ok(())` - Successfully rendered
-// /// * `Err(LinesError)` - Display operation failed
-// pub fn render_tui_to_writer<W: Write>(
-//     state: &EditorState,
-//     input_buffer: &str,
-//     writer: &mut W,
-// ) -> Result<()> {
-//     // Top legend
-//     let legend = format_navigation_legend()?;
-//     writeln!(writer, "{}", legend)
-//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-
-//     // Content rows
-//     for row in 0..state.effective_rows {
-//         if state.display_buffer_lengths[row] > 0 {
-//             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
-
-//             match std::str::from_utf8(row_content) {
-//                 Ok(row_str) => writeln!(writer, "{}", row_str),
-//                 Err(_) => writeln!(writer, "�"),
-//             }
-//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-//         } else {
-//             writeln!(writer)
-//                 .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-//         }
-//     }
-
-//     // Bottom info bar
-//     let info_bar = format_info_bar(state, input_buffer)?;
-//     write!(writer, "{}", info_bar)
-//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-
-//     writer
-//         .flush()
-//         .map_err(|e| LinesError::DisplayError(format!("Flush failed: {}", e)))?;
-
-//     Ok(())
-// }
-
 /// Initializes the session directory structure for this editing session
 ///
 /// # Purpose
@@ -5120,7 +5053,7 @@ fn initialize_session_directory(
     Ok(())
 }
 
-// Keep this code to re-use / reference later as 'memo-mode' where no path argument and cwd is home
+// Keep this legacy code to re-use / reference later as 'memo-mode' where no path argument and cwd is home
 // /// Lines - A minimal text editor for quick append-only notes
 // ///
 // /// # Usage
