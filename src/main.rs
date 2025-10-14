@@ -76,16 +76,14 @@ null-void return values & checking non-void-null returns
 9. Communicate:
 doc strings, comments, use case, edge case,
 
-
-
 */
 
 /*
 This code is under construction! Some code below may not be correct.
 Any code that violates the roles and policies is wrong or placeholder-code.
 
-# Build plan A
 
+# Build plan A
 
 Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
 
@@ -113,7 +111,8 @@ Basic features to be use-able, with a design such that planned scope can be modu
 [done]- --help (super mvp)
 ?done? - any new command modules added
 - add source-it
-
+[done]- single character commands
+[done]- add multiple-letter commands in Normal/visual mode: wq/~Esc, arrows, etc.
 
 4. Cursor system: "Plus Enter" cursor system.
 [done] 1. Add cursor etc. (from POC)
@@ -125,10 +124,17 @@ Basic features to be use-able, with a design such that planned scope can be modu
 [Done]6. scroll back to left
 
 
-7. w,e,b, normal mode move
+7. Moving Cursor
+[Done]- hjkl
+[Done]- int+hjkl
+- w,e,b, normal mode move
 
 
 8. select code (even if select doesn't do anything now) ( visual mode, works in POC)
+- hjkl
+- int+hjkl
+- w,e,b, normal mode move
+
 
 
 5. insert:
@@ -149,9 +155,10 @@ maybe add another item into state:
 [Done]- first makes a backup of the original file in same parent /archive/{timestamp}_{filename} (or, thought of differently, moves the original file as is and re-names it)
 [Done]- replaces the old file with the new one (copies the read-copy to the original location
 [Done] - '-wq' in insert mode
+- double check that this is not loading the whole file
 
-- add multiple-letter commands in Normal/visual mode: wq/~Esc, arrows, etc.
-- 'wq' in Normal/Visual mode
+
+[Done] - 'wq' in Normal/Visual mode
 
 
 7. works on:
@@ -181,6 +188,7 @@ Very practical, very useful.
 [Almost Done] - calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
 - Why is it making/saving an archive directory in the new directory???
 - oh...archiving... new new file? ok... but check this... save-archives... maybe.
+
 
 ...
 
