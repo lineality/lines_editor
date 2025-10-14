@@ -476,7 +476,7 @@ mod editor_state_tests {
         assert_eq!(state.mode, EditorMode::Normal);
         assert_eq!(state.terminal_rows, DEFAULT_ROWS);
         assert_eq!(state.terminal_cols, DEFAULT_COLS);
-        assert_eq!(state.window_buffer_used, 0);
+        assert_eq!(state.filetui_windowmap_buffer_used, 0);
         assert!(!state.is_modified);
     }
 
@@ -1531,41 +1531,6 @@ mod timestamp_tests {
 //         );
 //     }
 // }
-
-#[cfg(test)]
-mod insert_tests {
-    use super::*;
-
-    #[test]
-    fn test_insert_buffer_basics() {
-        let mut state = EditorState::new();
-
-        // Test adding text
-        assert!(state.add_to_insert_buffer("Hello").unwrap());
-        assert_eq!(state.file_insertinput_buffer_used, 5);
-        assert_eq!(state.get_insert_buffer_string().unwrap(), "Hello");
-
-        // Test adding more text
-        assert!(state.add_to_insert_buffer(" World").unwrap());
-        assert_eq!(state.get_insert_buffer_string().unwrap(), "Hello World");
-
-        // Test clearing
-        state.clear_insert_buffer();
-        assert_eq!(state.file_insertinput_buffer_used, 0);
-    }
-
-    #[test]
-    fn test_insert_buffer_overflow() {
-        let mut state = EditorState::new();
-
-        // Create string larger than buffer
-        let large_text = "x".repeat(600);
-
-        // Should return false (won't fit)
-        assert_eq!(state.add_to_insert_buffer(&large_text).unwrap(), false);
-        assert_eq!(state.file_insertinput_buffer_used, 0);
-    }
-}
 
 #[test]
 fn test_parse_movement_with_count() {

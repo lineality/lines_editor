@@ -2,15 +2,87 @@
 // test files in: src/tests.rs
 
 /*
+Policy and Rust Rules
+
+1. Lines is to be a 'no load' 'load only what is needed only when it is needed' application.
+
+2. Any operation of unknown size is broken up into chunks and handled modularly.
+
+3. Let it fail and try again. This is production software that must not crash/panic ever.
+Every part of every function will fail at some point, if only due to cosmic ray bitflips
+which are common on a larger scape. When, not if, when something fails
+the application must gracefully let it fail and move on, e.g.
+returning to the last non-failed step. It is the user's choice to try again or not.
+
+4. Error messages use pre-allocated buffers are are very terse for terminal,
+longer errors can be appended to log files. No heap.
+
+
+Rust rules:
+Always best practice.
+Always extensive doc strings.
+Always comments.
+Always cargo tests (where possible).
+Never remove documentation.
+Always clear, meaningful, unique names (e.g. variables, functions).
+Always absolute file paths.
+Always error handling.
+Never unsafe code.
+Never use unwrap.
+
+Load what is needed when it is needed: Do not ever load a whole file,
+rarely load a whole anything. increment and load only what is required pragmatically.
+
+Following NASA's 'Power of 10 rules' (updated for 2025 and Rust):
+1. no unsafe stuff:
+- no recursion
+- no goto
+- no pointers
+- no preprocessor
+
+2. upper bound on normal-loops, failsafe for always-loops
+
+3. Pre-allocate all memory (no dynamic memory allocation)
+
+4. functions have narrow focus
+s
+5. Defensive programming:
+- average to a minimum of two assertions per function
+- cargo tests
+- error handling details
+- uses of Option
+
+
+6. ? Is this about ownership of variables?
+
+7. manage return values:
+null-void return values & checking non-void-null returns
+
+8.
+9. Communicate:
+doc strings, comments, use case, edge case,
+
+
+Always defensive best practice:
+Always error handling: everything will fail at some point,
+if only because of cosmic-ray bit-flips (which are actually common),
+there must always be fail-safe error handling.
+
+Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
+
+No third party libraries (or strictly avoid third party libraries where possible).
+
+*/
+
+/*
 
 
 This code is under construction! Some code below may not be correct.
-
-# Plan
-
+Any code that violates the roles and policies is wrong or placeholder-code.
 
 
-# Build plan A
+
+# Build-Plan A
 
 
 Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
@@ -127,61 +199,6 @@ uniform across up down left right... odd
 - some way to 'view raw characters' e.g. so that escape characters are shown and ideally entered to
 
 */
-
-/*
-
-Rust rules:
-Always best practice.
-Always extensive doc strings.
-Always comments.
-Always cargo tests (where possible).
-Never remove documentation.
-Always clear, meaningful, unique names (e.g. variables, functions).
-Always absolute file paths.
-Always error handling.
-Never unsafe code.
-Never use unwrap.
-
-Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
-
-Following NASA's 'Power of 10 rules' (updated for 2025 and Rust):
-1. no unsafe stuff:
-- no recursion
-- no goto
-- no pointers
-- no preprocessor
-
-2. upper bound on normal-loops, failsafe for always-loops
-
-3. Pre-allocate all memory (no dynamic memory allocation)
-
-4. functions have narrow focus
-s
-5. Defensive programming:
-- average to a minimum of two assertions per function
-- cargo tests
-- error handling details
-- uses of Option
-
-
-6. ? Is this about ownership of variables?
-
-7. manage return values:
-null-void return values & checking non-void-null returns
-
-8.
-9. Communicate:
-doc strings, comments, use case, edge case,
-
-
-Always defensive best practice:
-Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
-
-Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
-
-No third party libraries (or strictly avoid third party libraries where possible).
-
- */
 
 /*
 POC cursor system
@@ -544,7 +561,7 @@ fn main() {
 
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -569,7 +586,7 @@ mod tests;
 ///
 /// Also, as line number grows, more columns lost to that
 ///
-const WINDOW_BUFFER_SIZE: usize = 8192; // 2**13=8192
+const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
 
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
@@ -1675,14 +1692,12 @@ pub enum WrapMode {
     NoWrap,
 }
 
-/// Command input buffer for Normal/Visual mode (64 bytes)
-/// Handles movement commands, counts, and mode switches
-const COMMAND_BUFFER_SIZE: usize = 64;
-
-/// Maximum size for insert mode input buffer (512 bytes)
+/// Two-Purpose Buffer (alternate plan is )
+/// A. processes command-input that does not go to file
+/// B. processes chunks to stdin to write to files (read-copy, change-log)
+///
+/// Maximum size for insert mode input buffer (512 or 256 bytes)
 /// Allows ~512 ASCII chars or ~170 3-byte UTF-8 chars per insert
-/// I know, I know, too generous.
-/// Don't spend in all in one place now.
 ///
 /// This is for a chunked process of moving std-in
 /// text from the user to
@@ -1690,7 +1705,7 @@ const COMMAND_BUFFER_SIZE: usize = 64;
 /// B: change-log
 /// without whole-loading things into buffers.
 /// Towers of Hanoy
-const FILE_INSERT_BUFFER_SIZE: usize = 512;
+const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;
 
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
@@ -1729,11 +1744,11 @@ pub struct EditorState {
     pub effective_cols: usize,
 
     /// Current window buffer containing visible text
-    /// Pre-allocated to WINDOW_BUFFER_SIZE
-    pub window_buffer: [u8; WINDOW_BUFFER_SIZE],
+    /// Pre-allocated to FILE_TUI_WINDOW_MAP_BUFFER_SIZE
+    pub state_file_tui_window_map_buffer: [u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
 
-    /// Number of valid bytes in window_buffer
-    pub window_buffer_used: usize,
+    /// Number of valid bytes in state_file_tui_window_map_buffer
+    pub filetui_windowmap_buffer_used: usize,
 
     /// Window to file position mapping
     pub window_map: WindowMap,
@@ -1783,16 +1798,14 @@ pub struct EditorState {
     /// Since lines can be shorter than 80 chars, we track actual usage
     pub display_buffer_lengths: [usize; 45],
 
-    /// Buffer for command input (Normal/Visual mode)
-    pub command_input_buffer: [u8; COMMAND_BUFFER_SIZE],
-    pub command_input_buffer_used: usize,
-
+    /// TODO: Should there be a clear-buffer method?
     /// Pre-allocated buffer for insert mode text input
     /// Used to capture user input before inserting into file
-    pub fileinsert_input_buffer: [u8; FILE_INSERT_BUFFER_SIZE],
+    pub tofile_insert_input_chunk_buffer: [u8; TOFILE_INSERTBUFFER_CHUNK_SIZE],
 
-    /// Number of valid bytes in fileinsert_input_buffer
-    pub file_insertinput_buffer_used: usize,
+    /// TODO is this needed?
+    /// Number of valid bytes in tofile_insert_input_chunk_buffer
+    pub tofile_insertinput_chunkbuffer_used: usize,
 }
 
 impl EditorState {
@@ -1816,8 +1829,8 @@ impl EditorState {
             terminal_cols: DEFAULT_COLS,
             effective_rows,
             effective_cols,
-            window_buffer: [0u8; WINDOW_BUFFER_SIZE],
-            window_buffer_used: 0,
+            state_file_tui_window_map_buffer: [0u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
+            filetui_windowmap_buffer_used: 0,
             window_map: WindowMap::new(),
             cursor: WindowPosition { row: 0, col: 0 },
             window_start: FilePosition {
@@ -1841,81 +1854,9 @@ impl EditorState {
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
 
-            command_input_buffer: [0u8; COMMAND_BUFFER_SIZE],
-            command_input_buffer_used: 0,
-
-            fileinsert_input_buffer: [0u8; FILE_INSERT_BUFFER_SIZE],
-            file_insertinput_buffer_used: 0,
+            tofile_insert_input_chunk_buffer: [0u8; TOFILE_INSERTBUFFER_CHUNK_SIZE],
+            tofile_insertinput_chunkbuffer_used: 0,
         }
-    }
-
-    /// Clears the insert input buffer
-    pub fn clear_insert_buffer(&mut self) {
-        for i in 0..FILE_INSERT_BUFFER_SIZE {
-            self.fileinsert_input_buffer[i] = 0;
-        }
-        self.file_insertinput_buffer_used = 0;
-    }
-
-    /// Adds text to insert buffer, returns true if it fits
-    ///
-    /// # Returns
-    /// * `Ok(true)` - Text added successfully
-    /// * `Ok(false)` - Buffer full, text not added
-    /// * `Err(io::Error)` - Invalid UTF-8 or other error
-    pub fn add_to_insert_buffer(&mut self, text: &str) -> io::Result<bool> {
-        let text_bytes = text.as_bytes();
-
-        // Check if text fits in remaining buffer space
-        let space_available = FILE_INSERT_BUFFER_SIZE - self.file_insertinput_buffer_used;
-
-        if text_bytes.len() > space_available {
-            return Ok(false); // Buffer full
-        }
-
-        // Copy text into buffer
-        let start = self.file_insertinput_buffer_used;
-        let end = start + text_bytes.len();
-
-        self.fileinsert_input_buffer[start..end].copy_from_slice(text_bytes);
-        self.file_insertinput_buffer_used = end;
-
-        Ok(true)
-    }
-
-    /// Gets the current insert buffer content as a string
-    pub fn get_insert_buffer_string(&self) -> io::Result<String> {
-        let valid_bytes = &self.fileinsert_input_buffer[..self.file_insertinput_buffer_used];
-
-        String::from_utf8(valid_bytes.to_vec()).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid UTF-8 in insert buffer: {}", e),
-            )
-        })
-    }
-
-    /// Initialize changelog for the current file
-    pub fn init_changelog(&mut self, original_file_path: &Path) -> io::Result<()> {
-        // Put changelog next to the file: "document.txt.changelog"
-        self.changelog_path = Some(original_file_path.with_extension("txt.changelog"));
-        Ok(())
-    }
-
-    /// Append an edit operation to the changelog
-    pub fn log_edit(&self, operation: &str) -> io::Result<()> {
-        if let Some(ref log_path) = self.changelog_path {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)?;
-
-            writeln!(file, "{}", operation)?;
-        }
-        Ok(())
     }
 
     /*
@@ -1942,6 +1883,29 @@ impl EditorState {
             }
             self.display_buffer_lengths[row_idx] = 0;
         }
+    }
+
+    /// Initialize changelog for the current file
+    pub fn init_changelog(&mut self, original_file_path: &Path) -> io::Result<()> {
+        // Put changelog next to the file: "document.txt.changelog"
+        self.changelog_path = Some(original_file_path.with_extension("txt.changelog"));
+        Ok(())
+    }
+
+    /// Append an edit operation to the changelog
+    pub fn log_edit(&self, operation: &str) -> io::Result<()> {
+        if let Some(ref log_path) = self.changelog_path {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)?;
+
+            writeln!(file, "{}", operation)?;
+        }
+        Ok(())
     }
 
     /// Writes a line number into a display buffer
@@ -2013,10 +1977,10 @@ impl EditorState {
     /// Clears the window buffer and map
     pub fn clear_window(&mut self) {
         // Clear buffer
-        for i in 0..WINDOW_BUFFER_SIZE {
-            self.window_buffer[i] = 0;
+        for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+            self.state_file_tui_window_map_buffer[i] = 0;
         }
-        self.window_buffer_used = 0;
+        self.filetui_windowmap_buffer_used = 0;
 
         // Clear map
         self.window_map.clear();
@@ -2110,6 +2074,9 @@ fn is_leap_year(year: u64) -> bool {
 /// - File cannot be read
 /// - File content cannot be parsed as valid UTF-8
 fn memo_mode_display_file_tail(original_file_path: &Path, num_lines: usize) -> io::Result<()> {
+    /*
+     * TODO: this maybe needs to be revised to not use heap dynamic memory
+     */
     let file = File::open(original_file_path)?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<io::Result<_>>()?;
@@ -2134,7 +2101,10 @@ fn memo_mode_display_file_tail(original_file_path: &Path, num_lines: usize) -> i
 /// - `Err(io::Error)` - If there's an error reading header.txt (if it exists)
 /// Gets the header string for a new file          // <-- Duplicated line
 /// Combines timestamp with optional header.txt content  // <-- Duplicated line
-fn get_header_text() -> io::Result<String> {
+fn memo_mode_get_header_text() -> io::Result<String> {
+    /*
+     * TODO: this maybe needs to be revised to not use heap dynamic memory
+     */
     let timestamp = get_timestamp()?;
     let mut header = format!("# {}", timestamp);
 
@@ -2177,7 +2147,10 @@ fn get_header_text() -> io::Result<String> {
 /// 2. Appends the line
 /// 3. Removes backup if successful
 /// 4. Restores from backup if append fails
-fn append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
+fn memo_mode_append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
+    /*
+     * TODO: this maybe needs to be revised to not use heap dynamic memory
+     */
     // Create temporary backup before modification
     let backup_path = if original_file_path.exists() {
         let bak_path = original_file_path.with_extension("bak");
@@ -2214,105 +2187,6 @@ fn append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
     }
 }
 
-/// Inserts stdin text at cursor position using pre-allocated buffer
-/// Reads/writes in 8K chunks to avoid loading whole file
-///
-/// # Purpose
-/// Writes text from stdin directly to the read-copy file at cursor position.
-/// Uses chunked reading to shift bytes after insertion point without loading
-/// entire file into memory. Follows pre-allocated memory rules.
-///
-/// # Arguments
-/// * `state` - Editor state with cursor position and pre-allocated buffers
-/// * `file_path` - Path to read-copy file being edited
-///
-/// # Returns
-/// * `Ok(bytes_written)` - Number of bytes successfully written
-/// * `Err(io::Error)` - File operation failed
-///
-/// # Memory Safety
-/// - Uses pre-allocated 8K buffers ONLY (no heap allocation)
-/// - Does NOT load entire file into memory
-/// - Reads/writes in chunks
-///
-/// # Process
-/// 1. Read stdin into pre-allocated buffer
-/// 2. Get cursor file position from WindowMap
-/// 3. Read bytes after cursor into separate 8K buffer
-/// 4. Write new text at cursor position
-/// 5. Write shifted bytes after new text
-/// 6. Flush to ensure write completes
-fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
-    use std::io::{Read, Seek, SeekFrom, Write};
-
-    // Step 1: Read from stdin into pre-allocated buffer
-    let stdin = io::stdin();
-    let mut stdin_handle = stdin.lock();
-    let mut input_buffer = [0u8; 8192];
-
-    // Read up to 8K from stdin
-    let bytes_read = stdin_handle.read(&mut input_buffer)?;
-
-    if bytes_read == 0 {
-        return Ok(0); // Empty input
-    }
-
-    // Find the newline to get single line (if present)
-    let line_end = input_buffer[..bytes_read]
-        .iter()
-        .position(|&b| b == b'\n')
-        .unwrap_or(bytes_read);
-
-    // Trim trailing whitespace from the line
-    let mut text_len = line_end;
-    while text_len > 0 && input_buffer[text_len - 1].is_ascii_whitespace() {
-        text_len -= 1;
-    }
-
-    if text_len == 0 {
-        return Ok(0); // Empty after trimming
-    }
-
-    let text_bytes = &input_buffer[..text_len];
-
-    // Step 2: Get cursor file position
-    let file_pos = state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cursor not on valid file position",
-            )
-        })?;
-
-    let insert_position = file_pos.byte_offset;
-
-    // Step 3: Open file for read+write
-    let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
-
-    // Step 4: Read bytes AFTER insert point into separate 8K buffer
-    let mut after_buffer = [0u8; 8192];
-    file.seek(SeekFrom::Start(insert_position))?;
-    let bytes_after = file.read(&mut after_buffer)?;
-
-    // Assertion: Verify we didn't overflow buffer
-    debug_assert!(bytes_after <= 8192, "Read exceeded buffer size");
-
-    // Step 5: Write new text at insert position
-    file.seek(SeekFrom::Start(insert_position))?;
-    file.write_all(text_bytes)?;
-
-    // Step 6: Write the shifted bytes back
-    file.write_all(&after_buffer[..bytes_after])?;
-    file.flush()?;
-
-    // Step 7: Update state
-    state.is_modified = true;
-
-    Ok(text_len)
-}
-
 /// Main editing loop for the lines text editor
 ///
 /// # Arguments
@@ -2340,9 +2214,12 @@ fn insert_stdin_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> 
 /// # Example
 /// ```no_run
 /// let path = Path::new("notes.txt");
-/// editor_loop(&path)?;
+/// memo_mode_mini_editor_loop(&path)?;
 /// ```
-fn editor_loop(original_file_path: &Path) -> io::Result<()> {
+fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
+    /*
+     * TODO: this maybe needs to be revised to not use heap dynamic memory
+     */
     print!("\x1B[2J\x1B[1;1H");
     println!("lines text editor: Type 'q' to (q)uit");
     println!("file path -> {}", original_file_path.display());
@@ -2352,9 +2229,9 @@ fn editor_loop(original_file_path: &Path) -> io::Result<()> {
 
     // Create file with header if it doesn't exist
     if !original_file_path.exists() {
-        let header = get_header_text()?;
-        append_line(original_file_path, &header)?;
-        append_line(original_file_path, "")?; // blank line after header
+        let header = memo_mode_get_header_text()?;
+        memo_mode_append_line(original_file_path, &header)?;
+        memo_mode_append_line(original_file_path, "")?; // blank line after header
     }
 
     // Display initial tail of file
@@ -2384,7 +2261,7 @@ fn editor_loop(original_file_path: &Path) -> io::Result<()> {
         print!("\x1B[2J\x1B[1;1H");
 
         // Append the line with temporary backup protection
-        if let Err(e) = append_line(original_file_path, trimmed) {
+        if let Err(e) = memo_mode_append_line(original_file_path, trimmed) {
             eprintln!("Error writing to file: {}", e);
             continue;
         }
@@ -3951,40 +3828,13 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             Ok(true)
         }
 
+        // Todo: why is there a phantom command?
         Command::InsertText(_) => {
-            /*
-            fn write_input_buffer_to_file(
-                file: &mut File,
-                input_buffer: &[u8],
-                file_position: u64
-            ) -> io::Result<()> {
-                // Early return if buffer is empty (optional newline insertion)
-                if input_buffer.is_empty() {
-                    file.seek(SeekFrom::Start(file_position))?;
-                    file.write_all(b"\n")?;
-                    return Ok(());
-                }
-
-                // Seek to exact position
-                file.seek(SeekFrom::Start(file_position))?;
-
-                // Write directly from input buffer slice
-                file.write_all(input_buffer)?;
-
-                Ok(())
-            }
-            */
-            // Use the NO-HEAP version instead of the old one
-            let bytes_inserted = insert_text_at_cursor_no_heap(state, edit_file_path)?;
-
-            if bytes_inserted > 0 {
-                // Rebuild window to show the change from read-copy file
-                build_windowmap_nowrap(state, &edit_file_path)?;
-            }
-
+            // This command is not used in normal flow
+            // Text insertion happens via read_stdin_and_insert_to_file()
+            eprintln!("Warning: InsertText command called directly (unexpected)");
             Ok(true)
         }
-
         Command::DeleteChar => {
             // Delete character at cursor position
             delete_char_at_cursor(state, edit_file_path)?;
@@ -4322,95 +4172,24 @@ fn insert_newline_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Re
     Ok(())
 }
 
-/// Writes input buffer directly to file at specified position (NO HEAP)
-///
-/// # Purpose
-/// Zero-allocation write operation. Writes pre-allocated buffer contents
-/// directly to file at exact byte position. Follows NASA Power of Ten rules.
+/// Inserts a chunk of text at cursor position using file operations
 ///
 /// # Arguments
-/// * `file` - Open file handle with write permissions
-/// * `input_buffer` - Slice of bytes to write (from pre-allocated buffer)
-/// * `file_position` - Exact byte offset in file where write begins
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the read-copy file
+/// * `text_bytes` - The bytes to insert
 ///
 /// # Returns
-/// * `Ok(())` - Bytes written successfully
-/// * `Err(io::Error)` - Seek or write operation failed
-///
-/// # Memory
-/// - No heap allocation
-/// - Works directly with slice reference
-/// - File size irrelevant (only writing small buffer)
-///
-/// # Defensive Programming
-/// - Handles empty buffer (writes newline)
-/// - Seeks before writing (doesn't assume file position)
-/// - Uses write_all (ensures complete write)
-fn write_input_buffer_to_file(
-    file: &mut File,
-    input_buffer: &[u8],
-    file_position: u64,
+/// * `Ok(())` - Text inserted successfully
+/// * `Err(io::Error)` - File operation failed
+fn insert_text_chunk_at_cursor_position(
+    state: &mut EditorState,
+    file_path: &Path,
+    text_bytes: &[u8],
 ) -> io::Result<()> {
-    // Early return if buffer is empty (optional newline insertion)
-    if input_buffer.is_empty() {
-        file.seek(SeekFrom::Start(file_position))?;
-        file.write_all(b"\n")?;
-        return Ok(());
-    }
+    use std::io::{Read, Seek, SeekFrom, Write};
 
-    // Seek to exact position
-    file.seek(SeekFrom::Start(file_position))?;
-
-    // Write directly from input buffer slice
-    file.write_all(input_buffer)?;
-
-    Ok(())
-}
-
-/// Inserts text from the insert buffer at cursor position (NO HEAP VERSION)
-///
-/// # Purpose
-/// Inserts the contents of state.fileinsert_input_buffer at the cursor position
-/// WITHOUT reading the entire file into memory. Uses direct file manipulation.
-///
-/// # Arguments
-/// * `state` - Editor state with cursor position and insert buffer
-/// * `file_path` - Path to the file being edited (read-copy)
-///
-/// # Returns
-/// * `Ok(bytes_written)` - Number of bytes successfully inserted
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Memory Safety
-/// - NO heap allocation
-/// - Uses pre-allocated fileinsert_input_buffer
-/// - Does NOT load entire file into memory
-/// - Direct file I/O at specific position
-///
-/// # Process
-/// 1. Get slice of used portion of insert buffer
-/// 2. Get byte position from cursor (via WindowMap)
-/// 3. Open file with read/write permissions
-/// 4. Write buffer directly to file at position
-/// 5. Update cursor position
-/// 6. Clear insert buffer for next input
-/// 7. Mark file as modified
-///
-/// # Note
-/// This is the MVP approach for simple insertion. Future versions
-/// may need more sophisticated handling for:
-/// - Inserting in middle of file (requires shifting subsequent bytes)
-/// - Undo functionality (requires tracking changes)
-fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
-    // Step 1: Get slice of used portion of buffer (NO ALLOCATION)
-    let bytes_to_insert = &state.fileinsert_input_buffer[..state.file_insertinput_buffer_used];
-
-    // Defensive: Check if there's anything to insert
-    if state.file_insertinput_buffer_used == 0 {
-        return Ok(0); // Nothing to insert
-    }
-
-    // Step 2: Get file position from cursor using WindowMap
+    // Get cursor file position
     let file_pos = state
         .window_map
         .get_file_position(state.cursor.row, state.cursor.col)?
@@ -4421,79 +4200,39 @@ fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> i
             )
         })?;
 
-    // Assertion: File position should be valid
-    debug_assert!(file_pos.byte_offset < u64::MAX, "File position overflow");
+    let insert_position = file_pos.byte_offset;
 
-    // Step 3: Open file with read+write permissions
+    // Open file for read+write
     let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
 
-    // Defensive: Verify file opened successfully
-    let file_metadata = file.metadata()?;
-    if !file_metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Path is not a regular file",
-        ));
-    }
+    // Read bytes after insertion point into 8K buffer
+    let mut after_buffer = [0u8; 8192];
+    file.seek(SeekFrom::Start(insert_position))?;
+    let bytes_after = file.read(&mut after_buffer)?;
 
-    // Step 4: Write buffer directly to file (NO HEAP)
-    write_input_buffer_to_file(&mut file, bytes_to_insert, file_pos.byte_offset)?;
+    // Write new text at insertion position
+    file.seek(SeekFrom::Start(insert_position))?;
+    file.write_all(text_bytes)?;
 
-    // Ensure bytes are written to disk
+    // Write the shifted bytes
+    file.write_all(&after_buffer[..bytes_after])?;
     file.flush()?;
 
-    // Step 5: Calculate bytes written
-    let bytes_written = bytes_to_insert.len();
-
-    // Step 6: Update cursor position
-    // Count characters and newlines in inserted text
-    let text_str = std::str::from_utf8(bytes_to_insert).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Invalid UTF-8 in insert buffer: {}", e),
-        )
-    })?;
-
-    let char_count = text_str.chars().count();
-    let newline_count = text_str.chars().filter(|&c| c == '\n').count();
-
-    if newline_count > 0 {
-        // Text contains newlines - cursor moves to new line
-        state.cursor.row += newline_count;
-
-        // Find position after last newline
-        if let Some(last_line) = text_str.split('\n').last() {
-            state.cursor.col = last_line.chars().count();
-        } else {
-            state.cursor.col = 0;
-        }
-    } else {
-        // No newlines - cursor moves horizontally
-        state.cursor.col += char_count;
-    }
-
-    // Step 7: Mark file as modified
+    // Update state
     state.is_modified = true;
 
-    // Step 8: Log the edit for undo functionality
+    // Log the edit
+    let text_str = std::str::from_utf8(text_bytes).unwrap_or("[invalid UTF-8]");
     state.log_edit(&format!(
-        "INSERT_TEXT line:{} byte:{} length:{} text:'{}'",
-        file_pos.line_number,
-        file_pos.byte_offset,
-        bytes_written,
-        text_str.chars().take(50).collect::<String>() // Log first 50 chars
+        "INSERT line:{} byte:{} text:'{}'",
+        file_pos.line_number, file_pos.byte_offset, text_str
     ))?;
 
-    // Step 9: Clear insert buffer for next input
-    state.clear_insert_buffer();
+    // Update cursor position
+    let char_count = text_str.chars().count();
+    state.cursor.col += char_count;
 
-    // Assertion: Buffer should be empty after clearing
-    debug_assert_eq!(
-        state.file_insertinput_buffer_used, 0,
-        "Insert buffer should be empty after clearing"
-    );
-
-    Ok(bytes_written)
+    Ok(())
 }
 
 /// Full-featured editor mode for editing files
@@ -4595,7 +4334,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // Create file if it doesn't exist
     if !target_path.exists() {
         println!("Creating new file...");
-        let header = get_header_text()?;
+        let header = memo_mode_get_header_text()?;
 
         // Create with header
         let mut file = File::create(&target_path)?;
@@ -4708,6 +4447,9 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
         // Read user input
+        // TODO: this is against spec, against scope
+        // this MUST be changed
+        //
         stdin.read_line(&mut input_buffer)?;
 
         // Handle input based on mode
@@ -4757,25 +4499,22 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
-                // Try to add text to buffer
-                match state.add_to_insert_buffer(trimmed) {
-                    Ok(true) => {
-                        // Text added to buffer successfully
-                        // Don't insert yet - wait for more input or exit command
-                    }
-                    Ok(false) => {
-                        // Buffer full - insert what we have, then add this text
-                        execute_command(&mut state, Command::InsertText(String::new()))?;
-
-                        // Try again with empty buffer
-                        if !state.add_to_insert_buffer(trimmed)? {
-                            eprintln!("Warning: Input too large even for empty buffer");
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error adding to buffer: {}", e);
-                    }
-                }
+                // Read stdin and insert text
+                // match read_stdin_and_insert_to_file(&mut state, &read_copy)? {
+                //     Some(command) => {
+                //         // Input was a command - execute it
+                //         continue_editing = execute_command(&mut state, command)?;
+                //     }
+                //     None => {
+                //         // Text was inserted - rebuild window
+                //         build_windowmap_nowrap(&mut state, &read_copy)?;
+                //     }
+                // }
+                // Read and process stdin directly
+                // It's text - insert it directly without re-reading stdin
+                let text_bytes = trimmed.as_bytes();
+                insert_text_chunk_at_cursor_position(&mut state, &read_copy, text_bytes)?;
+                build_windowmap_nowrap(&mut state, &read_copy)?;
             }
         } else {
             // IF in  Normal/Visual mode: parse as command
@@ -5431,7 +5170,7 @@ fn initialize_session_directory(
 //         get_default_filepath(None)?
 //     };
 
-//     editor_loop(&original_file_path)
+//     memo_mode_mini_editor_loop(&original_file_path)
 // }
 
 /// Main entry point - routes between memo mode and full editor mode
@@ -5443,7 +5182,6 @@ fn initialize_session_directory(
 /// - `lines` - Memo mode (if in home) or error (if elsewhere)
 /// - `lines file.txt` - Full editor mode with file
 /// - `lines /path/to/dir/` - Full editor mode, prompts for filename
-/// - `lines --files` - Opens file manager (memo mode only)
 ///
 /// # Mode Selection Logic
 /// 1. If CWD is home directory -> memo mode available
@@ -5476,7 +5214,7 @@ fn main() -> io::Result<()> {
                 // Memo mode: create today's file
                 println!("Starting memo mode...");
                 let original_file_path = get_default_filepath(None)?;
-                editor_loop(&original_file_path)
+                memo_mode_mini_editor_loop(&original_file_path)
             } else {
                 // Full editor mode - prompt for filename in current directory
                 println!("No file specified. Creating new file in current directory.");
@@ -5492,9 +5230,6 @@ fn main() -> io::Result<()> {
 
             // Check for special commands
             match arg.as_str() {
-                // ??? maybe future micro-file manager...
-                // "--files" | "files" => {
-                // }
                 "--help" | "-h" | "help" => {
                     print_help();
                     Ok(())
@@ -5509,7 +5244,7 @@ fn main() -> io::Result<()> {
                         // In home + simple filename = memo mode with custom name
                         println!("Starting memo mode with custom file: {}", arg);
                         let original_file_path = get_default_filepath(Some(arg))?;
-                        editor_loop(&original_file_path)
+                        memo_mode_mini_editor_loop(&original_file_path)
                     } else {
                         // Full editor mode with specified path
                         let path = PathBuf::from(arg);
@@ -5521,24 +5256,26 @@ fn main() -> io::Result<()> {
         _ => {
             // Multiple arguments - currently not supported
             eprintln!("Error: Too many arguments");
-            eprintln!("Usage: lines [filename | --files | --help]");
+            eprintln!("Usage: lines [filename | --help]");
             std::process::exit(2);
         }
     }
 }
 
 /*
-Exciting Build!
-
-
-
+Build Notes:
 Current todo steps:
 
 
-any clone() heap use that can be re-done in a stack based way?
+All clone() heap use, or read_lie() that can be re-done in a stack based should/must be:
 - Replace Clone() with Copy Trait
 - Use References and Borrowing // Instead of cloning command, pass references
 e.g.     original_file_path: &Path,
+
+The main edge-case exception is readline stdin, which in theory could be replaced
+by a modular system that handles a stream of input bytes. This Lines design is
+so far built around the Enter terminated input, which uses heap. Ok.
+
 
 ? "Use SmallVec or arrayvec for Small Collections For small, bounded collections, use stack-based alternatives:"
 ? String Handling: For small strings, use fixed-size buffers:
@@ -5548,86 +5285,16 @@ e.g.     original_file_path: &Path,
 
 Q: can there be debug-only verbose errors, and for appliation only terse stack use?
 
-Command Parsing Optimization
-// Avoid allocation in command parsing
-fn parse_command(input: &str, mode: EditorMode) -> Command {
-    let trimmed = input.trim();
+note: messages printed to terminal are a total waste, the user never sees
+them because they are lost when the TUI refreshes. terminal prints for debugging-dev
+are useful (to be removed later or commented out)
+user-facing invisble text is trash-code.
 
-    // Use stack-based parsing
-    match (mode, trimmed) {
-        (EditorMode::Normal, "h") => Command::MoveLeft(1),
-        (EditorMode::Normal, "j") => Command::MoveDown(1),
-        // Pre-parse repeat counts without heap allocation
-    }
-}
+There should be a seriously small optional message window in the info bar
 
-1. empty enter is insert \n newline in insert mode
-2. insert input-buffer in insert mode.
 
-?
-fn write_input_buffer_to_file(
-    file: &mut File,
-    input_buffer: &[u8],
-    file_position: u64
-) -> io::Result<()> {
-    // Seek to exact position without allocating
-    file.seek(SeekFrom::Start(file_position))?;
-
-    // Write directly from input buffer slice
-    file.write_all(input_buffer)?;
-
-    Ok(())
-}
-or
-use std::io::{self, Write, Seek, SeekFrom};
-use std::fs::File;
-
-fn write_input_buffer_to_file(
-    file: &mut File,
-    input_buffer: &[u8],
-    file_position: u64
-) -> io::Result<()> {
-    // Early return if buffer is empty (optional newline insertion)
-    if input_buffer.is_empty() {
-        file.seek(SeekFrom::Start(file_position))?;
-        file.write_all(b"\n")?;
-        return Ok(());
-    }
-
-    // Seek to exact position
-    file.seek(SeekFrom::Start(file_position))?;
-
-    // Write directly from input buffer slice
-    file.write_all(input_buffer)?;
-
-    Ok(())
-}
-
-3. modular command handling system:
-(probably ff main loop for reference)
-- modes
-- --help
-- any new command modules added
-
-maybe a check and add tests and power-of-10 items
+make a check and add tests and power-of-10 items
 any heap allocations that can be pre-allocated?
-
-Next section:
-4. including: adding the POC cursor/vim (inspired) system:
---
-2. Add cursor etc. (from POC)
-- move-N spaces (in POC)
-- select code (even if select doesn't do anything now) (in POC)
-3. **Add scroll down** - Increment line number, rebuild window
-4. **Add scroll up** - Decrement line number, rebuild window
-5. **Test** - Verify line numbers track correctly
-6. scroll right (see unwrapped long lines)
-7. scroll back to left
-
-
-Todo...
-replace or remove --file command (probably remove...is commented out... also remove from help... unless it can be added...very simply)
-e.g. mini file-picker maybe
 
 note: line numbers not included in file-map: fskip {int /s (space)} for ...map tui to file
 
@@ -5658,72 +5325,17 @@ for not letting cursor go into the number lines?
 or... if red... not writing?
 (maybe latter)
 
-todo:
-using command buffer?
-or not?
-
-But read() writes directly into your pre-allocated byte array.
-So the answer to your ORIGINAL question:
-
-
-Plan A:
-
-use read() with pre-allocated small chunk_buffers.
-
-do NOT user real_line() which uses the heap.
-
-small buffere for commands 64byte
-
-larger buffere for insert 512bytes
-
-
-uses of read_line()
-
-
-```
-fn editor_loop(original_file_path: &Path) -> io::Result<()> {
-...
-    loop {
-        input.clear();
-        print!("\n> "); // Add a prompt
-        io::stdout().flush()?; // Ensure prompt is displayed
-
-        if let Err(e) = stdin.read_line(&mut input) {
-```
-
-fn prompt_for_filename() -> io::Result<String> {
-    use std::io::{Write, stdin, stdout};
-
-    println!("\n=== Create New File ===");
-    println!("Enter filename (or 'q' to quit):");
-    print!("> ");
-    stdout().flush()?;
-
-    let mut input = String::new();
-    stdin().read_line(&mut input)?;
-    let trimmed = input.trim();
-```
-
-```
-pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> {
-...
-// Read user input
-stdin.read_line(&mut input_buffer)?;
-
-```
-
 todo: put a small message bar in the info bar
 
-e.g.
-insert mode -n -v -s/-w -wq
+Todo:
+check for redundant standard libraries
 
+...
+error handling reorganization...
+no heap strings for production... if terse errors.
 
-the plan is to not use read_line() - maybe uses heap
-use small chunkbuffer for commands
-use larger chunk buffer for insert filewrite and changelog file write
-
-todo:
-remove un-used function especially for write-file...
+probably skip file manager...
+put lines in to ff
 
 
 */
