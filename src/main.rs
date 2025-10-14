@@ -82,8 +82,8 @@ doc strings, comments, use case, edge case,
 This code is under construction! Some code below may not be correct.
 Any code that violates the roles and policies is wrong or placeholder-code.
 
-
 # Build plan A
+
 
 Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
 
@@ -124,20 +124,38 @@ Basic features to be use-able, with a design such that planned scope can be modu
 [Done]6. scroll back to left
 
 
-7. Moving Cursor
+5. Moving Cursor
 [Done]- hjkl
 [Done]- int+hjkl
 - w,e,b, normal mode move
 
 
-8. select code (even if select doesn't do anything now) ( visual mode, works in POC)
+6. Delete
+- figure out a coherent plan for defaults and options
+- mvp d delete... a char?
+maybe:
+MVP:
+- make backspace_style_delete_noload()
+- make delete_current_line_noload()
+
+- normal mode: 'd' is deletes current line
+- visual mode: 'd' acts like backspace (deletes character before cursor)
+- insert mode: '-d' is also backspace-style
+After MVP: When selection is available:
+- visual mode: 'd' deletes selection
+
+Note: TUI refreshes after delete action (just like inserting)
+Note: there is no planned support for 'legacy delete' (deleting forward characters)
+Note: no whole-file loading.
+
+
+7. select code (even if select doesn't do anything now) ( visual mode, works in POC)
 - hjkl
 - int+hjkl
 - w,e,b, normal mode move
 
 
-
-5. insert:
+8. insert:
 [Done]- start of insert mode:
 [Done]- user types into input buffer,
 [Done]- add input buffer bytes to file at mapped cursor location: changes made to file
@@ -150,7 +168,7 @@ maybe add another item into state:
 [Done] - commands in visual -n -v -s -w -wq
 
 
-6. Saving File
+9. Saving File
 [Done] s/w command to save changes to original file
 [Done]- first makes a backup of the original file in same parent /archive/{timestamp}_{filename} (or, thought of differently, moves the original file as is and re-names it)
 [Done]- replaces the old file with the new one (copies the read-copy to the original location
@@ -161,7 +179,7 @@ maybe add another item into state:
 [Done] - 'wq' in Normal/Visual mode
 
 
-7. works on:
+10. works on:
 - linux,
 - android-termux,
 - BSD-MacOS,
@@ -170,7 +188,7 @@ maybe add another item into state:
 etc.:
 
 
-8. Legacy 'Memo-Mode & Append functionality'
+11. Legacy 'Memo-Mode & Append functionality'
 Very practical, very useful.
 - For MVP, calling Lines with path argument in home directory launches the ultra-minimal legacy Memo-Mode which is simple and stable (that does not need to launch full-lines with state etc.)
 - add 'a' append mode, which is like memo-mode
@@ -180,14 +198,16 @@ Very practical, very useful.
 - cli argument -a --append to open file into append mode
 
 
-9. new file name prompt
+12. new file name prompt
 [Done]- calling lines not in home directory should...first ask for file name?
 
 
-10. new paths
+13. new paths
 [Almost Done] - calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
 - Why is it making/saving an archive directory in the new directory???
 - oh...archiving... new new file? ok... but check this... save-archives... maybe.
+
+
 
 
 ...
@@ -597,8 +617,9 @@ fn main() {
 */
 
 use std::env;
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -963,9 +984,6 @@ pub fn createarchive_timestamp_with_precision(
  * Solution 2
  * The attempt is to follow NASA's only-preallocated-memory rule.
  */
-
-use std::fmt;
-// use std::io;
 
 /// Fixed-size timestamp type - stack allocated, no heap
 #[derive(Copy, Clone)]
@@ -1932,9 +1950,6 @@ impl EditorState {
     /// Append an edit operation to the changelog
     pub fn log_edit(&self, operation: &str) -> io::Result<()> {
         if let Some(ref log_path) = self.changelog_path {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -2130,6 +2145,10 @@ fn memo_mode_display_file_tail(original_file_path: &Path, num_lines: usize) -> i
     Ok(())
 }
 
+/// TODO this is lagacy code
+/// loads whole file -> let mut content = fs::read_to_string(file_path)?;
+/// Must move by chunks...TODO
+///
 /// Gets the header string for a new file
 /// Combines timestamp with optional header.txt content
 ///
@@ -2160,6 +2179,7 @@ fn memo_mode_get_header_text() -> io::Result<String> {
     // Also check in the current working directory as fallback
     let current_dir_header = Path::new("header.txt");
 
+    // Must move by chunks...TODO
     if header_path.exists() {
         let header_content = fs::read_to_string(header_path)?;
         header.push_str("  ");
@@ -2696,8 +2716,6 @@ pub mod double_width {
 /// - Returns error if target line exceeds file length
 /// - Handles EOF gracefully
 fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
-    use std::io::{Read, Seek, SeekFrom};
-
     // Start at beginning of file
     file.seek(SeekFrom::Start(0))?;
 
@@ -2818,10 +2836,6 @@ pub fn build_windowmap_nowrap(
 
     // Open file for reading
     let mut file = File::open(readcopy_file_path)?;
-
-    // // Seek to window start position
-    // use std::io::{Seek, SeekFrom};
-    // file.seek(SeekFrom::Start(state.file_position_of_topline_start))?;
 
     // *** FIX: Calculate byte position for the target line ***
     let byte_position = seek_to_line_number(&mut file, state.line_count_at_top_of_window)?;
@@ -3005,8 +3019,6 @@ fn read_single_line<'a>(
     file: &'a mut File,
     buffer: &'a mut [u8; 4096],
 ) -> io::Result<(&'a [u8; 4096], usize, bool)> {
-    use std::io::Read;
-
     let mut bytes_read = 0usize;
     let mut found_newline = false;
     let mut single_byte = [0u8; 1];
@@ -3394,8 +3406,6 @@ fn get_home_directory() -> io::Result<PathBuf> {
 /// - Rejects parent directory references (..)
 /// - Limits filename length to 255 characters
 fn prompt_for_filename() -> io::Result<String> {
-    use std::io::{Write, stdin, stdout};
-
     println!("\n=== Create New File ===");
     println!("Enter filename (or 'q' to quit):");
     print!("> ");
@@ -3480,6 +3490,12 @@ pub enum Command {
     DeleteChar,          // Delete character at cursor
     Backspace,           // Delete character before cursor
 
+    /// Delete entire line at cursor (normal mode)
+    DeleteLine,
+
+    /// Backspace-style delete (visual/insert modes)
+    DeleteBackspace,
+
     // Select? up down left right byte count? or... to position?
 
     // File operations
@@ -3515,6 +3531,9 @@ pub enum Command {
 /// - "10k" -> MoveUp(10)
 /// - "3h" -> MoveLeft(3)
 /// - "7l" -> MoveRight(7)
+///
+/// Note: For other command handling, also see: full_lines_editor()
+///
 pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     let trimmed = input.trim();
 
@@ -3528,6 +3547,15 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "n" {
             return Command::EnterNormalMode;
         }
+
+        // delete key
+        if trimmed == "\x1b[3~" {
+            return Command::None;
+        }
+        // // Check for special commands in insert mode
+        // if trimmed == "-d" || trimmed == "\x1b[3~" {
+        //     return Command::DeleteBackspace;
+        // }
         // Everything else is text input (handled separately)
         return Command::None;
     }
@@ -3569,6 +3597,15 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     // Get the command string (everything after the number)
     let command_str = &trimmed[command_start..];
 
+    /*
+    For another command area, also see:
+    ```rust
+    fn full_lines_editor(){
+    ...
+    if state.mode == ...
+    ```
+     */
+
     if current_mode == EditorMode::Normal {
         match command_str {
             // Single character commands
@@ -3588,7 +3625,8 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             "q" => Command::Quit,
             // "wrap" => Command::ToggleWrap,
             // "gg" => Command::MoveToTop,
-            // "dd" => Command::DeleteLine(count),
+            "d" => Command::DeleteLine,
+            "\x1b[3~" => Command::DeleteLine,
             _ => Command::None,
         }
     } else if current_mode == EditorMode::Visual {
@@ -3598,7 +3636,8 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             "s" | "w" => Command::Save,
             "n" | "\x1b" => Command::EnterNormalMode,
             "wq" => Command::SaveAndQuit,
-
+            "d" => Command::DeleteBackspace,
+            "\x1b[3~" => Command::DeleteBackspace,
             // // TODO: Make These, Command::Select...
             // Some('w') => Command::SelectNextWord,
             // Some('b') => Command::SelectPreviousWordBeginning,
@@ -3611,10 +3650,10 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             _ => Command::None,
         }
     } else {
-        // if current_mode == EditorMode::Insert {
-        // This is an edge case, see above
-        // (length limit not apply?)
         match command_str {
+            // if current_mode == EditorMode::Insert {
+            // This is an edge case, see above
+            // (length limit not apply?)
             _ => Command::None,
         }
     }
@@ -3801,6 +3840,18 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             Ok(true)
         }
 
+        Command::DeleteLine => {
+            delete_current_line_noload(state, &edit_file_path)?;
+            build_windowmap_nowrap(state, &edit_file_path)?;
+            Ok(true)
+        }
+
+        Command::DeleteBackspace => {
+            backspace_style_delete_noload(state, &edit_file_path)?;
+            build_windowmap_nowrap(state, &edit_file_path)?;
+            Ok(true)
+        }
+
         Command::MoveUp(count) => {
             // Vim-like behavior: move cursor up, scroll window if at top edge
 
@@ -3848,7 +3899,7 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
         }
 
         Command::InsertNewline(_) => {
-            insert_newline_at_cursor(state, edit_file_path)?;
+            insert_newline_at_cursor_chunked(state, edit_file_path)?;
 
             // Rebuild window to show the change
             build_windowmap_nowrap(state, edit_file_path)?;
@@ -3864,22 +3915,14 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             Ok(true)
         }
         Command::DeleteChar => {
-            // Delete character at cursor position
-            delete_char_at_cursor(state, edit_file_path)?;
-
-            // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-
+            // This command is not used in normal flow
+            eprintln!("Warning: DeleteChar command called directly (unexpected)");
             Ok(true)
         }
 
         Command::Backspace => {
-            // Delete character before cursor position
-            backspace_at_cursor(state, edit_file_path)?;
-
-            // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-
+            // This command is not used in normal flow
+            eprintln!("Warning: Backspace command called directly (unexpected)");
             Ok(true)
         }
 
@@ -3912,13 +3955,17 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
         }
 
         Command::Quit => {
-            if state.is_modified {
-                // Todo, maybe have a press enter to proceed thing...
-                println!("Warning: Unsaved changes! Use 'w' to save.");
-                Ok(true)
-            } else {
-                Ok(false) // Signal to exit loop
-            }
+            // // Must-Save Mode (optional)
+            // if state.is_modified {
+            //     // Todo, maybe have a press enter to proceed thing...
+            //     println!("Warning: Unsaved changes! Use 'w' to save.");
+            //     Ok(true)
+            // } else {
+            //     Ok(false) // Signal to exit loop
+            // }
+
+            // Default behavior: Let User Decide
+            Ok(false) // Signal to exit loop
         }
 
         Command::SaveAndQuit => {
@@ -3941,195 +3988,396 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
     }
 }
 
-/// Deletes the character at the cursor position (like vim's 'x')
+/// Deletes the character before cursor WITHOUT loading whole file
 ///
-/// # Purpose
-/// Deletes the character under the cursor. Cursor stays at same position.
-/// If at end of line, does nothing.
+/// # Algorithm
+/// 1. Get cursor file position
+/// 2. Find previous UTF-8 character boundary (walk back max 4 bytes)
+/// 3. Use chunked delete: copy [0..prev_char) + copy [cursor..EOF)
+/// 4. Update cursor position
 ///
-/// # Arguments
-/// * `state` - Editor state with cursor position
-/// * `file_path` - Path to the file being edited (read-copy)
-///
-/// # Returns
-/// * `Ok(())` - Character deleted successfully (or nothing to delete)
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Behavior
-/// - Deletes UTF-8 character at cursor (handles multi-byte)
-/// - If cursor at end of line, does nothing
-/// - If deleting last char on line, cursor stays
-/// - Marks file as modified
-fn delete_char_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    // Step 1: Get file position from cursor
-    let file_pos = match state
+/// # Memory
+/// - 8KB pre-allocated buffer for chunking
+/// - No whole-file load
+/// - Bounded iterations
+fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get current file position
+    let file_pos = state
         .window_map
         .get_file_position(state.cursor.row, state.cursor.col)?
-    {
-        Some(pos) => pos,
-        None => {
-            // Cursor not on valid position (e.g., past end of line)
-            return Ok(()); // Nothing to delete
-        }
-    };
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Cursor not on valid position")
+        })?;
 
-    // Step 2: Read entire file (MVP approach)
-    let mut content = fs::read_to_string(file_path)?;
+    let cursor_byte = file_pos.byte_offset;
 
-    // Step 3: Validate byte offset
-    let delete_position = file_pos.byte_offset as usize;
-    if delete_position >= content.len() {
-        // At or past end of file
+    // Step 2: Can't delete before start of file
+    if cursor_byte == 0 {
         return Ok(()); // Nothing to delete
     }
 
-    // Step 4: Find the character at this position and its byte length
-    let char_at_pos = content[delete_position..].chars().next().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Invalid UTF-8 at delete position",
-        )
-    })?;
+    // Step 3: Find start of previous UTF-8 character
+    // Read up to 4 bytes back to find character boundary
+    let prev_char_start = find_previous_utf8_boundary(file_path, cursor_byte)?;
 
-    let char_byte_len = char_at_pos.len_utf8();
+    // Step 4: Delete byte range [prev_char_start..cursor_byte)
+    delete_byte_range_chunked(file_path, prev_char_start, cursor_byte)?;
 
-    // Defensive: Ensure we don't go past end
-    let end_position = (delete_position + char_byte_len).min(content.len());
-
-    // Step 5: Remove the character
-    content.drain(delete_position..end_position);
-
-    // Step 6: Write modified content back
-    fs::write(file_path, content)?;
-
-    // Step 7: Mark file as modified
+    // Step 5: Update state
     state.is_modified = true;
 
-    // Step 8: Log the edit
+    // Step 6: Log edit
+    let bytes_deleted = cursor_byte - prev_char_start;
     state.log_edit(&format!(
-        "DELETE_CHAR line:{} byte:{} char:'{}'",
-        file_pos.line_number, file_pos.byte_offset, char_at_pos
+        "BACKSPACE line:{} byte:{} deleted:{} bytes",
+        file_pos.line_number, prev_char_start, bytes_deleted
     ))?;
 
-    // Step 9: Cursor stays at same position
-    // (the character after deleted one is now under cursor)
+    // Step 7: Move cursor back one position
+    if state.cursor.col > 0 {
+        state.cursor.col -= 1;
+    } else if state.cursor.row > 0 {
+        // Deleted at line start - move to end of previous line
+        state.cursor.row -= 1;
+        // Will be repositioned correctly after window rebuild
+    }
 
     Ok(())
 }
 
-/// Deletes the character before the cursor position (like vim's backspace)
-///
-/// # Purpose
-/// Deletes the character before the cursor and moves cursor back one position.
-/// If at start of line, deletes the newline (joins with previous line).
-///
-/// # Arguments
-/// * `state` - Editor state with cursor position
-/// * `file_path` - Path to the file being edited (read-copy)
-///
-/// # Returns
-/// * `Ok(())` - Character deleted successfully (or nothing to delete)
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Behavior
-/// - Deletes UTF-8 character before cursor (handles multi-byte)
-/// - Cursor moves back one position
-/// - If at start of line, joins with previous line
-/// - If at start of file, does nothing
-fn backspace_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    // Step 1: Check if we're at start of file
-    if state.cursor.row == 0 && state.cursor.col == 0 {
-        return Ok(()); // Nothing before cursor
+/// Scans backward from position to find start of current line
+/// Returns byte position right after previous \n (or 0 if at BOF)
+fn find_line_start(file_path: &Path, from_byte: u64) -> io::Result<u64> {
+    if from_byte == 0 {
+        return Ok(0);
     }
 
-    // Step 2: Get file position from cursor
-    let file_pos = match state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-    {
-        Some(pos) => pos,
-        None => {
-            // If cursor is past end of line, move back to end of line first
-            if state.cursor.col > 0 {
-                state.cursor.col -= 1;
-            }
-            return Ok(());
-        }
-    };
-
-    // Step 3: Read entire file (MVP approach)
-    let mut content = fs::read_to_string(file_path)?;
-
-    // Step 4: Find the character BEFORE cursor position
-    let current_position = file_pos.byte_offset as usize;
-
-    if current_position == 0 {
-        return Ok(()); // At start of file
-    }
-
-    // Find the start of the previous UTF-8 character
-    let mut prev_char_start = current_position - 1;
-
-    // Defensive: Limit iterations for finding UTF-8 boundary
+    let mut file = File::open(file_path)?;
+    let mut pos = from_byte.saturating_sub(1);
+    let mut buffer = [0u8; 1];
     let mut iterations = 0;
 
-    // Walk backward to find UTF-8 character boundary
-    while prev_char_start > 0
-        && iterations < limits::MAX_UTF8_BOUNDARY_SCAN
-        && (content.as_bytes()[prev_char_start] & 0b1100_0000) == 0b1000_0000
-    {
-        // This is a UTF-8 continuation byte, keep going back
-        prev_char_start -= 1;
+    loop {
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations finding line start",
+            ));
+        }
         iterations += 1;
+
+        file.seek(SeekFrom::Start(pos))?;
+        let n = file.read(&mut buffer)?;
+
+        if n == 0 || buffer[0] == b'\n' {
+            return Ok(pos + 1); // Start of line is after \n
+        }
+
+        if pos == 0 {
+            return Ok(0); // Reached start of file
+        }
+        pos -= 1;
+    }
+}
+
+/// Finds the byte position of the character before cursor
+///
+/// # Algorithm
+/// - Seek to cursor_byte - 1
+/// - Walk back up to 3 more bytes checking for UTF-8 start byte
+/// - UTF-8 start bytes: 0b0xxxxxxx or 0b11xxxxxx
+/// - Continuation bytes: 0b10xxxxxx
+fn find_previous_utf8_boundary(file_path: &Path, cursor_byte: u64) -> io::Result<u64> {
+    if cursor_byte == 0 {
+        return Ok(0);
     }
 
-    // Get the character we're about to delete (for logging)
-    let char_to_delete = content[prev_char_start..]
-        .chars()
-        .next()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 before cursor"))?;
+    let mut file = File::open(file_path)?;
 
-    // Step 5: Remove the character
-    content.drain(prev_char_start..current_position);
+    // Start 1 byte back
+    let mut pos = cursor_byte - 1;
+    let mut buffer = [0u8; 1];
 
-    // Step 6: Write modified content back
-    fs::write(file_path, content)?;
+    // Defensive: limit iterations (UTF-8 chars max 4 bytes)
+    for _ in 0..limits::MAX_UTF8_BOUNDARY_SCAN {
+        file.seek(SeekFrom::Start(pos))?;
+        file.read_exact(&mut buffer)?;
 
-    // Step 7: Mark file as modified
+        let byte = buffer[0];
+
+        // Check if this is a UTF-8 start byte
+        if (byte & 0b1100_0000) != 0b1000_0000 {
+            // Found start of character
+            return Ok(pos);
+        }
+
+        // This is a continuation byte, keep going back
+        if pos == 0 {
+            return Ok(0); // Hit start of file
+        }
+        pos -= 1;
+    }
+
+    // Shouldn't happen with valid UTF-8
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "Could not find UTF-8 character boundary",
+    ))
+}
+
+/// Scans forward from position to find end of current line
+/// Returns byte position of \n character (or EOF position)
+///
+/// # Arguments
+/// * `file_path` - Path to file to scan
+/// * `from_byte` - Starting byte position (anywhere in the line)
+///
+/// # Returns
+/// * `Ok(byte_pos)` - Position of \n or EOF
+/// * `Err(io::Error)` - If scan fails or exceeds limits
+fn find_line_end(file_path: &Path, from_byte: u64) -> io::Result<u64> {
+    let mut file = File::open(file_path)?;
+
+    // Get file size for EOF detection
+    let file_size = file.metadata()?.len();
+
+    if from_byte >= file_size {
+        return Ok(file_size); // Already at/past EOF
+    }
+
+    // Seek to starting position
+    file.seek(SeekFrom::Start(from_byte))?;
+
+    let mut pos = from_byte;
+    let mut buffer = [0u8; 1];
+    let mut iterations = 0;
+
+    loop {
+        // Defensive: Check iteration limit
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations exceeded finding line end",
+            ));
+        }
+        iterations += 1;
+
+        // Read one byte
+        let n = file.read(&mut buffer)?;
+
+        if n == 0 {
+            // Reached EOF
+            return Ok(pos);
+        }
+
+        if buffer[0] == b'\n' {
+            // Found newline - return its position
+            return Ok(pos);
+        }
+
+        pos += 1;
+    }
+}
+
+/// Checks if there's a newline character at the given position
+///
+/// # Arguments
+/// * `file_path` - Path to file to check
+/// * `byte_pos` - Position to check for newline
+///
+/// # Returns
+/// * `Ok(true)` - There is a \n at this position
+/// * `Ok(false)` - No \n at this position (different char or EOF)
+/// * `Err(io::Error)` - If read fails
+fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
+    /*
+    // Case 1: Normal line with newline
+    // File: "Line1\nLine2\nLine3\n"
+    // Cursor on Line2
+    // line_start = 6, line_end = 11 (the \n), delete_end = 12
+    // Result: "Line1\nLine3\n"
+
+    // Case 2: Last line without newline
+    // File: "Line1\nLine2"
+    // Cursor on Line2
+    // line_start = 6, line_end = 11 (EOF), delete_end = 11
+    // Result: "Line1\n"
+
+    // Case 3: Single line file
+    // File: "OnlyLine\n"
+    // line_start = 0, line_end = 8, delete_end = 9
+    // Result: "" (empty file)
+     */
+
+    let mut file = File::open(file_path)?;
+
+    // Get file size
+    let file_size = file.metadata()?.len();
+
+    // If position is at or past EOF, there's no newline
+    if byte_pos >= file_size {
+        return Ok(false);
+    }
+
+    // Seek to position and read one byte
+    file.seek(SeekFrom::Start(byte_pos))?;
+
+    let mut buffer = [0u8; 1];
+    let n = file.read(&mut buffer)?;
+
+    if n == 0 {
+        // EOF reached (shouldn't happen after size check, but defensive)
+        return Ok(false);
+    }
+
+    // Check if it's a newline
+    Ok(buffer[0] == b'\n')
+}
+
+/// Deletes entire line at cursor WITHOUT loading whole file
+///
+/// # Algorithm
+/// 1. Find start of current line (scan back to previous \n or BOF)
+/// 2. Find end of current line (scan forward to next \n or EOF)
+/// 3. Delete byte range [line_start..line_end+1] (include newline)
+/// 4. Cursor stays at same row (now showing next line)
+///
+/// # Edge Cases
+/// - Last line with no trailing \n: delete to EOF
+/// - Single line file: leaves empty file
+/// - First line: deletes from BOF
+fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get current line's file position
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Cursor not on valid position")
+        })?;
+
+    // Step 2: Find line boundaries
+    let line_start = find_line_start(file_path, file_pos.byte_offset)?;
+    let line_end = find_line_end(file_path, file_pos.byte_offset)?;
+
+    // Step 3: Include the newline character if present
+    let delete_end = if line_end_has_newline(file_path, line_end)? {
+        line_end + 1
+    } else {
+        line_end
+    };
+
+    // Step 4: Delete the line
+    delete_byte_range_chunked(file_path, line_start, delete_end)?;
+
+    // Step 5: Update state
     state.is_modified = true;
-
-    // Step 8: Log the edit
     state.log_edit(&format!(
-        "BACKSPACE line:{} byte:{} char:'{}'",
-        file_pos.line_number, prev_char_start, char_to_delete
+        "DELETE_LINE line:{} bytes:{}-{}",
+        file_pos.line_number, line_start, delete_end
     ))?;
 
-    // Step 9: Move cursor back
-    if char_to_delete == '\n' {
-        // Deleted a newline - move to end of previous line
-        if state.cursor.row > 0 {
-            state.cursor.row -= 1;
-            // TODO: Set cursor.col to end of previous line
-            // For now, just move to a reasonable position
-            if state.cursor.col > 0 {
-                state.cursor.col -= 1;
-            }
-        }
-    } else {
-        // Deleted a regular character - move back one column
-        if state.cursor.col > 0 {
-            state.cursor.col -= 1;
-        }
-    }
+    // Step 6: Cursor stays at current row
+    // After rebuild, this row will show the next line
+    state.cursor.col = 0; // Move to start of (new) line
 
     Ok(())
 }
 
-/// Inserts a newline character at the cursor position
+/// Deletes a byte range from file using chunked operations
+///
+/// # Algorithm
+/// 1. Create temporary file
+/// 2. Copy bytes [0..start) from source to temp
+/// 3. Skip bytes [start..end) (the deletion)
+/// 4. Copy bytes [end..EOF) from source to temp
+/// 5. Replace source with temp
+///
+/// # Memory
+/// - Uses 8KB buffer (pre-allocated)
+/// - Never loads full file
+/// - Bounded iteration with MAX_FILE_SIZE check
+fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -> io::Result<()> {
+    // Defensive: Validate range
+    if start_byte >= end_byte {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid deletion range",
+        ));
+    }
+
+    // Create temp file in same directory
+    let temp_path = file_path.with_extension("tmp_delete");
+
+    // Pre-allocated 8KB buffer
+    const CHUNK_SIZE: usize = 8192;
+    let mut buffer = [0u8; CHUNK_SIZE];
+
+    let mut source = File::open(file_path)?;
+    let mut dest = File::create(&temp_path)?;
+
+    // Phase 1: Copy bytes before deletion point
+    let mut bytes_copied = 0u64;
+    let mut iterations = 0;
+
+    while bytes_copied < start_byte && iterations < limits::FILE_SEEK_BYTES {
+        iterations += 1;
+
+        let to_read = ((start_byte - bytes_copied) as usize).min(CHUNK_SIZE);
+        let n = source.read(&mut buffer[..to_read])?;
+
+        if n == 0 {
+            break;
+        } // EOF before start_byte
+
+        dest.write_all(&buffer[..n])?;
+        bytes_copied += n as u64;
+    }
+
+    // Phase 2: Skip deletion range
+    source.seek(SeekFrom::Start(end_byte))?;
+
+    // Phase 3: Copy remaining bytes
+    iterations = 0;
+    loop {
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations exceeded",
+            ));
+        }
+        iterations += 1;
+
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+
+        dest.write_all(&buffer[..n])?;
+    }
+
+    dest.flush()?;
+    drop(dest);
+    drop(source);
+
+    // Replace original with modified
+    fs::rename(&temp_path, file_path)?;
+
+    Ok(())
+}
+
+/// Inserts a newline character at cursor position WITHOUT loading whole file
 ///
 /// # Purpose
-/// MVP implementation of newline insertion. This is the simplest insertion
-/// case - just insert a single '\n' character at cursor position.
+/// Chunked implementation of newline insertion following NASA Power of 10 rules.
+/// Uses pre-allocated buffers and bounded iterations.
+///
+/// # Algorithm
+/// 1. Get cursor byte position
+/// 2. Create temporary file
+/// 3. Copy bytes [0..cursor) from source to temp (chunked)
+/// 4. Write '\n' to temp
+/// 5. Copy bytes [cursor..EOF) from source to temp (chunked)
+/// 6. Replace source with temp
 ///
 /// # Arguments
 /// * `state` - Editor state with cursor position
@@ -4139,63 +4387,128 @@ fn backspace_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<
 /// * `Ok(())` - Newline inserted successfully
 /// * `Err(io::Error)` - File operations failed
 ///
-/// # Process
-/// 1. Get byte position from cursor
-/// 2. Read file into memory
-/// 3. Insert '\n' at position
-/// 4. Write back to file
-/// 5. Update cursor position (move to start of new line)
-///
-/// # Note
-/// This reads entire file into memory (MVP approach).
-/// For large files, this will be slow. Future: use gap buffer.
-fn insert_newline_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    // Step 1: Get file position from cursor
-    let file_pos = state
+/// # Memory
+/// - Uses 8KB pre-allocated buffer
+/// - Never loads whole file
+/// - Bounded iteration counts
+fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get file position from cursor (with graceful error handling)
+    let file_pos = match state
         .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
+            eprintln!("Warning: Cannot insert - cursor not on valid file position");
+            log_error(
+                "Insert newline failed: cursor not on valid file position",
+                Some("insert_newline_at_cursor_chunked"),
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("Warning: Cannot get cursor position: {}", e);
+            log_error(
+                &format!("Insert newline failed: {}", e),
+                Some("insert_newline_at_cursor_chunked"),
+            );
+            return Ok(());
+        }
+    };
+
+    let insert_position = file_pos.byte_offset;
+
+    // Step 2: Create temporary file
+    let temp_path = file_path.with_extension("tmp_insert");
+
+    // Step 3: Open source and destination files
+    let mut source = File::open(file_path)?;
+    let mut dest = File::create(&temp_path)?;
+
+    // Pre-allocated 8KB buffer
+    const CHUNK_SIZE: usize = 8192;
+    let mut buffer = [0u8; CHUNK_SIZE];
+
+    // Step 4: Copy bytes before insertion point
+    let mut bytes_copied = 0u64;
+    let mut iterations = 0;
+
+    while bytes_copied < insert_position && iterations < limits::FILE_SEEK_BYTES {
+        iterations += 1;
+
+        let to_read = ((insert_position - bytes_copied) as usize).min(CHUNK_SIZE);
+        let n = source.read(&mut buffer[..to_read])?;
+
+        if n == 0 {
+            // EOF before insert position - this is an error
+            return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Cursor not on valid file position",
-            )
-        })?;
+                format!(
+                    "Insert position {} exceeds file length {}",
+                    insert_position, bytes_copied
+                ),
+            ));
+        }
 
-    // Step 2: Read entire file (MVP approach)
-    let mut content = fs::read_to_string(file_path)?;
+        dest.write_all(&buffer[..n])?;
+        bytes_copied += n as u64;
+    }
 
-    // Step 3: Validate byte offset
-    let insert_position = file_pos.byte_offset as usize;
-    if insert_position > content.len() {
+    // Defensive: Check iteration limit
+    if iterations >= limits::FILE_SEEK_BYTES {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!(
-                "Insert position {} exceeds file length {}",
-                insert_position,
-                content.len()
-            ),
+            io::ErrorKind::Other,
+            "Max iterations exceeded copying before insert point",
         ));
     }
 
-    // Step 4: Insert newline at position
-    content.insert(insert_position, '\n');
+    // Step 5: Write the newline character
+    dest.write_all(b"\n")?;
 
-    // Step 5: Write modified content back
-    fs::write(file_path, content)?;
+    // Step 6: Copy remaining bytes (from insert position to EOF)
+    // Source is already positioned at insert_position from previous reads
+    iterations = 0;
 
-    // Step 6: Mark file as modified
+    loop {
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations exceeded copying after insert point",
+            ));
+        }
+        iterations += 1;
+
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break; // EOF reached
+        }
+
+        dest.write_all(&buffer[..n])?;
+    }
+
+    // Step 7: Flush and close files
+    dest.flush()?;
+    drop(dest);
+    drop(source);
+
+    // Step 8: Replace original with modified temp file
+    fs::rename(&temp_path, file_path)?;
+
+    // Step 9: Mark file as modified
     state.is_modified = true;
 
-    // Step 7: Log the edit
+    // Step 10: Log the edit
     state.log_edit(&format!(
         "INSERT_NEWLINE line:{} byte:{}",
         file_pos.line_number, file_pos.byte_offset
     ))?;
 
-    // Step 8: Update cursor - move to start of new line
+    // Step 11: Update cursor - move to start of new line
     state.cursor.row += 1;
     state.cursor.col = 0;
-    state.line_count_at_top_of_window += 1;
+
+    // Note: We don't update line_count_at_top_of_window here
+    // The window rebuild will handle proper positioning
 
     Ok(())
 }
@@ -4215,18 +4528,41 @@ fn insert_text_chunk_at_cursor_position(
     file_path: &Path,
     text_bytes: &[u8],
 ) -> io::Result<()> {
-    use std::io::{Read, Seek, SeekFrom, Write};
+    // // Get cursor file position
+    // let file_pos = state
+    //     .window_map
+    //     .get_file_position(state.cursor.row, state.cursor.col)?
+    //     .ok_or_else(|| {
+    //         io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             "Cursor not on valid file position",
+    //         )
+    //     })?;
 
-    // Get cursor file position
-    let file_pos = state
+    let file_pos = match state
         .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cursor not on valid file position",
-            )
-        })?;
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
+            // Cursor not on valid position - log and return without crashing
+            eprintln!("Warning: Cannot insert - cursor not on valid file position");
+            log_error(
+                "Insert newline failed: cursor not on valid file position",
+                Some("insert_newline_at_cursor"),
+            );
+            return Ok(()); // Return success but do nothing
+        }
+        Err(e) => {
+            // Error getting position - log and return
+            eprintln!("Warning: Cannot get cursor position: {}", e);
+            log_error(
+                &format!("Insert newline failed: {}", e),
+                Some("insert_newline_at_cursor"),
+            );
+            return Ok(()); // Return success but do nothing
+        }
+    };
 
     let insert_position = file_pos.byte_offset;
 
@@ -4472,6 +4808,14 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         // bare letters likely collide too much
         // and --long-form is too time consuming
         if state.mode == EditorMode::Insert {
+            /*
+            For another command area, also see:
+            ```rust
+            fn parsed_commands(){
+            ...
+            if current_mode == ...
+            ```
+             */
             let trimmed = input_buffer.trim();
 
             // Check for exit insert mode commands
@@ -4504,6 +4848,12 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             } else if trimmed == "-wq" {
                 // Exit insert mode
                 continue_editing = execute_command(&mut state, Command::SaveAndQuit)?;
+            } else if trimmed == "-q" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::Quit)?;
+            } else if trimmed == "\x1b[3~" {
+                // Do nothing if delete key entered...
+                continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
             } else if trimmed.is_empty() {
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
@@ -5212,8 +5562,10 @@ fn main() -> io::Result<()> {
 Build Notes:
 Current todo steps:
 
-1. select...
-2.
+1. delete
+2, select...
+3. update legacy code to not load any whole file or line
+4. add append-mode
 
 
 All clone() heap use, or read_lie() that can be re-done in a stack based should/must be:
