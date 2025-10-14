@@ -529,9 +529,22 @@ fn main() {
 }
  */
 
+/*
+* Spec Notes:
+
+1. copy() in Rust uses stack: So no additional preallocations needed ...right??? TODO: check this
+
+2. Input System Architecture:
+
+- Lines uses Rust's standard stdin().read_line() which reads until Enter is pressed
+    uses a String (which DOES use heap - that's the OS/Rust input buffer)
+- NO direct keypress detection (no raw terminal)
+- Everything is "command + Enter"
+*/
+
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2837,6 +2850,7 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 }
 
 /// Builds the window-to-file mapping for NoWrap mode
+/// Note: this should be using a read-copy file at all times.
 ///
 /// # Purpose
 /// Reads file content and populates display buffers with proper line numbers
@@ -2875,20 +2889,20 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 /// WindowMap will map each character to its file byte position.
 pub fn build_windowmap_nowrap(
     state: &mut EditorState,
-    original_file_path: &Path,
+    readcopy_file_path: &Path,
 ) -> io::Result<usize> {
     // Defensive: Validate inputs
-    if !original_file_path.is_absolute() {
+    if !readcopy_file_path.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "File path must be absolute",
         ));
     }
 
-    if !original_file_path.exists() {
+    if !readcopy_file_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("File not found: {:?}", original_file_path),
+            format!("File not found: {:?}", readcopy_file_path),
         ));
     }
 
@@ -2901,7 +2915,7 @@ pub fn build_windowmap_nowrap(
     state.window_map.clear();
 
     // Open file for reading
-    let mut file = File::open(original_file_path)?;
+    let mut file = File::open(readcopy_file_path)?;
 
     // // Seek to window start position
     // use std::io::{Seek, SeekFrom};
@@ -2992,6 +3006,79 @@ pub fn build_windowmap_nowrap(
     );
 
     Ok(lines_processed)
+}
+
+/// Saves the current read-copy back to the original file with backup
+///
+/// # Purpose
+/// Safely saves changes by:
+/// 1. Creating timestamped backup of original file
+/// 2. Copying read-copy content to original file
+/// 3. Marking state as unmodified
+///
+/// # Arguments
+/// * `state` - Editor state with file paths
+///
+/// # Returns
+/// * `Ok(())` - Save successful
+/// * `Err(io::Error)` - Save operation failed
+///
+/// # Safety
+/// - Original file backed up before overwrite
+/// - Backup kept in archive directory
+/// - If save fails, original file unchanged
+fn save_file(state: &mut EditorState) -> io::Result<()> {
+    // Defensive: Check we have both paths
+    let original_path = state
+        .original_file_path
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No original file path"))?;
+
+    let read_copy_path = state
+        .read_copy_path
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No read-copy path"))?;
+
+    // Step 1: Create archive directory if it doesn't exist
+    let archive_dir = original_path
+        .parent()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot determine parent directory",
+            )
+        })?
+        .join("archive");
+
+    fs::create_dir_all(&archive_dir)?;
+
+    // Step 2: Create timestamped backup of original
+    let timestamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
+    let original_filename = original_path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?;
+
+    let backup_path = archive_dir.join(format!(
+        "{}_{}",
+        timestamp,
+        original_filename.to_string_lossy()
+    ));
+
+    // Step 3: Copy original to backup (if original exists)
+    if original_path.exists() {
+        fs::copy(original_path, &backup_path)?;
+        println!("Backup created: {}", backup_path.display());
+    }
+
+    // Step 4: Copy read-copy to original location
+    fs::copy(read_copy_path, original_path)?;
+
+    // Step 5: Mark as unmodified
+    state.is_modified = false;
+
+    println!("File saved: {}", original_path.display());
+
+    Ok(())
 }
 
 /// Reads a single line from file into buffer
@@ -3637,6 +3724,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         // Match command character
         match command_char {
             // if normal mode, move, if visial select?
+            // TODO wq? two letters? word commands?
             Some('h') => Command::MoveLeft(count),
             Some('j') => Command::MoveDown(count),
             Some('k') => Command::MoveUp(count),
@@ -3646,7 +3734,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             Some('v') => Command::EnterVisualMode,
             Some('q') => Command::Quit,
             Some('s') => Command::Save,
-
+            Some('w') => Command::Save,
             // Some('wrap') => {
             //     if current_mode == EditorMode::Normal {
             //         Command::ToggleWrap
@@ -3789,16 +3877,22 @@ fn insert_char_at_cursor(
 /// * `Ok(true)` - Continue editor loop
 /// * `Ok(false)` - Exit editor loop
 /// * `Err(io::Error)` - Command execution failed
-pub fn execute_command(
-    state: &mut EditorState,
-    command: Command,
-    original_file_path: &Path,
-) -> io::Result<bool> {
+pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<bool> {
+    // let base_edit_filepath: PathBuf = state
+    //     .read_copy_path
+    //     .as_ref()
+    //     .map(|p| p.clone()) // Clone the PathBuf
+    //     .unwrap_or_else(|| original_file_path.to_path_buf()); // path -> buff
     let base_edit_filepath: PathBuf = state
         .read_copy_path
         .as_ref()
-        .map(|p| p.clone()) // Clone the PathBuf
-        .unwrap_or_else(|| original_file_path.to_path_buf()); // path -> buff
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                "CRITICAL: No read-copy path available - cannot edit",
+            )
+        })?
+        .clone();
 
     let edit_file_path = Path::new(&base_edit_filepath); // buff -> path!!
 
@@ -3842,7 +3936,8 @@ pub fn execute_command(
 
             // Only rebuild if we scrolled the window
             if needs_rebuild {
-                build_windowmap_nowrap(state, original_file_path)?;
+                // Rebuild window to show the change from read-copy file
+                build_windowmap_nowrap(state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -3902,7 +3997,8 @@ pub fn execute_command(
 
             // Only rebuild if we scrolled the window
             if needs_rebuild {
-                build_windowmap_nowrap(state, original_file_path)?;
+                // Rebuild window to show the change from read-copy file
+                build_windowmap_nowrap(state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -3949,10 +4045,8 @@ pub fn execute_command(
 
             // Rebuild window if we scrolled
             if needs_rebuild {
-                // Update file position for top line before rebuild
-                // TODO: Implement proper byte position tracking
-                // For now, build_windowmap_nowrap will seek based on line_count_at_top_of_window
-                build_windowmap_nowrap(state, original_file_path)?;
+                // Rebuild window to show the change from read-copy file
+                build_windowmap_nowrap(state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -3997,7 +4091,8 @@ pub fn execute_command(
 
             // Rebuild window if we scrolled
             if needs_rebuild {
-                build_windowmap_nowrap(state, original_file_path)?;
+                // Rebuild window to show the change from read-copy file
+                build_windowmap_nowrap(state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -4013,12 +4108,34 @@ pub fn execute_command(
         }
 
         Command::InsertText(_) => {
-            // Insert buffer contents at cursor
-            let chars_inserted = insert_text_at_cursor(state, edit_file_path)?;
+            /*
+            fn write_input_buffer_to_file(
+                file: &mut File,
+                input_buffer: &[u8],
+                file_position: u64
+            ) -> io::Result<()> {
+                // Early return if buffer is empty (optional newline insertion)
+                if input_buffer.is_empty() {
+                    file.seek(SeekFrom::Start(file_position))?;
+                    file.write_all(b"\n")?;
+                    return Ok(());
+                }
 
-            if chars_inserted > 0 {
-                // Rebuild window to show the changes
-                build_windowmap_nowrap(state, edit_file_path)?;
+                // Seek to exact position
+                file.seek(SeekFrom::Start(file_position))?;
+
+                // Write directly from input buffer slice
+                file.write_all(input_buffer)?;
+
+                Ok(())
+            }
+            */
+            // Use the NO-HEAP version instead of the old one
+            let bytes_inserted = insert_text_at_cursor_no_heap(state, edit_file_path)?;
+
+            if bytes_inserted > 0 {
+                // Rebuild window to show the change from read-copy file
+                build_windowmap_nowrap(state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -4028,8 +4145,8 @@ pub fn execute_command(
             // Delete character at cursor position
             delete_char_at_cursor(state, edit_file_path)?;
 
-            // Rebuild window to show the change
-            build_windowmap_nowrap(state, edit_file_path)?;
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
 
             Ok(true)
         }
@@ -4038,8 +4155,8 @@ pub fn execute_command(
             // Delete character before cursor position
             backspace_at_cursor(state, edit_file_path)?;
 
-            // Rebuild window to show the change
-            build_windowmap_nowrap(state, edit_file_path)?;
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
 
             Ok(true)
         }
@@ -4067,14 +4184,15 @@ pub fn execute_command(
         }
 
         Command::Save => {
-            // TODO: Implement save logic
-            println!("Save not yet implemented");
+            save_file(state)?;
             Ok(true)
+            // Save doesn't need rebuild (no content change in display)
         }
 
         Command::Quit => {
             if state.is_modified {
-                println!("Warning: Unsaved changes! Use 'w' to save and quit.");
+                // Todo, maybe have a press enter to proceed thing...
+                println!("Warning: Unsaved changes! Use 'w' to save.");
                 Ok(true)
             } else {
                 Ok(false) // Signal to exit loop
@@ -4082,8 +4200,7 @@ pub fn execute_command(
         }
 
         Command::SaveAndQuit => {
-            // TODO: Implement save logic
-            println!("Save and quit not yet implemented");
+            save_file(state)?; // save file
             Ok(false) // Signal to exit after save
         }
 
@@ -4094,7 +4211,7 @@ pub fn execute_command(
             };
 
             // Rebuild window with new wrap mode
-            build_windowmap_nowrap(state, original_file_path)?;
+            build_windowmap_nowrap(state, &edit_file_path)?;
             Ok(true)
         }
 
@@ -4359,6 +4476,180 @@ fn insert_newline_at_cursor(state: &mut EditorState, file_path: &Path) -> io::Re
     state.line_count_at_top_of_window += 1;
 
     Ok(())
+}
+
+/// Writes input buffer directly to file at specified position (NO HEAP)
+///
+/// # Purpose
+/// Zero-allocation write operation. Writes pre-allocated buffer contents
+/// directly to file at exact byte position. Follows NASA Power of Ten rules.
+///
+/// # Arguments
+/// * `file` - Open file handle with write permissions
+/// * `input_buffer` - Slice of bytes to write (from pre-allocated buffer)
+/// * `file_position` - Exact byte offset in file where write begins
+///
+/// # Returns
+/// * `Ok(())` - Bytes written successfully
+/// * `Err(io::Error)` - Seek or write operation failed
+///
+/// # Memory
+/// - No heap allocation
+/// - Works directly with slice reference
+/// - File size irrelevant (only writing small buffer)
+///
+/// # Defensive Programming
+/// - Handles empty buffer (writes newline)
+/// - Seeks before writing (doesn't assume file position)
+/// - Uses write_all (ensures complete write)
+fn write_input_buffer_to_file(
+    file: &mut File,
+    input_buffer: &[u8],
+    file_position: u64,
+) -> io::Result<()> {
+    // Early return if buffer is empty (optional newline insertion)
+    if input_buffer.is_empty() {
+        file.seek(SeekFrom::Start(file_position))?;
+        file.write_all(b"\n")?;
+        return Ok(());
+    }
+
+    // Seek to exact position
+    file.seek(SeekFrom::Start(file_position))?;
+
+    // Write directly from input buffer slice
+    file.write_all(input_buffer)?;
+
+    Ok(())
+}
+
+/// Inserts text from the insert buffer at cursor position (NO HEAP VERSION)
+///
+/// # Purpose
+/// Inserts the contents of state.insert_input_buffer at the cursor position
+/// WITHOUT reading the entire file into memory. Uses direct file manipulation.
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position and insert buffer
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(bytes_written)` - Number of bytes successfully inserted
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Memory Safety
+/// - NO heap allocation
+/// - Uses pre-allocated insert_input_buffer
+/// - Does NOT load entire file into memory
+/// - Direct file I/O at specific position
+///
+/// # Process
+/// 1. Get slice of used portion of insert buffer
+/// 2. Get byte position from cursor (via WindowMap)
+/// 3. Open file with read/write permissions
+/// 4. Write buffer directly to file at position
+/// 5. Update cursor position
+/// 6. Clear insert buffer for next input
+/// 7. Mark file as modified
+///
+/// # Note
+/// This is the MVP approach for simple insertion. Future versions
+/// may need more sophisticated handling for:
+/// - Inserting in middle of file (requires shifting subsequent bytes)
+/// - Undo functionality (requires tracking changes)
+fn insert_text_at_cursor_no_heap(state: &mut EditorState, file_path: &Path) -> io::Result<usize> {
+    // Step 1: Get slice of used portion of buffer (NO ALLOCATION)
+    let bytes_to_insert = &state.insert_input_buffer[..state.insert_input_buffer_used];
+
+    // Defensive: Check if there's anything to insert
+    if state.insert_input_buffer_used == 0 {
+        return Ok(0); // Nothing to insert
+    }
+
+    // Step 2: Get file position from cursor using WindowMap
+    let file_pos = state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cursor not on valid file position",
+            )
+        })?;
+
+    // Assertion: File position should be valid
+    debug_assert!(file_pos.byte_offset < u64::MAX, "File position overflow");
+
+    // Step 3: Open file with read+write permissions
+    let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
+
+    // Defensive: Verify file opened successfully
+    let file_metadata = file.metadata()?;
+    if !file_metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Path is not a regular file",
+        ));
+    }
+
+    // Step 4: Write buffer directly to file (NO HEAP)
+    write_input_buffer_to_file(&mut file, bytes_to_insert, file_pos.byte_offset)?;
+
+    // Ensure bytes are written to disk
+    file.flush()?;
+
+    // Step 5: Calculate bytes written
+    let bytes_written = bytes_to_insert.len();
+
+    // Step 6: Update cursor position
+    // Count characters and newlines in inserted text
+    let text_str = std::str::from_utf8(bytes_to_insert).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid UTF-8 in insert buffer: {}", e),
+        )
+    })?;
+
+    let char_count = text_str.chars().count();
+    let newline_count = text_str.chars().filter(|&c| c == '\n').count();
+
+    if newline_count > 0 {
+        // Text contains newlines - cursor moves to new line
+        state.cursor.row += newline_count;
+
+        // Find position after last newline
+        if let Some(last_line) = text_str.split('\n').last() {
+            state.cursor.col = last_line.chars().count();
+        } else {
+            state.cursor.col = 0;
+        }
+    } else {
+        // No newlines - cursor moves horizontally
+        state.cursor.col += char_count;
+    }
+
+    // Step 7: Mark file as modified
+    state.is_modified = true;
+
+    // Step 8: Log the edit for undo functionality
+    state.log_edit(&format!(
+        "INSERT_TEXT line:{} byte:{} length:{} text:'{}'",
+        file_pos.line_number,
+        file_pos.byte_offset,
+        bytes_written,
+        text_str.chars().take(50).collect::<String>() // Log first 50 chars
+    ))?;
+
+    // Step 9: Clear insert buffer for next input
+    state.clear_insert_buffer();
+
+    // Assertion: Buffer should be empty after clearing
+    debug_assert_eq!(
+        state.insert_input_buffer_used, 0,
+        "Insert buffer should be empty after clearing"
+    );
+
+    Ok(bytes_written)
 }
 
 /// Inserts text from the insert buffer at cursor position
@@ -4640,7 +4931,15 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     state.horizontal_line_char_offset = 0;
 
     // Build initial window content
-    let lines_processed = build_windowmap_nowrap(&mut state, &target_path)?;
+    // Get the read_copy path BEFORE the mutable borrow
+    let read_copy = state
+        .read_copy_path
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+    // Now we can mutably borrow state
+    let lines_processed = build_windowmap_nowrap(&mut state, &read_copy)?;
+    // build_windowmap_nowrap(&mut state, &target_path)?;
     println!("Loaded {} lines", lines_processed);
 
     // ADD THESE TWO LINES:
@@ -4669,27 +4968,51 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         stdin.read_line(&mut input_buffer)?;
 
         // Handle input based on mode
+        // TODO: these should be tested
+        // to find the least-bad way to implement
+        // fewer-collisions with normal text entry
+        // balanced with being memorable
+        // possibly an added info-line blurb hint -n -s -v -wq
         if state.mode == EditorMode::Insert {
             let trimmed = input_buffer.trim();
 
             // Check for exit insert mode commands
-            if trimmed == "n" || trimmed == "\x1b" || trimmed == "ESC" {
-                // Execute pending insert if buffer has content
-                if state.insert_input_buffer_used > 0 {
-                    continue_editing = execute_command(
-                        &mut state,
-                        Command::InsertText(String::new()),
-                        &target_path,
-                    )?;
-                }
+            if trimmed == "-n" || trimmed == "\x1b" {
+                // // Exit insert mode
+                // continue_editing =
+                //     execute_command(&mut state, Command::EnterNormalMode, &target_path)?;
+                // // Rebuild window to refresh the TUI display
+                // build_windowmap_nowrap(&mut state, &target_path)?;
+                continue_editing = execute_command(&mut state, Command::EnterNormalMode)?;
 
+                // Get the read_copy path BEFORE the mutable borrow
+                let read_copy = state
+                    .read_copy_path
+                    .clone()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+                // Now we can mutably borrow state
+                build_windowmap_nowrap(&mut state, &read_copy)?;
+            } else if trimmed == "-v" {
+                continue_editing = execute_command(&mut state, Command::EnterVisualMode)?;
+
+                // Get the read_copy path BEFORE the mutable borrow
+                let read_copy = state
+                    .read_copy_path
+                    .clone()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+                // Now we can mutably borrow state
+                build_windowmap_nowrap(&mut state, &read_copy)?;
+            } else if trimmed == "-s" || trimmed == "-w" {
                 // Exit insert mode
-                continue_editing =
-                    execute_command(&mut state, Command::EnterNormalMode, &target_path)?;
+                continue_editing = execute_command(&mut state, Command::Save)?;
+            } else if trimmed == "-wq" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::SaveAndQuit)?;
             } else if trimmed.is_empty() {
                 // Empty line = newline insertion
-                continue_editing =
-                    execute_command(&mut state, Command::InsertNewline('\n'), &target_path)?;
+                continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
                 // Try to add text to buffer
                 match state.add_to_insert_buffer(trimmed) {
@@ -4699,11 +5022,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                     }
                     Ok(false) => {
                         // Buffer full - insert what we have, then add this text
-                        execute_command(
-                            &mut state,
-                            Command::InsertText(String::new()),
-                            &target_path,
-                        )?;
+                        execute_command(&mut state, Command::InsertText(String::new()))?;
 
                         // Try again with empty buffer
                         if !state.add_to_insert_buffer(trimmed)? {
@@ -4716,7 +5035,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 }
             }
         } else {
-            // // Normal/Visual mode: parse as command
+            // IF in  Normal/Visual mode: parse as command
             // let command = parse_command(&input_buffer, state.mode);
             // continue_editing = execute_command(&mut state, command, &target_path)?;
 
@@ -4735,7 +5054,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             };
 
             // Execute command
-            continue_editing = execute_command(&mut state, command.clone(), &target_path)?;
+            continue_editing = execute_command(&mut state, command.clone())?;
 
             // Store command for repeat (only if it's not Command::None)
             if command != Command::None {
@@ -5469,29 +5788,77 @@ fn main() -> io::Result<()> {
 Exciting Build!
 
 
-show 18 minor issue
-start off screen?? issue?
-
-note: skip int-space for ...map tui to file?
-
-add 'the last command!' to instructions...help
-top bar?
-
-Enter->repeat ...space...
-
-# Idea!
-let user import a file into another file
-e.g. not cut-past huge text amount
-e.g. merge data files...
-option... skip header... interesting...
-
-
-Q: Should every clone have a pre-allocated buffer?
-...or something?
 
 Current todo steps:
 
 
+any clone() heap use that can be re-done in a stack based way?
+- Replace Clone() with Copy Trait
+- Use References and Borrowing // Instead of cloning command, pass references
+e.g.     original_file_path: &Path,
+
+? "Use SmallVec or arrayvec for Small Collections For small, bounded collections, use stack-based alternatives:"
+? String Handling: For small strings, use fixed-size buffers:
+? Replace String with &str or Fixed Buffers
+? // Use static or pre-allocated error messages, Minimize Heap Allocations in Error Handling
+? Prefer From Trait for Error Conversion
+
+Q: can there be debug-only verbose errors, and for appliation only terse stack use?
+
+Command Parsing Optimization
+// Avoid allocation in command parsing
+fn parse_command(input: &str, mode: EditorMode) -> Command {
+    let trimmed = input.trim();
+
+    // Use stack-based parsing
+    match (mode, trimmed) {
+        (EditorMode::Normal, "h") => Command::MoveLeft(1),
+        (EditorMode::Normal, "j") => Command::MoveDown(1),
+        // Pre-parse repeat counts without heap allocation
+    }
+}
+
+1. empty enter is insert \n newline in insert mode
+2. insert input-buffer in insert mode.
+
+?
+fn write_input_buffer_to_file(
+    file: &mut File,
+    input_buffer: &[u8],
+    file_position: u64
+) -> io::Result<()> {
+    // Seek to exact position without allocating
+    file.seek(SeekFrom::Start(file_position))?;
+
+    // Write directly from input buffer slice
+    file.write_all(input_buffer)?;
+
+    Ok(())
+}
+or
+use std::io::{self, Write, Seek, SeekFrom};
+use std::fs::File;
+
+fn write_input_buffer_to_file(
+    file: &mut File,
+    input_buffer: &[u8],
+    file_position: u64
+) -> io::Result<()> {
+    // Early return if buffer is empty (optional newline insertion)
+    if input_buffer.is_empty() {
+        file.seek(SeekFrom::Start(file_position))?;
+        file.write_all(b"\n")?;
+        return Ok(());
+    }
+
+    // Seek to exact position
+    file.seek(SeekFrom::Start(file_position))?;
+
+    // Write directly from input buffer slice
+    file.write_all(input_buffer)?;
+
+    Ok(())
+}
 
 3. modular command handling system:
 (probably ff main loop for reference)
@@ -5516,8 +5883,36 @@ Next section:
 
 
 Todo...
-replace or remove --file command
+replace or remove --file command (probably remove...is commented out... also remove from help... unless it can be added...very simply)
 e.g. mini file-picker maybe
 
+note: line numbers not included in file-map: fskip {int /s (space)} for ...map tui to file
+
+Q: (Is clone a heap action?) Should every clone have a pre-allocated buffer?
+
+TODO:
+it looks like save is not implemented yet
+or not detected...
+
+
+TODO:
+there needs to be a blurb-section
+in the info bar
+messages are not showing on TUI,
+they get scrolled past
+
+TODO:
+when you change modes,
+you need to refresh the window
+
+refresh window when:
+1. you just made a change
+2. entering a new N V I mode
+
+TODO:
+maybe some kind of smart-status
+for not letting cursor go into the number lines?
+or... if red... not writing?
+(maybe latter)
 
 */
