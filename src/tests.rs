@@ -1584,3 +1584,249 @@ fn test_parse_movement_with_count() {
     //
     //
 }
+
+// #[test]
+// fn test_cursor_at_eol() {
+//     // Create a simple test file
+//     let test_files = create_test_files_with_id("cursor_eol").unwrap();
+//     let test_file = &test_files[0]; // basic_short.txt
+
+//     // Create session directory
+//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_00").unwrap();
+
+//     // Initialize state
+//     let mut state = EditorState::new();
+
+//     // Initialize session directory
+//     initialize_session_directory(&mut state, session_timestamp).unwrap();
+
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_00".to_string()).unwrap();
+
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+
+//     // Build window
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+//     // Test 1: Can we get position at start of line 1?
+//     let pos_start = state.window_map.get_file_position(0, 0).unwrap();
+//     println!("Position at (0,0): {:?}", pos_start);
+//     assert!(pos_start.is_some(), "Should have position at line start");
+
+//     // Test 2: Can we get position at END of line 1?
+//     // Line 1 is "Line 1: Hello, world!" (21 chars)
+//     // After line number "1 " (2 chars), text starts at col 2
+//     // Text is 21 chars, so last char is at col 2+20=22
+//     // EOL position should be at col 23
+
+//     let last_char_col = 22; // Position of last visible character
+//     let eol_col = 23; // Position AFTER last character
+
+//     let pos_last_char = state
+//         .window_map
+//         .get_file_position(0, last_char_col)
+//         .unwrap();
+//     println!(
+//         "Position at last char (0,{}): {:?}",
+//         last_char_col, pos_last_char
+//     );
+
+//     let pos_eol = state.window_map.get_file_position(0, eol_col).unwrap();
+//     println!("Position at EOL (0,{}): {:?}", eol_col, pos_eol);
+
+//     // This will tell us if EOL mapping is working
+//     assert!(pos_eol.is_some(), "Should have position at end of line");
+// }
+// #[test]
+// fn test_move_cursor_to_eol() {
+//     let test_files = create_test_files_with_id("cursor_move_eol").unwrap();
+//     let test_file = &test_files[0];
+
+//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_01").unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_timestamp).unwrap();
+
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_01".to_string()).unwrap();
+
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+//     // Start at beginning of line
+//     state.cursor.row = 0;
+//     state.cursor.col = 0;
+
+//     // Try to move right past the end of line
+//     let command = Command::MoveRight(100); // Move way past end
+//     let result = execute_command(&mut state, command);
+
+//     println!(
+//         "After moving right: cursor at ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
+
+//     // Check we can get file position at cursor
+//     let pos = state
+//         .window_map
+//         .get_file_position(state.cursor.row, state.cursor.col);
+//     println!("File position at cursor: {:?}", pos);
+
+//     assert!(result.is_ok(), "Move command should succeed");
+//     assert!(
+//         pos.unwrap().is_some(),
+//         "Should have valid position at cursor"
+//     );
+// }
+
+// #[test]
+// fn test_insert_at_eol() {
+//     let test_files = create_test_files_with_id("insert_eol").unwrap();
+//     let test_file = &test_files[0];
+
+//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_02").unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_timestamp).unwrap();
+
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_02".to_string()).unwrap();
+
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+//     // Move to end of first line
+//     state.cursor.row = 0;
+//     state.cursor.col = 23; // After "Line 1: Hello, world!"
+
+//     // Enter insert mode
+//     state.mode = EditorMode::Insert;
+
+//     // Try to insert text at EOL
+//     let text = " ADDED";
+//     let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
+
+//     println!("Insert result: {:?}", result);
+//     assert!(result.is_ok(), "Should be able to insert at EOL");
+
+//     // Verify text was added
+//     let mut file = std::fs::File::open(&read_copy).unwrap();
+//     let mut contents = String::new();
+//     std::io::Read::read_to_string(&mut file, &mut contents).unwrap();
+
+//     println!("File after insert:\n{}", contents);
+//     assert!(
+//         contents.contains("Hello, world! ADDED"),
+//         "Text should be appended"
+//     );
+// }
+
+#[test]
+fn test_eol_mapping_simple() {
+    use std::env;
+    // use std::path::PathBuf;
+
+    // Use existing test file
+    let cwd = env::current_dir().unwrap();
+    let test_file = cwd.join("test_files/basic_short.txt");
+
+    // Create unique session dir that won't conflict
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let session_ts =
+        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+
+    let mut state = EditorState::new();
+    initialize_session_directory(&mut state, session_ts).unwrap();
+
+    let session_dir = state.session_directory_path.as_ref().unwrap();
+    let read_copy =
+        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+
+    state.read_copy_path = Some(read_copy.clone());
+    state.original_file_path = Some(test_file.clone());
+
+    // Build window
+    let lines = build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+    println!("Built window with {} lines", lines);
+
+    // Line 1 is "Line 1: Hello, world!" - check what columns are mapped
+    for col in 0..30 {
+        match state.window_map.get_file_position(0, col) {
+            Ok(Some(pos)) => println!(
+                "Col {} -> byte_offset: {}, byte_in_line: {}",
+                col, pos.byte_offset, pos.byte_in_line
+            ),
+            Ok(None) => println!("Col {} -> None (unmapped)", col),
+            Err(e) => println!("Col {} -> Error: {}", col, e),
+        }
+    }
+}
+
+#[test]
+fn test_cursor_movement_to_eol() {
+    use std::env;
+    // use std::path::PathBuf;
+
+    let cwd = env::current_dir().unwrap();
+    let test_file = cwd.join("test_files/basic_short.txt");
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let session_ts =
+        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+
+    let mut state = EditorState::new();
+    initialize_session_directory(&mut state, session_ts).unwrap();
+
+    let session_dir = state.session_directory_path.as_ref().unwrap();
+    let read_copy =
+        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+
+    state.read_copy_path = Some(read_copy.clone());
+    state.original_file_path = Some(test_file.clone());
+    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+    // Start at beginning
+    state.cursor.row = 0;
+    state.cursor.col = 0;
+
+    println!(
+        "Starting cursor: ({}, {})",
+        state.cursor.row, state.cursor.col
+    );
+
+    // Try to move right 25 times (should land at col 23, the EOL position)
+    let result = execute_command(&mut state, Command::MoveRight(25));
+
+    println!(
+        "After MoveRight(25): cursor at ({}, {})",
+        state.cursor.row, state.cursor.col
+    );
+    println!("Command result: {:?}", result);
+
+    // Can we get file position at cursor?
+    match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => println!(
+            "File position at cursor: byte_offset={}, byte_in_line={}",
+            pos.byte_offset, pos.byte_in_line
+        ),
+        Ok(None) => println!("ERROR: No file position at cursor!"),
+        Err(e) => println!("ERROR getting position: {}", e),
+    }
+
+    assert!(result.is_ok());
+}

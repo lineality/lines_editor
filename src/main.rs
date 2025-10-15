@@ -3291,6 +3291,24 @@ fn process_line_with_offset(
         col_start + max_cols
     );
 
+    // Map one additional "virtual" position after the last character
+    // This allows cursor to be positioned at "end of line"
+    let eol_display_col = display_col; // The column right after last char
+
+    // Only add if we have room in the display
+    if eol_display_col < col_start + max_cols {
+        let eol_file_pos = FilePosition {
+            byte_offset: file_line_start + line_bytes.len() as u64, // After last byte
+            line_number: state.line_count_at_top_of_window + row,
+            byte_in_line: line_bytes.len(), // After last byte in line
+        };
+
+        state
+            .window_map
+            .set_file_position(row, eol_display_col, Some(eol_file_pos))?;
+    }
+    // ===== END NEW CODE =====
+
     Ok(bytes_written)
 }
 
@@ -4857,7 +4875,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             } else if trimmed == "\x1b[3~" {
                 // Do nothing if delete key entered...
                 continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
-            } else if input_buffer.is_empty() {
+            } else if input_buffer == "\n" || input_buffer == "\r\n" {
+                // note: empty isn't empty, it contains a newline
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
@@ -5251,8 +5270,14 @@ fn render_row_with_cursor(state: &EditorState, row_index: usize, row_content: &s
         }
     }
 
-    // If cursor is at/past end of line, show a space character as cursor
+    // // If cursor is at/past end of line, show a space character as cursor
+    // if cursor_col >= chars.len() {
+    //     result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
+    // }
+
+    // NEW: Always show cursor at/past end of line
     if cursor_col >= chars.len() {
+        // Show a block cursor at EOL position
         result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
     }
 
