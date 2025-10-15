@@ -1830,3 +1830,123 @@ fn test_cursor_movement_to_eol() {
 
     assert!(result.is_ok());
 }
+#[test]
+fn test_cursor_movement_to_eol2() {
+    use std::env;
+    // use std::path::PathBuf;
+
+    let cwd = env::current_dir().unwrap();
+    let test_file = cwd.join("test_files/basic_short.txt");
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let session_ts =
+        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+
+    let mut state = EditorState::new();
+    initialize_session_directory(&mut state, session_ts).unwrap();
+
+    let session_dir = state.session_directory_path.as_ref().unwrap();
+    let read_copy =
+        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+
+    state.read_copy_path = Some(read_copy.clone());
+    state.original_file_path = Some(test_file.clone());
+    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+    // Start at FIRST VALID position (col 2, after line number)
+    state.cursor.row = 0;
+    state.cursor.col = 2;
+
+    println!(
+        "Starting cursor: ({}, {})",
+        state.cursor.row, state.cursor.col
+    );
+
+    // Try to move right 25 times (should land at col 23, the EOL position)
+    let result = execute_command(&mut state, Command::MoveRight(25));
+
+    println!(
+        "After MoveRight(25): cursor at ({}, {})",
+        state.cursor.row, state.cursor.col
+    );
+    println!("Command result: {:?}", result);
+
+    // Can we get file position at cursor?
+    match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => println!(
+            "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
+            pos.byte_offset, pos.byte_in_line
+        ),
+        Ok(None) => println!("ERROR: No file position at cursor!"),
+        Err(e) => println!("ERROR getting position: {}", e),
+    }
+
+    assert!(result.is_ok());
+    assert_eq!(
+        state.cursor.col, 23,
+        "Cursor should be at EOL position (col 23)"
+    );
+}
+#[test]
+fn test_insert_at_eol_works() {
+    use std::env;
+    // use std::path::PathBuf;
+
+    let cwd = env::current_dir().unwrap();
+    let test_file = cwd.join("test_files/basic_short.txt");
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_micros();
+    let session_ts =
+        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+
+    let mut state = EditorState::new();
+    initialize_session_directory(&mut state, session_ts).unwrap();
+
+    let session_dir = state.session_directory_path.as_ref().unwrap();
+    let read_copy =
+        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+
+    state.read_copy_path = Some(read_copy.clone());
+    state.original_file_path = Some(test_file.clone());
+    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+
+    // Move to EOL
+    state.cursor.row = 0;
+    state.cursor.col = 23;
+    state.mode = EditorMode::Insert;
+
+    println!(
+        "Cursor at EOL: ({}, {})",
+        state.cursor.row, state.cursor.col
+    );
+
+    // Insert text at EOL
+    let text = " ADDED";
+    let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
+
+    println!("Insert result: {:?}", result);
+
+    // Read file and check
+    let contents = std::fs::read_to_string(&read_copy).unwrap();
+    println!(
+        "First line after insert: {}",
+        contents.lines().next().unwrap()
+    );
+
+    assert!(result.is_ok(), "Insert should succeed");
+    assert!(
+        contents.contains("world! ADDED"),
+        "Text should be appended to line"
+    );
+}

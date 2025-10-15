@@ -1,3 +1,3 @@
 # lines_editor
 
-Lines is a minimal text editor .r
+Lines is a minimal text editor.
