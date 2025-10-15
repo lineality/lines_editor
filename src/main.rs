@@ -5053,26 +5053,28 @@ fn create_a_readcopy_of_file(
 /// Displays usage information and available commands.
 /// Called when user runs `lines --help`.
 fn print_help() {
-    println!("Lines Editor - The Helps");
+    println!("About Lines Editor:");
     println!("USAGE:");
-    println!("    lines [OPTIONS] [FILE]");
+    println!("    lines [FILE]");
     println!("OPTIONS:");
     println!("    --help, -h      Show this help message");
     println!("    --version, -v   Show version information");
-    println!("    --files         Open file manager");
     println!("MODES:");
     println!("    Memo Mode:      Run from home directory, Append-only quickie");
     println!("                    Creates dated files in ~/Documents/lines_editor/");
     println!("    Full Editor:    Run from any other directory");
-    println!("                    Requires file path argument");
+    println!("DELETE: d");
+    println!("    Normal Mode: 'd' delete a line");
+    println!("    Visual Mode  'd'/ Insert Mode '-d': Backspace-Style Delete");
     println!("NAVIGATION:");
-    println!("    hjkl        Move cursor");
-    println!("    5j, 10l     Move with repeat count");
-    println!("    [Empty Enter]     Repeat last command (Normal/Visual/ ...?)");
-    println!("EXAMPLES in terminal/shell");
-    println!("  lines                  Memo mode (if in home)");
-    println!("  lines notes.txt        Create/open notes.txt");
-    println!("  lines ./mydir/         Create new file in directory");
+    println!("    hjkl            Move cursor");
+    println!("    5j, 10l         Move with repeat count");
+    println!("    [Empty Enter]   Repeat last command (Normal/Visual/ ...?)");
+    println!("-n -v -wq -q -s -d  Insert Mode: Flag style commands");
+    println!("Examples in terminal/shell:");
+    println!("  lines                Memo mode (if in home)");
+    println!("  lines notes.txt      Create/open notes.txt");
+    println!("  lines mydir/ Create new file in directory");
 }
 
 /// Formats the bottom info bar with current editor state
@@ -5576,7 +5578,7 @@ fn main() -> io::Result<()> {
                     Ok(())
                 }
                 "--version" | "-v" | "version" => {
-                    println!("lines editor v0.1.0");
+                    println!("lines editor v0.2.0");
                     Ok(())
                 }
                 _ => {
