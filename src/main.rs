@@ -4788,7 +4788,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
 
     state.cursor.row = 0;
-    state.cursor.col = 0;
+    state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
 
     // Main editor loop
     let stdin = io::stdin();
