@@ -89,14 +89,14 @@ Basic features to be use-able, with a design such that planned scope can be modu
 
 1. open a read-copy file: call lines from cli with a file-path
 [Done]- use function input path from argument handled by wrapper
-[Done]- make timestamped session directory in exe relative abs path directory lines_data/tmp/sessions/{timestamp}/
+[Done]- make timestamped session directory in exe relative abs path directory lines_data/sessions/{timestamp}/
 [Done]- save read-copy of file
 
 [Done]main() is a wrapper that handles arguments, e.g. get path from argument and feed it in, later help menu, etc.
 
 [Done]lines_editor_module(option(path)) is the main lines application-wrapper, called by main (or called by another application into which the lines editor is added as a module)
 
-[Done]lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
+[Done]lines_data/sessions/{timestamp}/{timestamp}_{filename}
 
 
 2. save paths in state: [Done]
@@ -3678,6 +3678,75 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
     }
 }
 
+/// Cleans up session directory and all its contents
+///
+/// # Purpose
+/// Removes the session directory created for this editing session.
+/// Called on normal exit (quit/save-quit) to cleanup temporary files.
+///
+/// # Arguments
+/// * `state` - Editor state containing session directory path
+///
+/// # Returns
+/// * `Ok(())` - Cleanup successful or no session directory to clean
+/// * `Err(io::Error)` - Cleanup failed (non-fatal, logged)
+///
+/// # Safety
+/// - Only removes directories under lines_data/tmp/sessions/
+/// - Defensive checks prevent removing wrong directories
+/// - Errors are logged but don't prevent exit
+fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
+    // Get session directory path
+    let session_dir = match &state.session_directory_path {
+        Some(path) => path,
+        None => {
+            // No session directory - nothing to clean
+            return Ok(());
+        }
+    };
+
+    // Defensive: Verify this is actually a session directory
+    let path_str = session_dir.to_string_lossy();
+    if !path_str.contains("lines_data") || !path_str.contains("sessions") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Refusing to delete directory that doesn't look like a session dir: {}",
+                path_str
+            ),
+        ));
+    }
+
+    // Check if directory exists
+    if !session_dir.exists() {
+        // Already gone - that's fine
+        return Ok(());
+    }
+
+    // Defensive: Verify it's actually a directory
+    if !session_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Session path exists but is not a directory: {}",
+                session_dir.display()
+            ),
+        ));
+    }
+
+    // Remove the directory and all contents
+    fs::remove_dir_all(session_dir).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to remove session directory: {}", e),
+        )
+    })?;
+
+    println!("Session directory cleaned up: {}", session_dir.display());
+
+    Ok(())
+}
+
 /// Executes a command and updates editor state
 ///
 /// # Arguments
@@ -3982,6 +4051,17 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             // } else {
             //     Ok(false) // Signal to exit loop
             // }
+            // Clean up session directory before the exiting
+            // Wash your teeth and brush your face!
+
+            if let Err(e) = cleanup_session_directory(state) {
+                eprintln!("Warning: Session cleanup failed: {}", e);
+                log_error(
+                    &format!("Session cleanup failed: {}", e),
+                    Some("Command::Quit"),
+                );
+                // Continue with exit anyway
+            }
 
             // Default behavior: Let User Decide
             Ok(false) // Signal to exit loop
@@ -3989,6 +4069,16 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
         Command::SaveAndQuit => {
             save_file(state)?; // save file
+
+            // Clean up session directory after save
+            if let Err(e) = cleanup_session_directory(state) {
+                eprintln!("Warning: Session cleanup failed: {}", e);
+                log_error(
+                    &format!("Session cleanup failed: {}", e),
+                    Some("Command::SaveAndQuit"),
+                );
+                // Continue with exit anyway
+            }
             Ok(false) // Signal to exit after save
         }
 
@@ -4766,8 +4856,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     println!("Read-copy: {}", read_copy_path.display());
 
     // Initialize editor state
-    let mut state = EditorState::new();
-    state.original_file_path = Some(target_path.clone());
     state.read_copy_path = Some(read_copy_path);
 
     // Initialize window position
@@ -4985,7 +5073,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 ///
 /// # File Naming
 /// Original: `/path/to/file.txt`
-/// Session dir: `{executable_dir}/lines_data/tmp/sessions/2025_01_15_14_30_45/`
+/// Session dir: `{executable_dir}/lines_data/sessions/2025_01_15_14_30_45/`
 /// Read-copy: `{session_dir}/2025_01_15_14_30_45_file.txt`
 ///
 /// # Design Notes
@@ -5395,8 +5483,8 @@ pub fn render_tui_to_writer<W: Write>(
 /// {executable_dir}/
 ///   lines_data/
 ///     tmp/
-///       sessions/
-///         {timestamp}/          <- This session's directory
+///     sessions/
+///       {timestamp}/          <- This session's directory
 /// ```
 ///
 /// # Arguments
@@ -5431,8 +5519,8 @@ fn initialize_session_directory(
     );
 
     // Step 1: Ensure base directory structure exists
-    // Creates: {executable_dir}/lines_data/tmp/sessions/
-    let base_sessions_path = "lines_data/tmp/sessions";
+    // Creates: {executable_dir}/lines_data/sessions/
+    let base_sessions_path = "lines_data/sessions";
 
     let sessions_dir = make_verify_or_create_executabledirectoryrelative_canonicalized_dir_path(
         base_sessions_path,
