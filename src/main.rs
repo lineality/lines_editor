@@ -3408,6 +3408,7 @@ fn get_home_directory() -> io::Result<PathBuf> {
     }
 }
 
+// Stretech goal TODO: try to make non-heap stdin read...
 /// Prompts user for a filename when a directory path is provided
 ///
 /// # Purpose
@@ -4617,7 +4618,7 @@ fn insert_text_chunk_at_cursor_position(
     Ok(())
 }
 
-/// Full-featured editor mode for editing files
+/// Line-Editor, Full-Mode for editing files
 ///
 /// # Purpose
 /// Main entry point for full editor functionality (not memo mode).
@@ -4786,7 +4787,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
     println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
 
-    // ADD THESE TWO LINES:
     state.cursor.row = 0;
     state.cursor.col = 0;
 
@@ -4803,6 +4803,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
         // Clear input buffer for new command
         input_buffer.clear();
+        // TODO: clear both buffer?
+        // or clear buffer inside each area below (probably)
 
         // Render TUI (convert LinesError to io::Error)
         render_tui(&state, &input_buffer)
@@ -4814,8 +4816,11 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         // The +Enter system is build on this as is.
         //
         // TODO: A stretch goal or other experiment
-        // as it might be entirely different in operation
-        // is a byte-stream using system. with stdin.read(bytes...
+        // as it might be stdin.read(bytes...
+        //
+        // TODO: maybe get the input inside each mode...
+        // with insert maybe being fiddly
+        // with chunked insert
         stdin.read_line(&mut input_buffer)?;
 
         // TODO: these should be tested
@@ -4835,7 +4840,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             ```
             */
 
-            // note: this removes spaces AND the newline
+            // TODO
+            // let bytes_read = stdin.read(&mut TEXT_INPUT_BUFFER)?;
+
+            // note: this removes spaces AND the newline(s)
             // which is a mixed bag
             let trimmed = input_buffer.trim();
 
@@ -4880,6 +4888,12 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
             } else {
+                // ///////////////
+                // Text to Insert
+                // ///////////////
+
+                // loop to insert text in chunk.
+
                 // Read stdin and insert text
                 // Remove ONLY the trailing newline, keep leading/trailing spaces
                 let text = if input_buffer.ends_with('\n') {
@@ -4904,6 +4918,9 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 build_windowmap_nowrap(&mut state, &read_copy)?;
             }
         } else {
+            // TODO
+            // let bytes_read = stdin.read(&mut COMMAND_BUFFER)?;
+
             // IF in Normal/Visual mode: parse as command
             // let command = parse_command(&input_buffer, state.mode);
             // continue_editing = execute_command(&mut state, command, &target_path)?;
@@ -5130,10 +5147,25 @@ fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
         input_buffer.to_string()
     };
 
+    // TODO add info_bar_message to state
+    // show (snother colour? no colour? after filename)
+    // keep buffer short 16 char?
+
     // Build the info bar
     let info = format!(
-        "{}{} {}line {} col {} {}{} > {}{}",
-        YELLOW, mode_str, RED, line_display, col_display, YELLOW, filename, display_input, RESET
+        "{}{} line{}{} {}col{}{}{} {}{} > {}{}",
+        YELLOW,
+        mode_str,
+        RED,
+        line_display,
+        YELLOW,
+        YELLOW,
+        RED,
+        col_display,
+        YELLOW,
+        filename,
+        display_input,
+        RESET
     );
 
     Ok(info)
@@ -5684,6 +5716,129 @@ no heap strings for production... if terse errors.
 
 probably skip file manager...
 put lines in to ff
+
+...
+
+
+maybe a simple example to fix input:
+
+use std::io::{self, Read};
+
+/*
+oops@oops-Precision-7780:~/code/readteststdin$ cargo run
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running `target/debug/readteststdin`
+Type something and press Enter:
+(Program will read in 2-byte chunks)
+
+123456789 abcdefghijklmnop
+Chunk 1: read 2 bytes: [49, 50]
+  As text: "12"
+Chunk 2: read 2 bytes: [51, 52]
+  As text: "34"
+Chunk 3: read 2 bytes: [53, 54]
+  As text: "56"
+Chunk 4: read 2 bytes: [55, 56]
+  As text: "78"
+Chunk 5: read 2 bytes: [57, 32]
+  As text: "9 "
+Chunk 6: read 2 bytes: [97, 98]
+  As text: "ab"
+Chunk 7: read 2 bytes: [99, 100]
+  As text: "cd"
+Chunk 8: read 2 bytes: [101, 102]
+  As text: "ef"
+Chunk 9: read 2 bytes: [103, 104]
+  As text: "gh"
+Chunk 10: read 2 bytes: [105, 106]
+  As text: "ij"
+Chunk 11: read 2 bytes: [107, 108]
+  As text: "kl"
+Chunk 12: read 2 bytes: [109, 110]
+  As text: "mn"
+Chunk 13: read 2 bytes: [111, 112]
+  As text: "op"
+Chunk 14: read 1 bytes: [10]
+  As text: "\n"
+
+[Newline detected - end of input]
+
+Total bytes read: 27
+Total chunks: 14
+oops@oops-Precision-7780:~/code/readteststdin$
+
+*/
+
+fn main() -> io::Result<()> {
+    println!("Type something and press Enter:");
+    println!("(Program will read in 2-byte chunks)\n");
+
+    let mut stdin = io::stdin();
+    let mut buffer = [0u8; 2]; // TWO BYTE BUFFER
+    let mut chunk_number = 0;
+    let mut total_bytes = 0;
+
+    loop {
+        chunk_number += 1;
+
+        let bytes_read = stdin.read(&mut buffer)?;
+
+        if bytes_read == 0 {
+            println!("\n[EOF detected]");
+            break;
+        }
+
+        total_bytes += bytes_read;
+
+        println!(
+            "Chunk {}: read {} bytes: {:?}",
+            chunk_number,
+            bytes_read,
+            &buffer[..bytes_read]
+        );
+
+        // Show as string if valid UTF-8
+        if let Ok(s) = std::str::from_utf8(&buffer[..bytes_read]) {
+            println!("  As text: {:?}", s);
+        }
+
+        // Stop after newline
+        if buffer[..bytes_read].contains(&b'\n') {
+            println!("\n[Newline detected - end of input]");
+            break;
+        }
+    }
+
+    println!("\nTotal bytes read: {}", total_bytes);
+    println!("Total chunks: {}", chunk_number);
+
+    Ok(())
+}
+
+
+...
+
+0. maybe completely eliminate all heap...
+- heap in verbose error messages?
+
+1. Restructure input to use:
+- separate smaller command buffer
+- larger input-text buffer
+- figure out strategy to update file by chunks
+- figure out least-worst chunk size (256, 512,1024,?)
+- note: this is rarely used
+- keep most operations slim
+2. add --import-file feature
+3. restructure legacy mode to not use heap
+4. add -a --append mode
+
+5. struct for multi-select?
+edit in reverse order?
+make a stack of operations?
+
+a. get file positions
+b. do operation at each file position starting with the last
+c. limit to... 32? 16?
 
 
 */
