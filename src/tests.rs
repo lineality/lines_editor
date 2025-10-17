@@ -1830,6 +1830,7 @@ fn test_cursor_movement_to_eol() {
 
     assert!(result.is_ok());
 }
+
 #[test]
 fn test_cursor_movement_to_eol2() {
     use std::env;

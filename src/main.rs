@@ -2,28 +2,38 @@
 // test files in: src/tests.rs
 
 /*
-Policy and Rust Rules
+# Abstract
+Lines is a minimal terminal text/hex file-editor,
+written from scratch in vanilla 2024-Rust with no third party crates or unsafe code,
+designed for long term reliability, maintainability, adaptable modularity,
+memory-footprint minimalism, safety, and security.
+The scope is intentionally constrained to a few essential uses and file operations
+such as insert, and delete at the character/byte level. Lines is,
+by design and policy, not a "fully-featured," "feature-rich," "responsive,"
+full IDE competing with Zed, Helix, vsCode, etc.
 
-1. Lines is to be a 'no load' 'load only what is needed only when it is needed' application.
+# Policies
+- slim, modular, scalable, customizable, maintainable; not bloated, not inflexible, not unmaintainable, not incomprehensible, not ideological; not low-code no-code.
+- line numbers (absolute or relative) are always shown
+- ready-copy: for safety, there is always a read-copy of a file, even for large files
+- memory and file safety is a priority
+- memory-use is strongly optimized/minimized: RAM is a precious resource
+- UI/TUI is strongly optimized/minimized: UI space is a precious resource
+- disk-space use is not optimized/minimized: disk space is not a rare  precious resource.
+- Goal: 100% memory pre-allocated
+- get-needed-when-needed: only load what is needed when it is needed; never blindly whole-pre-load anything
+- modular iterative chunks: Anything (potentially including posix epoch time-stamps) that do not have a 100% tautologically forever-known size must be handled in modular chunks, not blindly loaded whole.
+- vanilla-Rust with no 3rd party dependencies
+- no unsafe code
+- Lines require safe file backups. 3x the file-size may/will be used. There is no cowboy in-place altering of only-copies of files.
+- 'defensive' coding
+- modularity and simplicity for maintainability and customization
+- Always work with absolute paths (defensive programming)
+- executable parent relative absolute paths?
+- Where possible, as in legacy-mini-lines-editor, do not leave a file 'open' to read/write/append. Read what you need, when you need to, then stop reading the file, close out the read/write process so that the file is not locked or conflicted for another application or process (outside or inside of Lines).
 
-2. Any operation of unknown size is broken up into chunks and handled modularly.
 
-3. Let it fail and try again. This is production software that must not crash/panic ever.
-Every part of every function will fail at some point, if only due to cosmic ray bitflips
-which are common on a larger scape. When, not if, when something fails
-the application must gracefully let it fail and move on, e.g.
-returning to the last non-failed step. It is the user's choice to try again or not.
-
-4. Error messages use pre-allocated buffers are are very terse for terminal,
-longer errors can be appended to log files. No heap.
-
-5. The main edge-case exception to strongly favoring pre-allocated memory
-is using stdin and  read_line() as heap based. This functionality is
-deliberately the core of the +Enter system.
-
-
-
-Rust rules:
+# Rust rules:
 Always best practice.
 Always extensive doc strings.
 Always comments.
@@ -35,46 +45,48 @@ Always error handling.
 Never unsafe code.
 Never use unwrap.
 
-Load what is needed when it is needed: Do not ever load a whole file,
-rarely load a whole anything. increment and load only what is required pragmatically.
+Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
 
-Always defensive best practice
-
-Always error handling: everything will fail at some point,
-if only because of cosmic-ray bit-flips (which are actually common),
-there must always be fail-safe error handling.
+Always defensive best practice:
+Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
 
 Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
 
 No third party libraries (or strictly avoid third party libraries where possible).
-
-Following NASA's 'Power of 10 rules' (updated for 2025 and Rust):
+Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 and Rust):
 1. no unsafe stuff:
 - no recursion
 - no goto
 - no pointers
 - no preprocessor
 
-2. upper bound on normal-loops, failsafe for always-loops
+2. upper bound on all normal-loops, failsafe for all always-loops
 
 3. Pre-allocate all memory (no dynamic memory allocation)
 
-4. functions have narrow focus
+4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
 5. Defensive programming:
-- average to a minimum of two assertions per function
-- cargo tests
-- error handling details
-- uses of Option
+- use asserts: usually an average of a minimum of two assertions per function
+- use cargo tests
+- use error handling
+- use Option
+- use enums and structs
 
 6. ? Is this about ownership of variables?
+- maybe: manage rust ownership to avoid heap or memory-bloat
 
 7. manage return values:
-null-void return values & checking non-void-null returns
+- use null-void return values
+- check non-void-null returns
 
-8. ...
+8. ?
+
 9. Communicate:
-doc strings, comments, use case, edge case,
+- use doc strings, use comments,
+- Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
+
+
 
 */
 
@@ -646,6 +658,12 @@ mod tests;
 ///
 const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
 
+// for commands such as 'n'
+const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
+
+// for iterating chunks of text to be inserted into file
+const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256; //
+
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
 const MAX_TUI_ROWS: usize = 48;
@@ -709,6 +727,8 @@ mod limits {
     /// Maximum iterations when parsing command input strings
     /// Allows up to 20-digit repeat counts (e.g., "12345678901234567890j")
     pub const COMMAND_PARSE_MAX_CHARS: usize = 20;
+
+    pub const TEXT_INPUT_CHUNKS: usize = 1024;
 }
 
 /// Creates a timestamp string specifically for archive file naming
@@ -2837,7 +2857,7 @@ pub fn build_windowmap_nowrap(
     // Open file for reading
     let mut file = File::open(readcopy_file_path)?;
 
-    // *** FIX: Calculate byte position for the target line ***
+    // Calculate byte position for the target line
     let byte_position = seek_to_line_number(&mut file, state.line_count_at_top_of_window)?;
 
     // Update state with the correct byte position
@@ -3093,6 +3113,11 @@ fn read_single_line<'a>(
 /// - Properly skips complete characters, not bytes
 /// - Handles multi-byte UTF-8 sequences correctly
 /// - Maps double-width characters to two display columns
+///
+/// note: "end of TUI" is not "end of line"
+/// byte_offset: file_line_start + line_bytes.len() as u64, // ❌ Wrong
+/// rustCopybyte_offset: file_line_start + byte_index as u64, // ✅ Correct
+///
 fn process_line_with_offset(
     state: &mut EditorState,
     row: usize,
@@ -3298,9 +3323,9 @@ fn process_line_with_offset(
     // Only add if we have room in the display
     if eol_display_col < col_start + max_cols {
         let eol_file_pos = FilePosition {
-            byte_offset: file_line_start + line_bytes.len() as u64, // After last byte
+            byte_offset: file_line_start + byte_index as u64, // end of TUI is not EOLine
             line_number: state.line_count_at_top_of_window + row,
-            byte_in_line: line_bytes.len(), // After last byte in line
+            byte_in_line: byte_index, // end of TUI is not EOLine
         };
 
         state
@@ -4705,7 +4730,301 @@ fn insert_text_chunk_at_cursor_position(
     let char_count = text_str.chars().count();
     state.cursor.col += char_count;
 
+    // ==========================================
+    //  NEW: Check if cursor exceeded right edge
+    // ==========================================
+    let right_edge = state.effective_cols.saturating_sub(1);
+
+    if state.cursor.col > right_edge {
+        // Calculate how far past edge we went
+        let overflow = state.cursor.col - right_edge;
+
+        // Scroll window right to accommodate
+        state.horizontal_line_char_offset += overflow;
+
+        // Move cursor back to right edge
+        state.cursor.col = right_edge;
+
+        // Rebuild window to show new viewport
+        build_windowmap_nowrap(state, file_path)?;
+    }
+
     Ok(())
+}
+
+/// Reads UTF-8 characters from stdin into pre-allocated buffer
+/// Stops at buffer full or newline, never splits multi-byte chars
+///
+/// # Arguments
+/// * `stdin_handle` - Locked stdin handle
+/// * `buffer` - Pre-allocated byte buffer
+///
+/// # Returns
+/// * `Ok(bytes_written)` - Number of valid UTF-8 bytes in buffer
+/// * `Err(io::Error)` - Read failure
+fn read_utf8_chars_into_buffer(
+    stdin_handle: &mut io::StdinLock,
+    buffer: &mut [u8],
+) -> io::Result<usize> {
+    let mut buffer_position = 0;
+    let buffer_capacity = buffer.len();
+
+    // Temporary single-byte buffer for reading
+    let mut single_byte = [0u8; 1];
+
+    // Track UTF-8 sequence state
+    let mut utf8_sequence_buffer = [0u8; 4]; // Max UTF-8 char is 4 bytes
+    let mut utf8_bytes_collected = 0;
+    let mut utf8_bytes_expected = 0;
+
+    loop {
+        // Read one byte
+        let bytes_read = stdin_handle.read(&mut single_byte)?;
+
+        if bytes_read == 0 {
+            // EOF - return what we have
+            break;
+        }
+
+        let byte = single_byte[0];
+
+        // Start of new UTF-8 sequence?
+        if utf8_bytes_expected == 0 {
+            // Determine how many bytes this character needs
+            utf8_bytes_expected = if byte & 0b1000_0000 == 0 {
+                1 // ASCII (0xxxxxxx)
+            } else if byte & 0b1110_0000 == 0b1100_0000 {
+                2 // 110xxxxx
+            } else if byte & 0b1111_0000 == 0b1110_0000 {
+                3 // 1110xxxx
+            } else if byte & 0b1111_1000 == 0b1111_0000 {
+                4 // 11110xxx
+            } else {
+                // Invalid UTF-8 start byte - skip it
+                continue;
+            };
+
+            utf8_sequence_buffer[0] = byte;
+            utf8_bytes_collected = 1;
+
+            // Complete single-byte char (ASCII)?
+            if utf8_bytes_expected == 1 {
+                // Check if buffer has space
+                if buffer_position >= buffer_capacity {
+                    // Buffer full - we're done
+                    break;
+                }
+
+                buffer[buffer_position] = byte;
+                buffer_position += 1;
+
+                // Stop on newline
+                if byte == b'\n' {
+                    break;
+                }
+
+                // Reset for next character
+                utf8_bytes_expected = 0;
+                utf8_bytes_collected = 0;
+            }
+        } else {
+            // Continuation byte of multi-byte sequence
+            utf8_sequence_buffer[utf8_bytes_collected] = byte;
+            utf8_bytes_collected += 1;
+
+            // Complete multi-byte character?
+            if utf8_bytes_collected == utf8_bytes_expected {
+                // Check if buffer has space for complete character
+                if buffer_position + utf8_bytes_expected > buffer_capacity {
+                    // Not enough space - stop here (don't split character)
+                    break;
+                }
+
+                // Copy complete character to buffer
+                buffer[buffer_position..buffer_position + utf8_bytes_expected]
+                    .copy_from_slice(&utf8_sequence_buffer[..utf8_bytes_expected]);
+                buffer_position += utf8_bytes_expected;
+
+                // Reset for next character
+                utf8_bytes_expected = 0;
+                utf8_bytes_collected = 0;
+            }
+        }
+    }
+
+    Ok(buffer_position)
+}
+
+/// Resolves and prepares the target file path for editing
+///
+/// # Purpose
+/// Handles all file path resolution logic, converting user input into
+/// an absolute, validated file path ready for editing. Manages:
+/// - Relative to absolute path conversion
+/// - Directory vs file discrimination
+/// - User prompting for missing filenames
+/// - Parent directory creation
+/// - Final path validation
+///
+/// # Arguments
+/// * `original_file_path` - Optional path provided by user (file or directory)
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Absolute path to target file, ready for editing
+/// * `Err(io::Error)` - Path resolution, validation, or directory creation failed
+///
+/// # Behavior by Input Type
+/// * `None` - Returns `InvalidInput` error (full editor requires path)
+/// * `Some(existing_file)` - Returns absolute path to existing file
+/// * `Some(existing_dir)` - Prompts user for filename, returns `dir/filename`
+/// * `Some(new_path/)` - Creates directory, prompts for filename, returns path
+/// * `Some(new_path)` - Creates parent directories if needed, returns absolute path
+///
+/// # Edge Cases
+/// - Empty path strings: Returns `InvalidInput` error
+/// - Trailing path separators: Interpreted as directory request
+/// - Missing parent directories: Created automatically with notification
+/// - Relative paths: Converted to absolute based on current working directory
+///
+/// # Side Effects
+/// - Creates directories on filesystem (with user notification)
+/// - Prompts user for input via `prompt_for_filename()` when needed
+/// - Prints status messages to stdout for transparency
+///
+/// # Error Conditions
+/// - No path provided (None input)
+/// - Empty resolved path
+/// - Directory creation failure (permissions, disk space, etc.)
+/// - User filename prompt failure or cancellation
+/// - Current directory access failure (for relative path conversion)
+fn resolve_target_file_path(original_file_path: Option<PathBuf>) -> io::Result<PathBuf> {
+    // Require path in full editor mode (not optional like memo mode)
+    let path = match original_file_path {
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "File path required in full editor mode. Usage: lines <filename>",
+            ));
+        }
+        Some(p) => p,
+    };
+
+    // Convert to absolute path for consistency and safety
+    let absolute_path = if path.is_absolute() {
+        path.clone()
+    } else {
+        // Resolve relative to current working directory
+        env::current_dir()?.join(&path)
+    };
+
+    // Route based on whether path exists and what type it is
+    let target_path = if absolute_path.exists() {
+        resolve_existing_path(absolute_path)?
+    } else {
+        resolve_new_path(path, absolute_path)?
+    };
+
+    // Defensive: Final validation before returning
+    if target_path.to_string_lossy().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid file path: resolved to empty path",
+        ));
+    }
+
+    Ok(target_path)
+}
+
+/// Handles resolution of paths that already exist on filesystem
+///
+/// # Purpose
+/// Determines if existing path is a file (use as-is) or directory
+/// (prompt for filename). Part of path resolution workflow.
+///
+/// # Arguments
+/// * `absolute_path` - Existing absolute path to resolve
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Resolved file path (either original file or dir + prompted filename)
+/// * `Err(io::Error)` - Filename prompting failed
+///
+/// # Behavior
+/// - If path is file: returns path unchanged
+/// - If path is directory: prompts user for filename, returns `dir/filename`
+///
+/// # Assertions
+/// - Path must exist (caller's responsibility)
+fn resolve_existing_path(absolute_path: PathBuf) -> io::Result<PathBuf> {
+    // Defensive: Verify precondition
+    debug_assert!(
+        absolute_path.exists(),
+        "resolve_existing_path called with non-existent path"
+    );
+
+    if absolute_path.is_dir() {
+        // Directory: prompt user for filename to create within it
+        println!("Directory specified: {}", absolute_path.display());
+        let filename = prompt_for_filename()?;
+        Ok(absolute_path.join(filename))
+    } else {
+        // Existing file: use as-is
+        Ok(absolute_path)
+    }
+}
+
+/// Handles resolution of paths that don't exist yet
+///
+/// # Purpose
+/// Distinguishes between new file requests and new directory requests
+/// based on trailing separators. Creates directories as needed.
+/// Part of path resolution workflow.
+///
+/// # Arguments
+/// * `original_path` - Original path as provided by user (may be relative)
+/// * `absolute_path` - Absolute version of original path
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Resolved file path ready for creation
+/// * `Err(io::Error)` - Directory creation or filename prompting failed
+///
+/// # Behavior
+/// - Path ends with `/` or `\`: Creates directory, prompts for filename
+/// - Path without separator: Creates parent dirs if needed, returns path
+///
+/// # Side Effects
+/// - Creates directories on filesystem when needed
+/// - Prompts user for filename when directory specified
+/// - Prints status messages about directory creation
+///
+/// # Assertions
+/// - Path must NOT exist (caller's responsibility)
+fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Result<PathBuf> {
+    // Defensive: Verify precondition
+    debug_assert!(
+        !absolute_path.exists(),
+        "resolve_new_path called with existing path"
+    );
+
+    // Check if user specified a directory (trailing separator)
+    let path_str = original_path.to_string_lossy();
+    if path_str.ends_with('/') || path_str.ends_with('\\') {
+        // Treat as directory that needs creating
+        fs::create_dir_all(&absolute_path)?;
+        println!("Created directory: {}", absolute_path.display());
+
+        // Prompt for filename within new directory
+        let filename = prompt_for_filename()?;
+        Ok(absolute_path.join(filename))
+    } else {
+        // Treat as new file path - create parent directories if needed
+        if let Some(parent) = absolute_path.parent() {
+            if !parent.exists() {
+                println!("Creating parent directories: {}", parent.display());
+                fs::create_dir_all(parent)?;
+            }
+        }
+        Ok(absolute_path)
+    }
 }
 
 /// Line-Editor, Full-Mode for editing files
@@ -4741,65 +5060,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     E: when given a path but no file name, ask user for file name
     */
 
-    // Determine the target file path
-    let target_path = match original_file_path {
-        None => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "File path required in full editor mode. Usage: lines <filename>",
-            ));
-        }
-        Some(path) => {
-            // Convert to absolute path
-            let absolute_path = if path.is_absolute() {
-                path.clone()
-            } else {
-                env::current_dir()?.join(&path)
-            };
-
-            // Check if path exists and what type it is
-            if absolute_path.exists() {
-                if absolute_path.is_dir() {
-                    // Directory: prompt for filename
-                    println!("Directory specified: {}", absolute_path.display());
-                    let filename = prompt_for_filename()?;
-                    absolute_path.join(filename)
-                } else {
-                    // Existing file: use as-is
-                    absolute_path
-                }
-            } else {
-                // Path doesn't exist: treat as new file
-                // Check if parent looks like a directory (ends with separator)
-                let path_str = path.to_string_lossy();
-                if path_str.ends_with('/') || path_str.ends_with('\\') {
-                    // Treat as directory that needs creating
-                    fs::create_dir_all(&absolute_path)?;
-                    println!("Created directory: {}", absolute_path.display());
-                    let filename = prompt_for_filename()?;
-                    absolute_path.join(filename)
-                } else {
-                    // Treat as file that needs creating
-                    // Create parent directories if needed
-                    if let Some(parent) = absolute_path.parent() {
-                        if !parent.exists() {
-                            println!("Creating parent directories: {}", parent.display());
-                            fs::create_dir_all(parent)?;
-                        }
-                    }
-                    absolute_path
-                }
-            }
-        }
-    };
-
-    // Defensive: Final validation
-    if target_path.to_string_lossy().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Invalid file path: empty path",
-        ));
-    }
+    // Resolve target file path (all path handling logic extracted)
+    let target_path = resolve_target_file_path(original_file_path)?;
 
     println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
     println!("File: {}", target_path.display());
@@ -4817,6 +5079,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
         println!("Created new file with header");
     }
+
     // Initialize editor state
     let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
 
@@ -4879,9 +5142,16 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
 
     // Main editor loop
-    let stdin = io::stdin();
-    let mut input_buffer = String::new();
+    // let mut input_buffer = String::new();
     let mut continue_editing = true;
+
+    // set up pre-allocated input buffere, short for commands
+    // and Bucket Brigade! for text input:
+    // Pre-allocate input buffers
+    let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
+    let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
+    let stdin = io::stdin();
+    let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
 
     // Defensive: Limit loop iterations to prevent infinite loops
     let mut iteration_count = 0;
@@ -4889,35 +5159,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
-        // Clear input buffer for new command
-        input_buffer.clear();
-        // TODO: clear both buffer?
-        // or clear buffer inside each area below (probably)
-
         // Render TUI (convert LinesError to io::Error)
-        render_tui(&state, &input_buffer)
+        render_tui(&state, &"")
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
-        // Read user input
-        // NOTE: This is by design the main exception
-        // to using preallocated memory.
-        // The +Enter system is build on this as is.
-        //
-        // TODO: A stretch goal or other experiment
-        // as it might be stdin.read(bytes...
-        //
-        // TODO: maybe get the input inside each mode...
-        // with insert maybe being fiddly
-        // with chunked insert
-        stdin.read_line(&mut input_buffer)?;
-
-        // TODO: these should be tested
-        // to find the least-bad way to implement
-        // fewer-collisions with normal text entry
-        // balanced with being memorable
-        // possibly an added info-line blurb hint -n -s -v -wq -w
-        // bare letters likely collide too much
-        // and --long-form is too time consuming
         if state.mode == EditorMode::Insert {
             /*
             For another command area, also see:
@@ -4928,12 +5173,18 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             ```
             */
 
-            // TODO
-            // let bytes_read = stdin.read(&mut TEXT_INPUT_BUFFER)?;
+            // Read single command (no chunking)
+            let bytes_read = stdin_handle.read(&mut text_buffer)?;
 
-            // note: this removes spaces AND the newline(s)
-            // which is a mixed bag
-            let trimmed = input_buffer.trim();
+            if bytes_read == 0 {
+                continue;
+            }
+
+            // Parse command from bytes
+            let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+
+            // Normal/Visual mode: parse as command
+            let trimmed = text_input_str.trim();
 
             // Check for exit insert mode commands
             if trimmed == "-n" || trimmed == "\x1b" {
@@ -4971,7 +5222,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             } else if trimmed == "\x1b[3~" {
                 // Do nothing if delete key entered...
                 continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
-            } else if input_buffer == "\n" || input_buffer == "\r\n" {
+            } else if text_input_str == "\n" || text_input_str == "\r\n" {
                 // note: empty isn't empty, it contains a newline
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
@@ -4980,41 +5231,98 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // Text to Insert
                 // ///////////////
 
-                // loop to insert text in chunk.
+                // Strip newline before inserting (but keep it for detection)
+                let has_newline = text_buffer[..bytes_read].contains(&b'\n');
 
-                // Read stdin and insert text
-                // Remove ONLY the trailing newline, keep leading/trailing spaces
-                let text = if input_buffer.ends_with('\n') {
-                    &input_buffer[..input_buffer.len() - 1]
+                // Remove trailing newline for insertion
+                let bytes_to_insert = if has_newline {
+                    // Find newline position
+                    let newline_pos = text_buffer[..bytes_read]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .unwrap_or(bytes_read);
+                    newline_pos
                 } else {
-                    &input_buffer[..]
+                    bytes_read
                 };
 
-                // Also handle \r\n on Windows
-                let text = if text.ends_with('\r') {
-                    &text[..text.len() - 1]
-                } else {
-                    text
-                };
+                // Insert text (without newline)
+                if bytes_to_insert > 0 {
+                    insert_text_chunk_at_cursor_position(
+                        &mut state,
+                        &read_copy,
+                        &text_buffer[..bytes_to_insert],
+                    )?;
+                    build_windowmap_nowrap(&mut state, &read_copy)?;
+                }
 
-                let text_bytes = text.as_bytes();
+                // Only continue bucket-brigade if NO newline was found
+                // (meaning buffer filled before newline, more data coming)
+                if !has_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                    // Buffer was completely filled, might be more data
+                    let mut bucket_iteration = 1;
 
-                // Read stdin and insert text
-                // It's text! - insert it directly without re-reading stdin
-                // let text_bytes = input_buffer.as_bytes();
-                insert_text_chunk_at_cursor_position(&mut state, &read_copy, text_bytes)?;
-                build_windowmap_nowrap(&mut state, &read_copy)?;
+                    loop {
+                        bucket_iteration += 1;
+
+                        if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
+                            break;
+                        }
+
+                        // Try to read more chunks
+                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
+
+                        if more_bytes == 0 {
+                            break; // EOF
+                        }
+
+                        // Check for newline in this chunk
+                        let has_newline = text_buffer[..more_bytes].contains(&b'\n');
+
+                        let bytes_to_insert = if has_newline {
+                            text_buffer[..more_bytes]
+                                .iter()
+                                .position(|&b| b == b'\n')
+                                .unwrap_or(more_bytes)
+                        } else {
+                            more_bytes
+                        };
+
+                        // Insert chunk
+                        if bytes_to_insert > 0 {
+                            insert_text_chunk_at_cursor_position(
+                                &mut state,
+                                &read_copy,
+                                &text_buffer[..bytes_to_insert],
+                            )?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?;
+                        }
+
+                        // Stop if we hit newline
+                        if has_newline {
+                            break;
+                        }
+                    }
+                }
             }
         } else {
-            // TODO
-            // let bytes_read = stdin.read(&mut COMMAND_BUFFER)?;
-
+            // ///////////////////////////////////////////
             // IF in Normal/Visual mode: parse as command
-            // let command = parse_command(&input_buffer, state.mode);
-            // continue_editing = execute_command(&mut state, command, &target_path)?;
+            // ///////////////////////////////////////////
+
+            // Read single command (no chunking)
+            let bytes_read = stdin_handle.read(&mut command_buffer)?;
+
+            // If overflow, ignore and continue
+            if bytes_read >= WHOLE_COMMAND_BUFFER_SIZE {
+                continue; // Skip oversized input
+            }
+
+            // Parse command from bytes
+            let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
 
             // Normal/Visual mode: parse as command
-            let trimmed = input_buffer.trim();
+            let trimmed = command_str.trim();
 
             let command = if trimmed.is_empty() {
                 // Empty enter: repeat last command
@@ -5024,7 +5332,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 }
             } else {
                 // Parse new command
-                parse_command(&input_buffer, state.mode)
+                parse_command(&command_str, state.mode)
             };
 
             // Execute command
