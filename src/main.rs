@@ -1933,7 +1933,14 @@ impl EditorState {
             tofile_insertinput_chunkbuffer_used: 0,
         }
     }
-
+    /// Gets the first valid text column for cursor's current row
+    ///
+    /// # Returns
+    /// * Column position where text starts (after line number)
+    pub fn get_text_start_column(&self) -> usize {
+        let line_number = self.line_count_at_top_of_window + self.cursor.row;
+        calculate_line_number_width(line_number + 1) // +1 for 1-indexed display
+    }
     /*
     // When opening a file:
     state.init_changelog(&original_file_path)?;
@@ -5274,82 +5281,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // ///////////////
                 // Text to Insert
                 // ///////////////
-
-                // // Strip newline before inserting (but keep it for detection)
-                // let has_newline = text_buffer[..bytes_read].contains(&b'\n');
-
-                // // Remove trailing newline for insertion
-                // let bytes_to_insert = if has_newline {
-                //     // Find newline position
-                //     let newline_pos = text_buffer[..bytes_read]
-                //         .iter()
-                //         .position(|&b| b == b'\n')
-                //         .unwrap_or(bytes_read);
-                //     newline_pos
-                // } else {
-                //     bytes_read
-                // };
-
-                // // Insert text (without newline)
-                // if bytes_to_insert > 0 {
-                //     insert_text_chunk_at_cursor_position(
-                //         &mut state,
-                //         &read_copy,
-                //         &text_buffer[..bytes_to_insert],
-                //     )?;
-                //     build_windowmap_nowrap(&mut state, &read_copy)?;
-                // }
-
-                // // Only continue bucket-brigade if NO newline was found
-                // // (meaning buffer filled before newline, more data coming)
-                // if !has_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
-                //     // Buffer was completely filled, might be more data
-                //     let mut bucket_iteration = 1;
-
-                //     loop {
-                //         bucket_iteration += 1;
-
-                //         if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
-                //             break;
-                //         }
-
-                //         // Try to read more chunks
-                //         let more_bytes = stdin_handle.read(&mut text_buffer)?;
-
-                //         if more_bytes == 0 {
-                //             break; // EOF
-                //         }
-
-                //         // Check for newline in this chunk
-                //         let has_newline = text_buffer[..more_bytes].contains(&b'\n');
-
-                //         let bytes_to_insert = if has_newline {
-                //             text_buffer[..more_bytes]
-                //                 .iter()
-                //                 .position(|&b| b == b'\n')
-                //                 .unwrap_or(more_bytes)
-                //         } else {
-                //             more_bytes
-                //         };
-
-                //         // Insert chunk
-                //         if bytes_to_insert > 0 {
-                //             insert_text_chunk_at_cursor_position(
-                //                 &mut state,
-                //                 &read_copy,
-                //                 &text_buffer[..bytes_to_insert],
-                //             )?;
-                //             build_windowmap_nowrap(&mut state, &read_copy)?;
-                //         }
-
-                //         // Stop if we hit newline
-                //         if has_newline {
-                //             break;
-                //         }
-                //     }
-                // }
-                //
-                //
 
                 // Process the chunk, handling multiple newlines
                 let mut chunk_start = 0;
