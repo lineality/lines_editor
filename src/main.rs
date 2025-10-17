@@ -5223,6 +5223,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             if current_mode == ...
             ```
             */
+            // Clear buffer before reading
+            for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                text_buffer[i] = 0;
+            }
 
             // Read single command (no chunking)
             let bytes_read = stdin_handle.read(&mut text_buffer)?;
@@ -5382,6 +5386,11 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             // ///////////////////////////////////////////
             // IF in Normal/Visual mode: parse as command
             // ///////////////////////////////////////////
+
+            // Clear buffer before reading
+            for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
+                command_buffer[i] = 0;
+            }
 
             // Read single command (no chunking)
             let bytes_read = stdin_handle.read(&mut command_buffer)?;
@@ -6291,15 +6300,19 @@ fn main() -> io::Result<()> {
 - heap in verbose error messages?
 
 1. Restructure input to use:
-- separate smaller command buffer
-- larger input-text buffer
-- figure out strategy to update file by chunks
-- figure out least-worst chunk size (256, 512,1024,?)
-- note: this is rarely used
-- keep most operations slim
+- try to fix strange last-line issue.
+- add extra buffer last newline?
+
+
 2. add --import-file feature
+- how to call... tricky, file path longer than command..
+if insermode starts with '--insert-file '?
+safe to check for? (possible edge cases collisions)
+
 3. restructure legacy mode to not use heap
+
 4. add -a --append mode
+- existing legacy mode
 
 5. struct for multi-select?
 edit in reverse order?
@@ -6309,5 +6322,8 @@ a. get file positions
 b. do operation at each file position starting with the last
 c. limit to... 32? 16?
 
+edge case:
+- multi-line input not working on the last line...
+- ...always add padding line at bottom? kludge...
 
 */
