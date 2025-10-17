@@ -4499,6 +4499,41 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     Ok(())
 }
 
+/// Calculates how many columns the line number display uses
+///
+/// # Arguments
+/// * `line_number` - The 1-indexed line number (for display)
+///
+/// # Returns
+/// * Number of columns used (digits + 1 space)
+///
+/// # Examples
+/// * Line 1-9: "1 " = 2 columns
+/// * Line 10-99: "10 " = 3 columns
+/// * Line 100-999: "100 " = 4 columns
+fn calculate_line_number_width(line_number: usize) -> usize {
+    if line_number == 0 {
+        return 2; // Edge case: treat as single digit
+    }
+
+    // Count digits
+    let digits = if line_number < 10 {
+        1
+    } else if line_number < 100 {
+        2
+    } else if line_number < 1000 {
+        3
+    } else if line_number < 10000 {
+        4
+    } else if line_number < 100000 {
+        5
+    } else {
+        6 // Cap at 6 digits (999,999 lines max)
+    };
+
+    digits + 1 // Add 1 for the space after the number
+}
+
 /// Inserts a newline character at cursor position WITHOUT loading whole file
 ///
 /// # Purpose
@@ -4637,9 +4672,18 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
         file_pos.line_number, file_pos.byte_offset
     ))?;
 
+    // // Step 11: Update cursor - move to start of new line
+    // state.cursor.row += 1;
+    // state.cursor.col = 0;
+
     // Step 11: Update cursor - move to start of new line
     state.cursor.row += 1;
-    state.cursor.col = 0;
+
+    // Calculate where the text starts after the line number
+    let new_line_number = state.line_count_at_top_of_window + state.cursor.row;
+    let line_num_width = calculate_line_number_width(new_line_number + 1); // +1 for 1-indexed display
+
+    state.cursor.col = line_num_width; // Position cursor after line number
 
     // Note: We don't update line_count_at_top_of_window here
     // The window rebuild will handle proper positioning
@@ -5231,35 +5275,122 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // Text to Insert
                 // ///////////////
 
-                // Strip newline before inserting (but keep it for detection)
-                let has_newline = text_buffer[..bytes_read].contains(&b'\n');
+                // // Strip newline before inserting (but keep it for detection)
+                // let has_newline = text_buffer[..bytes_read].contains(&b'\n');
 
-                // Remove trailing newline for insertion
-                let bytes_to_insert = if has_newline {
-                    // Find newline position
-                    let newline_pos = text_buffer[..bytes_read]
-                        .iter()
-                        .position(|&b| b == b'\n')
-                        .unwrap_or(bytes_read);
-                    newline_pos
-                } else {
-                    bytes_read
-                };
+                // // Remove trailing newline for insertion
+                // let bytes_to_insert = if has_newline {
+                //     // Find newline position
+                //     let newline_pos = text_buffer[..bytes_read]
+                //         .iter()
+                //         .position(|&b| b == b'\n')
+                //         .unwrap_or(bytes_read);
+                //     newline_pos
+                // } else {
+                //     bytes_read
+                // };
 
-                // Insert text (without newline)
-                if bytes_to_insert > 0 {
-                    insert_text_chunk_at_cursor_position(
-                        &mut state,
-                        &read_copy,
-                        &text_buffer[..bytes_to_insert],
-                    )?;
-                    build_windowmap_nowrap(&mut state, &read_copy)?;
+                // // Insert text (without newline)
+                // if bytes_to_insert > 0 {
+                //     insert_text_chunk_at_cursor_position(
+                //         &mut state,
+                //         &read_copy,
+                //         &text_buffer[..bytes_to_insert],
+                //     )?;
+                //     build_windowmap_nowrap(&mut state, &read_copy)?;
+                // }
+
+                // // Only continue bucket-brigade if NO newline was found
+                // // (meaning buffer filled before newline, more data coming)
+                // if !has_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                //     // Buffer was completely filled, might be more data
+                //     let mut bucket_iteration = 1;
+
+                //     loop {
+                //         bucket_iteration += 1;
+
+                //         if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
+                //             break;
+                //         }
+
+                //         // Try to read more chunks
+                //         let more_bytes = stdin_handle.read(&mut text_buffer)?;
+
+                //         if more_bytes == 0 {
+                //             break; // EOF
+                //         }
+
+                //         // Check for newline in this chunk
+                //         let has_newline = text_buffer[..more_bytes].contains(&b'\n');
+
+                //         let bytes_to_insert = if has_newline {
+                //             text_buffer[..more_bytes]
+                //                 .iter()
+                //                 .position(|&b| b == b'\n')
+                //                 .unwrap_or(more_bytes)
+                //         } else {
+                //             more_bytes
+                //         };
+
+                //         // Insert chunk
+                //         if bytes_to_insert > 0 {
+                //             insert_text_chunk_at_cursor_position(
+                //                 &mut state,
+                //                 &read_copy,
+                //                 &text_buffer[..bytes_to_insert],
+                //             )?;
+                //             build_windowmap_nowrap(&mut state, &read_copy)?;
+                //         }
+
+                //         // Stop if we hit newline
+                //         if has_newline {
+                //             break;
+                //         }
+                //     }
+                // }
+                //
+                //
+
+                // Process the chunk, handling multiple newlines
+                let mut chunk_start = 0;
+
+                while chunk_start < bytes_read {
+                    // Find next newline
+                    let remaining = &text_buffer[chunk_start..bytes_read];
+
+                    if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+                        // Found newline - insert text before it
+                        if newline_offset > 0 {
+                            insert_text_chunk_at_cursor_position(
+                                &mut state,
+                                &read_copy,
+                                &remaining[..newline_offset],
+                            )?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        }
+
+                        // Insert the newline itself
+                        execute_command(&mut state, Command::InsertNewline('\n'))?;
+                        build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+
+                        // Move past the newline for next iteration
+                        chunk_start += newline_offset + 1;
+                    } else {
+                        // No more newlines - insert rest of chunk
+                        if remaining.len() > 0 {
+                            insert_text_chunk_at_cursor_position(
+                                &mut state, &read_copy, remaining,
+                            )?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        }
+                        break;
+                    }
                 }
 
-                // Only continue bucket-brigade if NO newline was found
-                // (meaning buffer filled before newline, more data coming)
-                if !has_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
-                    // Buffer was completely filled, might be more data
+                // Continue bucket-brigade...
+                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
+
+                if !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
                     let mut bucket_iteration = 1;
 
                     loop {
@@ -5269,37 +5400,48 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                             break;
                         }
 
-                        // Try to read more chunks
                         let more_bytes = stdin_handle.read(&mut text_buffer)?;
 
                         if more_bytes == 0 {
-                            break; // EOF
+                            break;
                         }
 
-                        // Check for newline in this chunk
-                        let has_newline = text_buffer[..more_bytes].contains(&b'\n');
+                        // Process this chunk's newlines
+                        let mut chunk_start = 0;
 
-                        let bytes_to_insert = if has_newline {
-                            text_buffer[..more_bytes]
-                                .iter()
-                                .position(|&b| b == b'\n')
-                                .unwrap_or(more_bytes)
-                        } else {
-                            more_bytes
-                        };
+                        while chunk_start < more_bytes {
+                            let remaining = &text_buffer[chunk_start..more_bytes];
 
-                        // Insert chunk
-                        if bytes_to_insert > 0 {
-                            insert_text_chunk_at_cursor_position(
-                                &mut state,
-                                &read_copy,
-                                &text_buffer[..bytes_to_insert],
-                            )?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?;
+                            if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n')
+                            {
+                                if newline_offset > 0 {
+                                    insert_text_chunk_at_cursor_position(
+                                        &mut state,
+                                        &read_copy,
+                                        &remaining[..newline_offset],
+                                    )?;
+                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+                                }
+
+                                execute_command(&mut state, Command::InsertNewline('\n'))?;
+                                build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+
+                                chunk_start += newline_offset + 1;
+                            } else {
+                                if remaining.len() > 0 {
+                                    insert_text_chunk_at_cursor_position(
+                                        &mut state, &read_copy, remaining,
+                                    )?;
+                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+                                }
+                                break;
+                            }
                         }
 
-                        // Stop if we hit newline
-                        if has_newline {
+                        // Stop if chunk ended with newline
+                        let ends_with_newline =
+                            more_bytes > 0 && text_buffer[more_bytes - 1] == b'\n';
+                        if ends_with_newline {
                             break;
                         }
                     }
