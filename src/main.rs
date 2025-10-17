@@ -4803,108 +4803,108 @@ fn insert_text_chunk_at_cursor_position(
     Ok(())
 }
 
-/// Reads UTF-8 characters from stdin into pre-allocated buffer
-/// Stops at buffer full or newline, never splits multi-byte chars
-///
-/// # Arguments
-/// * `stdin_handle` - Locked stdin handle
-/// * `buffer` - Pre-allocated byte buffer
-///
-/// # Returns
-/// * `Ok(bytes_written)` - Number of valid UTF-8 bytes in buffer
-/// * `Err(io::Error)` - Read failure
-fn read_utf8_chars_into_buffer(
-    stdin_handle: &mut io::StdinLock,
-    buffer: &mut [u8],
-) -> io::Result<usize> {
-    let mut buffer_position = 0;
-    let buffer_capacity = buffer.len();
+// /// Reads UTF-8 characters from stdin into pre-allocated buffer
+// /// Stops at buffer full or newline, never splits multi-byte chars
+// ///
+// /// # Arguments
+// /// * `stdin_handle` - Locked stdin handle
+// /// * `buffer` - Pre-allocated byte buffer
+// ///
+// /// # Returns
+// /// * `Ok(bytes_written)` - Number of valid UTF-8 bytes in buffer
+// /// * `Err(io::Error)` - Read failure
+// fn read_utf8_chars_into_buffer(
+//     stdin_handle: &mut io::StdinLock,
+//     buffer: &mut [u8],
+// ) -> io::Result<usize> {
+//     let mut buffer_position = 0;
+//     let buffer_capacity = buffer.len();
 
-    // Temporary single-byte buffer for reading
-    let mut single_byte = [0u8; 1];
+//     // Temporary single-byte buffer for reading
+//     let mut single_byte = [0u8; 1];
 
-    // Track UTF-8 sequence state
-    let mut utf8_sequence_buffer = [0u8; 4]; // Max UTF-8 char is 4 bytes
-    let mut utf8_bytes_collected = 0;
-    let mut utf8_bytes_expected = 0;
+//     // Track UTF-8 sequence state
+//     let mut utf8_sequence_buffer = [0u8; 4]; // Max UTF-8 char is 4 bytes
+//     let mut utf8_bytes_collected = 0;
+//     let mut utf8_bytes_expected = 0;
 
-    loop {
-        // Read one byte
-        let bytes_read = stdin_handle.read(&mut single_byte)?;
+//     loop {
+//         // Read one byte
+//         let bytes_read = stdin_handle.read(&mut single_byte)?;
 
-        if bytes_read == 0 {
-            // EOF - return what we have
-            break;
-        }
+//         if bytes_read == 0 {
+//             // EOF - return what we have
+//             break;
+//         }
 
-        let byte = single_byte[0];
+//         let byte = single_byte[0];
 
-        // Start of new UTF-8 sequence?
-        if utf8_bytes_expected == 0 {
-            // Determine how many bytes this character needs
-            utf8_bytes_expected = if byte & 0b1000_0000 == 0 {
-                1 // ASCII (0xxxxxxx)
-            } else if byte & 0b1110_0000 == 0b1100_0000 {
-                2 // 110xxxxx
-            } else if byte & 0b1111_0000 == 0b1110_0000 {
-                3 // 1110xxxx
-            } else if byte & 0b1111_1000 == 0b1111_0000 {
-                4 // 11110xxx
-            } else {
-                // Invalid UTF-8 start byte - skip it
-                continue;
-            };
+//         // Start of new UTF-8 sequence?
+//         if utf8_bytes_expected == 0 {
+//             // Determine how many bytes this character needs
+//             utf8_bytes_expected = if byte & 0b1000_0000 == 0 {
+//                 1 // ASCII (0xxxxxxx)
+//             } else if byte & 0b1110_0000 == 0b1100_0000 {
+//                 2 // 110xxxxx
+//             } else if byte & 0b1111_0000 == 0b1110_0000 {
+//                 3 // 1110xxxx
+//             } else if byte & 0b1111_1000 == 0b1111_0000 {
+//                 4 // 11110xxx
+//             } else {
+//                 // Invalid UTF-8 start byte - skip it
+//                 continue;
+//             };
 
-            utf8_sequence_buffer[0] = byte;
-            utf8_bytes_collected = 1;
+//             utf8_sequence_buffer[0] = byte;
+//             utf8_bytes_collected = 1;
 
-            // Complete single-byte char (ASCII)?
-            if utf8_bytes_expected == 1 {
-                // Check if buffer has space
-                if buffer_position >= buffer_capacity {
-                    // Buffer full - we're done
-                    break;
-                }
+//             // Complete single-byte char (ASCII)?
+//             if utf8_bytes_expected == 1 {
+//                 // Check if buffer has space
+//                 if buffer_position >= buffer_capacity {
+//                     // Buffer full - we're done
+//                     break;
+//                 }
 
-                buffer[buffer_position] = byte;
-                buffer_position += 1;
+//                 buffer[buffer_position] = byte;
+//                 buffer_position += 1;
 
-                // Stop on newline
-                if byte == b'\n' {
-                    break;
-                }
+//                 // Stop on newline
+//                 if byte == b'\n' {
+//                     break;
+//                 }
 
-                // Reset for next character
-                utf8_bytes_expected = 0;
-                utf8_bytes_collected = 0;
-            }
-        } else {
-            // Continuation byte of multi-byte sequence
-            utf8_sequence_buffer[utf8_bytes_collected] = byte;
-            utf8_bytes_collected += 1;
+//                 // Reset for next character
+//                 utf8_bytes_expected = 0;
+//                 utf8_bytes_collected = 0;
+//             }
+//         } else {
+//             // Continuation byte of multi-byte sequence
+//             utf8_sequence_buffer[utf8_bytes_collected] = byte;
+//             utf8_bytes_collected += 1;
 
-            // Complete multi-byte character?
-            if utf8_bytes_collected == utf8_bytes_expected {
-                // Check if buffer has space for complete character
-                if buffer_position + utf8_bytes_expected > buffer_capacity {
-                    // Not enough space - stop here (don't split character)
-                    break;
-                }
+//             // Complete multi-byte character?
+//             if utf8_bytes_collected == utf8_bytes_expected {
+//                 // Check if buffer has space for complete character
+//                 if buffer_position + utf8_bytes_expected > buffer_capacity {
+//                     // Not enough space - stop here (don't split character)
+//                     break;
+//                 }
 
-                // Copy complete character to buffer
-                buffer[buffer_position..buffer_position + utf8_bytes_expected]
-                    .copy_from_slice(&utf8_sequence_buffer[..utf8_bytes_expected]);
-                buffer_position += utf8_bytes_expected;
+//                 // Copy complete character to buffer
+//                 buffer[buffer_position..buffer_position + utf8_bytes_expected]
+//                     .copy_from_slice(&utf8_sequence_buffer[..utf8_bytes_expected]);
+//                 buffer_position += utf8_bytes_expected;
 
-                // Reset for next character
-                utf8_bytes_expected = 0;
-                utf8_bytes_collected = 0;
-            }
-        }
-    }
+//                 // Reset for next character
+//                 utf8_bytes_expected = 0;
+//                 utf8_bytes_collected = 0;
+//             }
+//         }
+//     }
 
-    Ok(buffer_position)
-}
+//     Ok(buffer_position)
+// }
 
 /// Resolves and prepares the target file path for editing
 ///
@@ -5189,6 +5189,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
     println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
 
+    // Bootstrap initial cursor position, start of file, after "l "
     state.cursor.row = 0;
     state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
 
@@ -5207,11 +5208,14 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // Defensive: Limit loop iterations to prevent infinite loops
     let mut iteration_count = 0;
 
+    // ///////////////////////////////
+    // Main Loop for Full Lines Editor
+    // ///////////////////////////////
     while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
         // Render TUI (convert LinesError to io::Error)
-        render_tui(&state, &"")
+        render_tui(&state)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
         if state.mode == EditorMode::Insert {
@@ -5281,6 +5285,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 // note: empty isn't empty, it contains a newline
                 // Empty line = newline insertion
                 continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
+                build_windowmap_nowrap(&mut state, &read_copy)?; // Rebuild immediately after newline
             } else {
                 // ///////////////
                 // Text to Insert
@@ -5595,7 +5600,7 @@ fn print_help() {
 /// - Line/col for cursor tracking
 /// - Filename for context
 /// - Input buffer shows what user is typing
-fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
+fn format_info_bar(state: &EditorState) -> Result<String> {
     // Get mode string
     let mode_str = match state.mode {
         EditorMode::Normal => "NORMAL",
@@ -5617,23 +5622,16 @@ fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
         .and_then(|n| n.to_str())
         .unwrap_or("unnamed");
 
-    // Truncate input buffer if too long (leave room for other info)
-    let max_input_len = 40;
-    let display_input = if input_buffer.len() > max_input_len {
-        format!("{}...", &input_buffer[..max_input_len - 3])
-    } else {
-        input_buffer.to_string()
-    };
-
     // TODO add info_bar_message to state
     // show (snother colour? no colour? after filename)
     // keep buffer short 16 char?
 
     // Build the info bar
     let info = format!(
-        "{}{} line{}{} {}col{}{}{} {}{} > {}{}",
-        YELLOW,
+        "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
+        RED,
         mode_str,
+        YELLOW,
         RED,
         line_display,
         YELLOW,
@@ -5642,7 +5640,6 @@ fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
         col_display,
         YELLOW,
         filename,
-        display_input,
         RESET
     );
 
@@ -5659,7 +5656,6 @@ fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
 ///
 /// # Arguments
 /// * `state` - Current editor state with display buffers
-/// * `input_buffer` - Current user input/command
 ///
 /// # Returns
 /// * `Ok(())` - Successfully rendered
@@ -5680,7 +5676,7 @@ fn format_info_bar(state: &EditorState, input_buffer: &str) -> Result<String> {
 /// - No wasted space, no filler lines
 /// - All essential info visible
 /// - Clean, minimal aesthetic
-pub fn render_tui(state: &EditorState, input_buffer: &str) -> Result<()> {
+pub fn render_tui(state: &EditorState) -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[H");
     io::stdout()
@@ -5731,7 +5727,7 @@ pub fn render_tui(state: &EditorState, input_buffer: &str) -> Result<()> {
     }
 
     // === BOTTOM LINE: INFO BAR ===
-    let info_bar = format_info_bar(state, input_buffer)?;
+    let info_bar = format_info_bar(state)?;
     print!("{}", info_bar);
 
     io::stdout()
@@ -5810,11 +5806,7 @@ fn render_row_with_cursor(state: &EditorState, row_index: usize, row_content: &s
 /// # Returns
 /// * `Ok(())` - Successfully rendered
 /// * `Err(LinesError)` - Display operation failed
-pub fn render_tui_to_writer<W: Write>(
-    state: &EditorState,
-    input_buffer: &str,
-    writer: &mut W,
-) -> Result<()> {
+pub fn render_tui_to_writer<W: Write>(state: &EditorState, writer: &mut W) -> Result<()> {
     // Top legend
     let legend = format_navigation_legend()?;
     writeln!(writer, "{}", legend)
@@ -5850,7 +5842,7 @@ pub fn render_tui_to_writer<W: Write>(
     }
 
     // Bottom info bar
-    let info_bar = format_info_bar(state, input_buffer)?;
+    let info_bar = format_info_bar(state)?;
     write!(writer, "{}", info_bar)
         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
 
@@ -5974,6 +5966,7 @@ fn initialize_session_directory(
 }
 
 // Keep this legacy code to re-use / reference later as 'memo-mode' where no path argument and cwd is home
+// // Needs to be modified to not use heap
 // /// Lines - A minimal text editor for quick append-only notes
 // ///
 // /// # Usage
@@ -6304,7 +6297,7 @@ fn main() -> io::Result<()> {
 - add extra buffer last newline?
 
 
-2. add --import-file feature
+2. add --insert_from_file feature
 - how to call... tricky, file path longer than command..
 if insermode starts with '--insert-file '?
 safe to check for? (possible edge cases collisions)
