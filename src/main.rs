@@ -631,7 +631,7 @@ fn main() {
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write, stdin, stdout};
+use std::io::{self, Read, Seek, SeekFrom, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2213,141 +2213,283 @@ fn is_leap_year(year: u64) -> bool {
     }
 }
 
-/// Displays the last n lines of a file to standard output
-/// Returns an IO Result to properly handle potential file reading errors
-///
-/// # Arguments
-/// * `original_file_path` - Path to the file to display
-/// * `num_lines` - Number of lines to show from end of file
-///
-/// # Returns
-/// * `io::Result<()>` - Success or error status of the display operation
-///
-/// # Errors
-/// Returns error if:
-/// - File cannot be opened
-/// - File cannot be read
-/// - File content cannot be parsed as valid UTF-8
-fn memo_mode_display_file_tail(original_file_path: &Path, num_lines: usize) -> io::Result<()> {
-    /*
-     * TODO: this maybe needs to be revised to not use heap dynamic memory
-     */
-    let file = File::open(original_file_path)?;
-    let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<io::Result<_>>()?;
+// /// TODO this is lagacy code
+// /// loads whole file -> let mut content = fs::read_to_string(file_path)?;
+// /// Must move by chunks...TODO
+// ///
+// /// Gets the header string for a new file
+// /// Combines timestamp with optional header.txt content
+// ///
+// /// # Returns
+// /// - `Ok(String)` - Header string containing timestamp and optional header.txt content
+// /// - `Err(io::Error)` - If there's an error reading header.txt (if it exists)
+// /// Gets the header string for a new file          // <-- Duplicated line
+// /// Combines timestamp with optional header.txt content  // <-- Duplicated line
+// fn memo_mode_get_header_text() -> io::Result<String> {
+//     /*
+//      * TODO: this maybe needs to be revised to not use heap dynamic memory
+//      */
+//     let timestamp = get_timestamp()?;
+//     let mut header = format!("# {}", timestamp);
 
-    let start = if lines.len() > num_lines {
-        lines.len() - num_lines
-    } else {
-        0
-    };
+//     // Get the executable's directory
+//     let exe_path = env::current_exe()?;
+//     let exe_dir = exe_path.parent().ok_or_else(|| {
+//         io::Error::new(
+//             io::ErrorKind::NotFound,
+//             "Could not determine executable directory",
+//         )
+//     })?;
 
-    for line in &lines[start..] {
-        println!("{}", line);
-    }
-    Ok(())
-}
+//     // Check for header.txt in the executable's directory
+//     let header_path = exe_dir.join("header.txt");
 
-/// TODO this is lagacy code
-/// loads whole file -> let mut content = fs::read_to_string(file_path)?;
-/// Must move by chunks...TODO
-///
-/// Gets the header string for a new file
-/// Combines timestamp with optional header.txt content
-///
-/// # Returns
-/// - `Ok(String)` - Header string containing timestamp and optional header.txt content
-/// - `Err(io::Error)` - If there's an error reading header.txt (if it exists)
-/// Gets the header string for a new file          // <-- Duplicated line
-/// Combines timestamp with optional header.txt content  // <-- Duplicated line
-fn memo_mode_get_header_text() -> io::Result<String> {
-    /*
-     * TODO: this maybe needs to be revised to not use heap dynamic memory
-     */
-    let timestamp = get_timestamp()?;
-    let mut header = format!("# {}", timestamp);
+//     // Also check in the current working directory as fallback
+//     let current_dir_header = Path::new("header.txt");
 
-    // Get the executable's directory
-    let exe_path = env::current_exe()?;
-    let exe_dir = exe_path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "Could not determine executable directory",
-        )
-    })?;
+//     // Must move by chunks...TODO
+//     if header_path.exists() {
+//         let header_content = fs::read_to_string(header_path)?;
+//         header.push_str("  ");
+//         header.push_str(&header_content);
+//     } else if current_dir_header.exists() {
+//         let header_content = fs::read_to_string(current_dir_header)?;
+//         header.push_str("  ");
+//         header.push_str(&header_content);
+//     }
 
-    // Check for header.txt in the executable's directory
-    let header_path = exe_dir.join("header.txt");
+//     Ok(header)
+// }
 
-    // Also check in the current working directory as fallback
-    let current_dir_header = Path::new("header.txt");
+// /// Main editing loop for the lines text editor
+// ///
+// /// # Arguments
+// /// * `original_file_path` - Path to the file being edited
+// ///
+// /// # Returns
+// /// * `io::Result<()>` - Success or error status of the editing session
+// ///
+// /// # Behavior
+// /// 1. Displays file path and basic commands
+// /// 2. If file doesn't exist, creates it with timestamp header
+// /// 3. Shows last 10 lines of current file content
+// /// 4. Enters input loop where user can:
+// ///    - Type text and press enter to append a line
+// ///    - Enter 'q', 'quit', or 'exit' to close editor
+// /// 5. After each append, displays updated last 10 lines
+// ///
+// /// # Errors
+// /// Returns error if:
+// /// - Cannot create/access the file
+// /// - Cannot read user input
+// /// - Cannot append to file
+// /// - Cannot display file contents
+// ///
+// /// # Example
+// /// ```no_run
+// /// let path = Path::new("notes.txt");
+// /// memo_mode_mini_editor_loop(&path)?;
+// /// ```
+// fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
+//     /*
+//      * TODO: this maybe needs to be revised to not use heap dynamic memory
+//      */
+//     print!("\x1B[2J\x1B[1;1H");
+//     println!("lines text editor: Type 'q' to (q)uit");
+//     println!("file path -> {}", original_file_path.display());
 
-    // Must move by chunks...TODO
-    if header_path.exists() {
-        let header_content = fs::read_to_string(header_path)?;
-        header.push_str("  ");
-        header.push_str(&header_content);
-    } else if current_dir_header.exists() {
-        let header_content = fs::read_to_string(current_dir_header)?;
-        header.push_str("  ");
-        header.push_str(&header_content);
-    }
+//     let stdin = io::stdin();
+//     let mut input = String::new();
 
-    Ok(header)
-}
+//     // Create file with header if it doesn't exist
+//     if !original_file_path.exists() {
+//         let header = memo_mode_get_header_text()?;
+//         memo_mode_append_line(original_file_path, &header)?;
+//         memo_mode_append_line(original_file_path, "")?; // blank line after header
+//     }
 
-/// Appends a single line to the file with temporary backup protection
-///
-/// # Arguments
-/// * `original_file_path` - Path to the file being appended to
-/// * `line` - Text line to append
-///
-/// # Behavior
-/// 1. Creates temporary backup
-/// 2. Appends the line
-/// 3. Removes backup if successful
-/// 4. Restores from backup if append fails
-fn memo_mode_append_line(original_file_path: &Path, line: &str) -> io::Result<()> {
-    /*
-     * TODO: this maybe needs to be revised to not use heap dynamic memory
-     */
-    // Create temporary backup before modification
-    let backup_path = if original_file_path.exists() {
-        let bak_path = original_file_path.with_extension("bak");
-        fs::copy(original_file_path, &bak_path)?;
-        Some(bak_path)
-    } else {
-        None
-    };
+//     // Display initial tail of file
+//     println!("Current file (last 10 lines) ->\n");
+//     if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
+//         eprintln!("Error displaying file: {}", e);
+//     }
 
-    // Attempt to append the line
-    let result = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(original_file_path)
-        .and_then(|mut file| writeln!(file, "{}", line));
+//     loop {
+//         input.clear();
+//         print!("\n> "); // Add a prompt
+//         io::stdout().flush()?; // Ensure prompt is displayed
 
-    // Handle the result
-    match result {
-        Ok(_) => {
-            // Success: remove backup if it exists
-            if let Some(bak_path) = backup_path {
-                fs::remove_file(bak_path)?;
-            }
-            Ok(())
-        }
-        Err(e) => {
-            // Failure: restore from backup if it exists
-            if let Some(bak_path) = backup_path {
-                fs::copy(&bak_path, original_file_path)?;
-                fs::remove_file(bak_path)?;
-            }
-            Err(e)
-        }
-    }
-}
+//         if let Err(e) = stdin.read_line(&mut input) {
+//             eprintln!("Error reading input: {}", e);
+//             continue;
+//         }
 
-/// Main editing loop for the lines text editor
+//         let trimmed = input.trim();
+
+//         if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
+//             println!("Exiting editor...");
+//             break;
+//         }
+
+//         // Clear screen
+//         print!("\x1B[2J\x1B[1;1H");
+
+//         // Append the line with temporary backup protection
+//         if let Err(e) = memo_mode_append_line(original_file_path, trimmed) {
+//             eprintln!("Error writing to file: {}", e);
+//             continue;
+//         }
+
+//         // Display the tail of the file after append
+//         println!("\nLast 10 lines of file ->");
+//         if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
+//             eprintln!("Error displaying file: {}", e);
+//         }
+//     }
+
+//     Ok(())
+// }
+
+// /// Main editing loop for the lines text editor (pre-allocated buffer version)
+// ///
+// /// # Arguments
+// /// * `original_file_path` - Path to the file being edited
+// ///
+// /// # Returns
+// /// * `io::Result<()>` - Success or error status of the editing session
+// ///
+// /// # Memory Safety
+// /// - Uses pre-allocated 256-byte buffer for stdin chunks
+// /// - Never loads entire file into memory
+// /// - Processes input chunk-by-chunk using bucket brigade pattern
+// ///
+// /// # Behavior
+// /// 1. Displays file path and basic commands
+// /// 2. If file doesn't exist, creates it with timestamp header
+// /// 3. Shows last 10 lines of current file content
+// /// 4. Enters input loop where user can:
+// ///    - Type text and press enter - appended immediately
+// ///    - Enter 'q', 'quit', 'exit', or 'exit()' to close editor
+// /// 5. After each chunk append, displays updated last 10 lines
+// ///
+// /// # Errors
+// /// Returns error if:
+// /// - Cannot create/access the file
+// /// - Cannot read user input
+// /// - Cannot append to file
+// /// - Cannot display file contents
+// ///
+// /// # Example
+// /// ```no_run
+// /// let path = Path::new("notes.txt");
+// /// memo_mode_mini_editor_loop(&path)?;
+// /// ```
+// fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
+//     // Clear screen and show header
+//     print!("\x1B[2J\x1B[1;1H");
+//     println!("lines text editor: Type 'q' to (q)uit");
+//     println!("file path -> {}", original_file_path.display());
+
+//     // TODO Move constants to main code
+//     // Pre-allocated buffer for bucket brigade stdin reading
+//     const STDIN_CHUNK_SIZE: usize = 128;
+//     const MAX_CHUNKS: usize = 1_000_000; // Safety limit
+
+//     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
+
+//     let stdin = io::stdin();
+//     let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
+
+//     // Create file with header if it doesn't exist
+//     if !original_file_path.exists() {
+//         let header = memo_mode_get_header_text()?;
+//         memo_mode_append_line(original_file_path, &header)?;
+//         memo_mode_append_line(original_file_path, "")?; // blank line after header
+//     }
+
+//     // Display initial tail of file
+//     println!("Current file (last 10 lines) ->\n");
+//     if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
+//         eprintln!("Error displaying file: {}", e);
+//     }
+
+//     // Open file in append mode once (like POC)
+//     let mut file = OpenOptions::new()
+//         .create(true)
+//         .append(true)
+//         .open(original_file_path)?;
+
+//     let mut chunk_counter = 0;
+
+//     // Main editor loop
+//     loop {
+//         // Defensive: prevent infinite loop
+//         chunk_counter += 1;
+//         if chunk_counter > MAX_CHUNKS {
+//             return Err(io::Error::new(
+//                 io::ErrorKind::Other,
+//                 "Maximum iteration limit exceeded",
+//             ));
+//         }
+
+//         print!("\n> "); // Prompt
+//         io::stdout().flush()?;
+
+//         // Clear buffer before reading
+//         for i in 0..STDIN_CHUNK_SIZE {
+//             stdin_chunk_buffer[i] = 0;
+//         }
+
+//         // Read next chunk from stdin
+//         let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
+//             Ok(n) => n,
+//             Err(e) => {
+//                 eprintln!("Error reading input: {}", e);
+//                 continue;
+//             }
+//         };
+
+//         // Check for exit command before writing to file
+//         if let Ok(text_input_str) = std::str::from_utf8(&stdin_chunk_buffer[..bytes_read]) {
+//             let trimmed = text_input_str.trim();
+
+//             // Exit commands: q, quit, exit, exit()
+//             if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
+//                 println!("Exiting editor...");
+//                 break;
+//             }
+//         }
+
+//         // Clear screen
+//         print!("\x1B[2J\x1B[1;1H");
+
+//         // Write chunk directly to file (as bucket brigade POC)
+//         let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
+
+//         // Defensive assertion: all bytes should be written
+//         assert_eq!(
+//             bytes_written, bytes_read,
+//             "File write incomplete: wrote {} of {} bytes",
+//             bytes_written, bytes_read
+//         );
+
+//         // Flush to disk immediately
+//         file.flush()?;
+
+//         // Display the tail of the file after append
+//         println!("\nLast 10 lines of file ->");
+//         if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
+//             eprintln!("Error displaying file: {}", e);
+//         }
+//     }
+
+//     // Final flush
+//     file.flush()?;
+
+//     Ok(())
+// }
+
+/// Main editing loop for the lines text editor (pre-allocated buffer version)
 ///
 /// # Arguments
 /// * `original_file_path` - Path to the file being edited
@@ -2355,21 +2497,25 @@ fn memo_mode_append_line(original_file_path: &Path, line: &str) -> io::Result<()
 /// # Returns
 /// * `io::Result<()>` - Success or error status of the editing session
 ///
+/// # Memory Safety
+/// - Uses pre-allocated 256-byte buffer for stdin chunks
+/// - Never loads entire file into memory
+/// - Processes input chunk-by-chunk using bucket brigade pattern
+///
 /// # Behavior
-/// 1. Displays file path and basic commands
-/// 2. If file doesn't exist, creates it with timestamp header
-/// 3. Shows last 10 lines of current file content
-/// 4. Enters input loop where user can:
-///    - Type text and press enter to append a line
-///    - Enter 'q', 'quit', or 'exit' to close editor
-/// 5. After each append, displays updated last 10 lines
+/// 1. Creates file with timestamp if it doesn't exist
+/// 2. Displays TUI with file path and last ~10 lines
+/// 3. Enters input loop where user can:
+///    - Type text and press enter - appended immediately
+///    - Enter 'q', 'quit', 'exit', or 'exit()' to close editor
+/// 4. After each append, refreshes TUI display
 ///
 /// # Errors
 /// Returns error if:
 /// - Cannot create/access the file
 /// - Cannot read user input
 /// - Cannot append to file
-/// - Cannot display file contents
+/// - Cannot display TUI
 ///
 /// # Example
 /// ```no_run
@@ -2377,61 +2523,252 @@ fn memo_mode_append_line(original_file_path: &Path, line: &str) -> io::Result<()
 /// memo_mode_mini_editor_loop(&path)?;
 /// ```
 fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
-    /*
-     * TODO: this maybe needs to be revised to not use heap dynamic memory
-     */
-    print!("\x1B[2J\x1B[1;1H");
-    println!("lines text editor: Type 'q' to (q)uit");
-    println!("file path -> {}", original_file_path.display());
+    // Pre-allocated buffer for bucket brigade stdin reading
+    const STDIN_CHUNK_SIZE: usize = 256;
+    const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
+
+    let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
 
     let stdin = io::stdin();
-    let mut input = String::new();
+    let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
 
-    // Create file with header if it doesn't exist
+    // Create file with simple timestamp header if it doesn't exist
     if !original_file_path.exists() {
-        let header = memo_mode_get_header_text()?;
-        memo_mode_append_line(original_file_path, &header)?;
-        memo_mode_append_line(original_file_path, "")?; // blank line after header
+        // Simple timestamp header (no external file loading)
+        let timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(duration) => {
+                let secs = duration.as_secs();
+                format!("# Created: {} (unix timestamp)\n", secs)
+            }
+            Err(_) => String::from("# Created: [timestamp unavailable]\n"),
+        };
+
+        // Create file with timestamp header
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(original_file_path)?;
+
+        file.write_all(timestamp.as_bytes())?;
+        file.write_all(b"\n")?; // Blank line after header
+        file.flush()?;
     }
 
-    // Display initial tail of file
-    println!("Current file (last 10 lines) ->\n");
-    if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-        eprintln!("Error displaying file: {}", e);
-    }
+    // Open file in append mode once (keeps handle open for session)
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(original_file_path)?;
 
+    // Bootstrap: Display initial TUI
+    build_memo_mode_tui(original_file_path)?;
+
+    let mut chunk_counter = 0;
+
+    // Main editor loop
     loop {
-        input.clear();
-        print!("\n> "); // Add a prompt
-        io::stdout().flush()?; // Ensure prompt is displayed
-
-        if let Err(e) = stdin.read_line(&mut input) {
-            eprintln!("Error reading input: {}", e);
-            continue;
+        // Defensive: prevent infinite loop
+        chunk_counter += 1;
+        if chunk_counter > MAX_CHUNKS {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Maximum iteration limit exceeded",
+            ));
         }
 
-        let trimmed = input.trim();
-
-        if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
-            println!("Exiting editor...");
-            break;
+        // Clear buffer before reading (defensive: prevent data leakage)
+        for i in 0..STDIN_CHUNK_SIZE {
+            stdin_chunk_buffer[i] = 0;
         }
 
-        // Clear screen
-        print!("\x1B[2J\x1B[1;1H");
+        // Read next chunk from stdin
+        let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Error reading input: {}", e);
+                continue;
+            }
+        };
 
-        // Append the line with temporary backup protection
-        if let Err(e) = memo_mode_append_line(original_file_path, trimmed) {
-            eprintln!("Error writing to file: {}", e);
-            continue;
+        // Defensive assertion: bytes_read should never exceed buffer size
+        assert!(
+            bytes_read <= STDIN_CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            STDIN_CHUNK_SIZE
+        );
+
+        // Check for exit command before writing to file
+        // Only check if valid UTF-8 (don't fail on binary data)
+        if let Ok(text_input_str) = std::str::from_utf8(&stdin_chunk_buffer[..bytes_read]) {
+            let trimmed = text_input_str.trim();
+
+            // Exit commands: q, quit, exit, exit()
+            if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
+                println!("Exiting editor...");
+                break;
+            }
         }
 
-        // Display the tail of the file after append
-        println!("\nLast 10 lines of file ->");
-        if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-            eprintln!("Error displaying file: {}", e);
+        // Write chunk directly to file (bucket brigade pattern)
+        let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
+
+        // Defensive assertion: all bytes should be written
+        assert_eq!(
+            bytes_written, bytes_read,
+            "File write incomplete: wrote {} of {} bytes",
+            bytes_written, bytes_read
+        );
+
+        // Flush to disk immediately (durability)
+        file.flush()?;
+
+        // Refresh TUI after append
+        build_memo_mode_tui(original_file_path)?;
+    }
+
+    // Final flush before exit
+    file.flush()?;
+
+    Ok(())
+}
+
+/// Builds and displays the memo mode TUI (Text User Interface)
+///
+/// # Arguments
+/// * `file_path` - Path to the file being edited
+///
+/// # Display Format
+/// ```text
+/// lines text editor: Type 'q' to (q)uit
+/// file path -> /path/to/file.txt
+///
+/// [last ~10 lines of file content]
+///
+/// >
+/// ```
+///
+/// # Memory Safety
+/// - Uses pre-allocated 512-byte buffer
+/// - Never loads entire file into memory
+/// - Seeks to end of file and reads backwards
+///
+/// # Algorithm
+/// 1. Clear screen and display header (editor name, file path)
+/// 2. Read last 512 bytes of file (or entire file if smaller)
+/// 3. Scan forward through buffer to find newline positions
+/// 4. If ≥10 lines: display from 10th-to-last line to end
+/// 5. If <10 lines: display entire buffer content
+/// 6. Display prompt `> `
+///
+/// # Edge Cases
+/// - Empty file: Shows only header and prompt
+/// - File < 512 bytes: Shows entire file content
+/// - Invalid UTF-8: Uses lossy conversion (shows � for invalid bytes)
+/// - No newlines in buffer: Displays entire buffer as single "line"
+///
+/// # Returns
+/// * `Ok(())` on successful display
+/// * `Err(io::Error)` if file cannot be opened or read
+///
+/// # Example
+/// ```no_run
+/// # use std::path::Path;
+/// # fn build_memo_mode_tui(p: &Path) -> std::io::Result<()> { Ok(()) }
+/// let path = Path::new("notes.txt");
+/// build_memo_mode_tui(&path)?;
+/// ```
+fn build_memo_mode_tui(file_path: &Path) -> io::Result<()> {
+    // Pre-allocated buffer for reading file tail
+    const TAIL_BUFFER_SIZE: usize = 512;
+    let mut tail_buffer = [0u8; TAIL_BUFFER_SIZE];
+
+    // Clear screen
+    print!("\x1B[2J\x1B[1;1H");
+
+    // Display header
+    println!("lines text editor: Type 'q' to (q)uit");
+    println!("file path -> {}", file_path.display());
+    println!(); // Blank line after header
+
+    // Open file (read-only)
+    let mut file = File::open(file_path)?;
+
+    // Get file size
+    let file_size = file.metadata()?.len();
+
+    // Handle empty file
+    if file_size == 0 {
+        println!("> ");
+        io::stdout().flush()?;
+        return Ok(());
+    }
+
+    // Calculate how many bytes to read (512 or less if file is smaller)
+    let bytes_to_read = if file_size < TAIL_BUFFER_SIZE as u64 {
+        file_size as usize
+    } else {
+        TAIL_BUFFER_SIZE
+    };
+
+    // Seek to position: file_size - bytes_to_read
+    let seek_position = file_size - bytes_to_read as u64;
+    file.seek(SeekFrom::Start(seek_position))?;
+
+    // Clear buffer (defensive)
+    for i in 0..TAIL_BUFFER_SIZE {
+        tail_buffer[i] = 0;
+    }
+
+    // Read the tail portion
+    let bytes_read = file.read(&mut tail_buffer[..bytes_to_read])?;
+
+    // Defensive assertion
+    assert_eq!(
+        bytes_read, bytes_to_read,
+        "File read incomplete: expected {}, got {}",
+        bytes_to_read, bytes_read
+    );
+
+    // Scan forward and record newline positions
+    const MAX_NEWLINES: usize = 100; // Upper bound for line counting
+    let mut newline_positions = [0usize; MAX_NEWLINES];
+    let mut newline_count = 0;
+
+    for i in 0..bytes_read {
+        if tail_buffer[i] == b'\n' {
+            if newline_count < MAX_NEWLINES {
+                newline_positions[newline_count] = i;
+                newline_count += 1;
+            }
         }
     }
+
+    // Determine display start position
+    let display_start = if newline_count >= 10 {
+        // Find the position after the (newline_count - 10)th newline
+        // This gives us the last 10 lines
+        let target_newline_index = newline_count - 10;
+        newline_positions[target_newline_index] + 1 // Start after that newline
+    } else {
+        // Less than 10 lines, show entire buffer
+        0
+    };
+
+    // Convert buffer slice to string (lossy conversion for invalid UTF-8)
+    let display_text = String::from_utf8_lossy(&tail_buffer[display_start..bytes_read]);
+
+    // Display the content
+    print!("{}", display_text);
+
+    // Ensure there's a newline before prompt if content doesn't end with one
+    if !tail_buffer[..bytes_read].ends_with(&[b'\n']) {
+        println!();
+    }
+
+    // Display prompt
+    print!("> ");
+    io::stdout().flush()?;
 
     Ok(())
 }
@@ -4789,17 +5126,6 @@ fn insert_text_chunk_at_cursor_position(
     file_path: &Path,
     text_bytes: &[u8],
 ) -> io::Result<()> {
-    // // Get cursor file position
-    // let file_pos = state
-    //     .window_map
-    //     .get_file_position(state.cursor.row, state.cursor.col)?
-    //     .ok_or_else(|| {
-    //         io::Error::new(
-    //             io::ErrorKind::InvalidInput,
-    //             "Cursor not on valid file position",
-    //         )
-    //     })?;
-
     let file_pos = match state
         .window_map
         .get_file_position(state.cursor.row, state.cursor.col)
@@ -4858,7 +5184,7 @@ fn insert_text_chunk_at_cursor_position(
     state.cursor.col += char_count;
 
     // ==========================================
-    //  NEW: Check if cursor exceeded right edge
+    //  Check if cursor exceeded right edge
     // ==========================================
     let right_edge = state.effective_cols.saturating_sub(1);
 
@@ -5664,7 +5990,10 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // Create file if it doesn't exist
     if !target_path.exists() {
         println!("Creating new file...");
-        let header = memo_mode_get_header_text()?;
+
+        // new file header = timestamp
+        let timestamp = get_timestamp()?;
+        let header = format!("# {}", timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
@@ -5831,6 +6160,13 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                 //  Text to Insert
                 //  ///////////////
 
+                // Determine if bucket brigade will continue after this chunk
+                // If the chunk ends with a newline, that newline is the stdin delimiter (Enter key)
+                // and we should NOT continue reading more chunks
+                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
+                let will_continue_brigade =
+                    !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE;
+
                 // Process the chunk, handling multiple newlines
                 let mut chunk_start = 0;
 
@@ -5838,7 +6174,29 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                     // Find next newline
                     let remaining = &text_buffer[chunk_start..bytes_read];
 
+                    // STDIN DELIMITER DETECTION:
+                    // When user types text and presses Enter, stdin delivers: "text\n"
+                    // The final \n is NOT part of the intended text - it's the command delimiter
+                    //
+                    // We handle multiple newlines within a chunk (e.g., paste with \n characters)
+                    // but skip the FINAL newline if:
+                    // 1. It's at the last byte position of this chunk, AND
+                    // 2. We're NOT continuing to read more chunks (bucket brigade)
+                    //
+                    // Examples:
+                    //   "fish\n" → insert "fish", skip final \n (stdin delimiter)
+                    //   "a\nb\n" → insert "a", \n, "b", skip final \n
+                    //   "a\nb" (buffer full) → insert "a", \n, "b", continue reading
+
                     if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+                        // Calculate absolute position of this newline in the chunk
+                        let newline_absolute_pos = chunk_start + newline_offset;
+
+                        // Determine if this specific newline should be skipped
+                        // (Is it the stdin delimiter at the end of input?)
+                        let is_final_byte = newline_absolute_pos == (bytes_read - 1);
+                        let should_skip_newline = is_final_byte && !will_continue_brigade;
+
                         // Found newline - insert text before it
                         if newline_offset > 0 {
                             insert_text_chunk_at_cursor_position(
@@ -5849,9 +6207,11 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                             build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
                         }
 
-                        // Insert the newline itself
-                        execute_command(&mut state, Command::InsertNewline('\n'))?;
-                        build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        // Insert newline ONLY if it's not the stdin delimiter
+                        if !should_skip_newline {
+                            execute_command(&mut state, Command::InsertNewline('\n'))?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        }
 
                         // Move past the newline for next iteration
                         chunk_start += newline_offset + 1;
@@ -5867,10 +6227,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                     }
                 }
 
-                // Continue bucket-brigade...
-                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
-
-                if !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                // Continue bucket-brigade if buffer is full and doesn't end with delimiter
+                if will_continue_brigade {
                     let mut bucket_iteration = 1;
 
                     loop {
@@ -5880,6 +6238,15 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                             break;
                         }
 
+                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
+
+                        if more_bytes == 0 {
+                            break;
+                        }
+
+                        // TODO NEW CODE ABOVE HERE
+                        //  ///////////////////
+                        //
                         let more_bytes = stdin_handle.read(&mut text_buffer)?;
 
                         if more_bytes == 0 {
@@ -5921,7 +6288,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
                         // A kind of ~halting problem
                         // Use a specific exit command: -q -n -v
                         // when changing mode or quitting, etc.
-                        // stdin is a process has no end to predict.
+                        // stdin is a process has no end to predict
                     }
                 }
             }
@@ -6122,10 +6489,38 @@ fn main() -> io::Result<()> {
                 }
             }
         }
+        3 => {
+            // Two arguments provided
+            let flag = &args[1];
+            let filepath_arg = &args[2];
+
+            // Check if first arg is append flag
+            match flag.as_str() {
+                "-a" | "--append" => {
+                    // Memo mode (append-only) with specified file path
+                    let file_path = PathBuf::from(filepath_arg);
+                    println!(
+                        "Starting memo mode (append-only) with file: {}",
+                        file_path.display()
+                    );
+                    memo_mode_mini_editor_loop(&file_path)
+                }
+                _ => {
+                    // Unknown flag combination
+                    eprintln!("Error: Invalid arguments");
+                    eprintln!("Usage: lines [filename | -a <filepath> | --help]");
+                    eprintln!("Examples:");
+                    eprintln!("  lines notes.txt          # Full editor mode");
+                    eprintln!("  lines -a notes.txt       # Append-only mode");
+                    eprintln!("  lines --append /tmp/log  # Append-only mode");
+                    std::process::exit(2);
+                }
+            }
+        }
         _ => {
             // Multiple arguments - currently not supported
-            eprintln!("Error: Too many arguments");
-            eprintln!("Usage: lines [filename | --help]");
+            eprintln!("Error: It's The Too many arguments!");
+            eprintln!("Try Usage: lines [filename | -a <filepath> | --help]");
             std::process::exit(2);
         }
     }

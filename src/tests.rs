@@ -1,5 +1,6 @@
 // tests.rs (keen this in same directory as main.rs)
 use super::*;
+use std::io::{self, BufRead, BufReader};
 
 /// Creates test files in project ./test_files/ directory
 /// Files are NEVER deleted - they persist for manual inspection
