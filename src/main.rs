@@ -662,7 +662,22 @@ const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
 const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 
 // for iterating chunks of text to be inserted into file
-const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256; //
+/// Two-Purpose Buffer (alternate plan is )
+/// A. processes command-input that does not go to file
+/// B. processes chunks to stdin to write to files (read-copy, change-log)
+///
+/// Maximum size for insert mode input buffer (512 or 256 bytes)
+/// Allows ~512 ASCII chars or ~170 3-byte UTF-8 chars per insert
+///
+/// This is for a chunked process of moving std-in
+/// text from the user to
+/// A: file
+/// B: change-log
+/// without whole-loading things into buffers.
+/// Towers of Hanoy
+const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256;
+
+const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
@@ -730,6 +745,10 @@ mod limits {
 
     pub const TEXT_INPUT_CHUNKS: usize = 1024;
 }
+
+//  /////////////////
+//  Full Lines Editor
+//  /////////////////
 
 /// Creates a timestamp string specifically for archive file naming
 ///
@@ -1767,20 +1786,7 @@ pub enum WrapMode {
     NoWrap,
 }
 
-/// Two-Purpose Buffer (alternate plan is )
-/// A. processes command-input that does not go to file
-/// B. processes chunks to stdin to write to files (read-copy, change-log)
-///
-/// Maximum size for insert mode input buffer (512 or 256 bytes)
-/// Allows ~512 ASCII chars or ~170 3-byte UTF-8 chars per insert
-///
-/// This is for a chunked process of moving std-in
-/// text from the user to
-/// A: file
-/// B: change-log
-/// without whole-loading things into buffers.
-/// Towers of Hanoy
-const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;
+// const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;// not used
 
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
@@ -1873,14 +1879,16 @@ pub struct EditorState {
     /// Since lines can be shorter than 80 chars, we track actual usage
     pub display_buffer_lengths: [usize; 45],
 
-    /// TODO: Should there be a clear-buffer method?
-    /// Pre-allocated buffer for insert mode text input
-    /// Used to capture user input before inserting into file
-    pub tofile_insert_input_chunk_buffer: [u8; TOFILE_INSERTBUFFER_CHUNK_SIZE],
+    // /// TODO: Should there be a clear-buffer method?
+    // /// Pre-allocated buffer for insert mode text input
+    // /// Used to capture user input before inserting into file
+    // pub tofile_insert_input_chunk_buffer: [u8; TOFILE_INSERTBUFFER_CHUNK_SIZE], // not used
 
-    /// TODO is this needed?
-    /// Number of valid bytes in tofile_insert_input_chunk_buffer
-    pub tofile_insertinput_chunkbuffer_used: usize,
+    // /// TODO is this needed?
+    // /// Number of valid bytes in tofile_insert_input_chunk_buffer
+    // pub tofile_insertinput_chunkbuffer_used: usize, // not used
+    /// short message to display in TUI, bottom bar
+    pub info_bar_message_buffer: [u8; INFOBAR_MESSAGE_BUFFER_SIZE], // not used
 }
 
 impl EditorState {
@@ -1929,8 +1937,9 @@ impl EditorState {
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
 
-            tofile_insert_input_chunk_buffer: [0u8; TOFILE_INSERTBUFFER_CHUNK_SIZE],
-            tofile_insertinput_chunkbuffer_used: 0,
+            // tofile_insert_input_chunk_buffer: [0u8; TOFILE_INSERTBUFFER_CHUNK_SIZE], // not used
+            // tofile_insertinput_chunkbuffer_used: 0, // not used
+            info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
     }
     /// Gets the first valid text column for cursor's current row
@@ -1941,6 +1950,73 @@ impl EditorState {
         let line_number = self.line_count_at_top_of_window + self.cursor.row;
         calculate_line_number_width(line_number + 1) // +1 for 1-indexed display
     }
+
+    /// Writes a message into the info bar message buffer
+    ///
+    /// # Purpose
+    /// Safely copies a string message into the pre-allocated info bar buffer.
+    /// Used to display short status messages, errors, or notifications to the user.
+    ///
+    /// # Arguments
+    /// * `state` - Mutable reference to editor state containing the buffer
+    /// * `message` - The message string to display (will be truncated if too long)
+    ///
+    /// # Behavior
+    /// - Clears the entire buffer to zeros first (ensures null termination)
+    /// - Copies message bytes up to buffer capacity
+    /// - Truncates message if it exceeds buffer size
+    /// - Always null-terminated (buffer pre-cleared)
+    /// - Non-UTF8 bytes handled gracefully (copied as-is)
+    ///
+    /// # Safety
+    /// - No dynamic allocation
+    /// - Bounded copy prevents buffer overflow
+    /// - Always leaves buffer in valid state
+    ///
+    /// # Example
+    /// ```rust
+    /// set_info_bar_message(&mut state, "File saved successfully");
+    /// set_info_bar_message(&mut state, "Error: Cannot open file");
+    /// set_info_bar_message(&mut state, ""); // Clear message
+    /// ```
+    ///
+    /// # Edge Cases
+    /// - Empty string: clears the message
+    /// - Message too long: truncates to fit buffer
+    /// - Non-ASCII: UTF-8 bytes copied directly
+    fn set_info_bar_message(state: &mut EditorState, message: &str) {
+        // Defensive: ensure buffer exists and has known capacity
+        debug_assert!(
+            INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+            "Info bar buffer must have non-zero capacity"
+        );
+
+        // Clear entire buffer (ensures null termination)
+        state.info_bar_message_buffer = [0u8; INFOBAR_MESSAGE_BUFFER_SIZE];
+
+        // Get message bytes
+        let message_bytes = message.as_bytes();
+
+        // Calculate how many bytes we can safely copy
+        // Must leave room for null terminator (already have it from clear)
+        let copy_len = message_bytes.len().min(INFOBAR_MESSAGE_BUFFER_SIZE - 1);
+
+        // Defensive: verify we're not exceeding bounds
+        debug_assert!(
+            copy_len < INFOBAR_MESSAGE_BUFFER_SIZE,
+            "Copy length must be less than buffer size"
+        );
+
+        // Copy message bytes into buffer
+        // Upper bound on loop: copy_len is bounded by buffer size
+        for i in 0..copy_len {
+            state.info_bar_message_buffer[i] = message_bytes[i];
+        }
+
+        // Buffer is already null-terminated from the clear operation
+        // Byte at index copy_len and beyond are guaranteed to be 0
+    }
+
     /*
     // When opening a file:
     state.init_changelog(&original_file_path)?;
@@ -4803,109 +4879,6 @@ fn insert_text_chunk_at_cursor_position(
     Ok(())
 }
 
-// /// Reads UTF-8 characters from stdin into pre-allocated buffer
-// /// Stops at buffer full or newline, never splits multi-byte chars
-// ///
-// /// # Arguments
-// /// * `stdin_handle` - Locked stdin handle
-// /// * `buffer` - Pre-allocated byte buffer
-// ///
-// /// # Returns
-// /// * `Ok(bytes_written)` - Number of valid UTF-8 bytes in buffer
-// /// * `Err(io::Error)` - Read failure
-// fn read_utf8_chars_into_buffer(
-//     stdin_handle: &mut io::StdinLock,
-//     buffer: &mut [u8],
-// ) -> io::Result<usize> {
-//     let mut buffer_position = 0;
-//     let buffer_capacity = buffer.len();
-
-//     // Temporary single-byte buffer for reading
-//     let mut single_byte = [0u8; 1];
-
-//     // Track UTF-8 sequence state
-//     let mut utf8_sequence_buffer = [0u8; 4]; // Max UTF-8 char is 4 bytes
-//     let mut utf8_bytes_collected = 0;
-//     let mut utf8_bytes_expected = 0;
-
-//     loop {
-//         // Read one byte
-//         let bytes_read = stdin_handle.read(&mut single_byte)?;
-
-//         if bytes_read == 0 {
-//             // EOF - return what we have
-//             break;
-//         }
-
-//         let byte = single_byte[0];
-
-//         // Start of new UTF-8 sequence?
-//         if utf8_bytes_expected == 0 {
-//             // Determine how many bytes this character needs
-//             utf8_bytes_expected = if byte & 0b1000_0000 == 0 {
-//                 1 // ASCII (0xxxxxxx)
-//             } else if byte & 0b1110_0000 == 0b1100_0000 {
-//                 2 // 110xxxxx
-//             } else if byte & 0b1111_0000 == 0b1110_0000 {
-//                 3 // 1110xxxx
-//             } else if byte & 0b1111_1000 == 0b1111_0000 {
-//                 4 // 11110xxx
-//             } else {
-//                 // Invalid UTF-8 start byte - skip it
-//                 continue;
-//             };
-
-//             utf8_sequence_buffer[0] = byte;
-//             utf8_bytes_collected = 1;
-
-//             // Complete single-byte char (ASCII)?
-//             if utf8_bytes_expected == 1 {
-//                 // Check if buffer has space
-//                 if buffer_position >= buffer_capacity {
-//                     // Buffer full - we're done
-//                     break;
-//                 }
-
-//                 buffer[buffer_position] = byte;
-//                 buffer_position += 1;
-
-//                 // Stop on newline
-//                 if byte == b'\n' {
-//                     break;
-//                 }
-
-//                 // Reset for next character
-//                 utf8_bytes_expected = 0;
-//                 utf8_bytes_collected = 0;
-//             }
-//         } else {
-//             // Continuation byte of multi-byte sequence
-//             utf8_sequence_buffer[utf8_bytes_collected] = byte;
-//             utf8_bytes_collected += 1;
-
-//             // Complete multi-byte character?
-//             if utf8_bytes_collected == utf8_bytes_expected {
-//                 // Check if buffer has space for complete character
-//                 if buffer_position + utf8_bytes_expected > buffer_capacity {
-//                     // Not enough space - stop here (don't split character)
-//                     break;
-//                 }
-
-//                 // Copy complete character to buffer
-//                 buffer[buffer_position..buffer_position + utf8_bytes_expected]
-//                     .copy_from_slice(&utf8_sequence_buffer[..utf8_bytes_expected]);
-//                 buffer_position += utf8_bytes_expected;
-
-//                 // Reset for next character
-//                 utf8_bytes_expected = 0;
-//                 utf8_bytes_collected = 0;
-//             }
-//         }
-//     }
-
-//     Ok(buffer_position)
-// }
-
 /// Resolves and prepares the target file path for editing
 ///
 /// # Purpose
@@ -5076,378 +5049,6 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
         }
         Ok(absolute_path)
     }
-}
-
-/// Line-Editor, Full-Mode for editing files
-///
-/// # Purpose
-/// Main entry point for full editor functionality (not memo mode).
-/// Handles file creation, opening, and launching the editor loop.
-///
-/// # Arguments
-/// * `original_file_path` - Optional path to file or directory
-///
-/// # Returns
-/// * `Ok(())` - Editor session completed successfully
-/// * `Err(io::Error)` - File operations failed
-///
-/// # Behavior
-/// - `None` - Error (requires path in full editor mode)
-/// - `Some(file)` - Opens existing or creates new file
-/// - `Some(dir)` - Prompts for filename, creates in directory
-///
-/// # File Creation
-/// - Creates parent directories if needed
-/// - Initializes new files with timestamp header
-/// - Creates read-copy for safety
-pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> {
-    /*
-    Workflow:
-    A: when cwd is os home dir: always memo-mode (old version mode)
-    when not in cwd is os home dir
-    B: when provided a valid exsint file file path, open file
-    C: when provided a new path, make that path
-    D: when given new file name, make that file
-    E: when given a path but no file name, ask user for file name
-    */
-
-    // Resolve target file path (all path handling logic extracted)
-    let target_path = resolve_target_file_path(original_file_path)?;
-
-    println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
-    println!("File: {}", target_path.display());
-
-    // Create file if it doesn't exist
-    if !target_path.exists() {
-        println!("Creating new file...");
-        let header = memo_mode_get_header_text()?;
-
-        // Create with header
-        let mut file = File::create(&target_path)?;
-        writeln!(file, "{}", header)?;
-        writeln!(file)?; // Empty line after header
-        file.flush()?;
-
-        println!("Created new file with header");
-    }
-
-    // Initialize editor state
-    let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
-
-    let (session_time_stamp1, session_time_stamp2) =
-        match split_timestamp_no_heap(&session_time_base) {
-            Ok((ts4, ts5)) => (ts4, ts5),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                // Create two empty FixedSize32Timestamp structs as defaults
-                let empty =
-                    FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
-                        // If even the fallback fails, create manually
-                        FixedSize32Timestamp {
-                            data: [0u8; 32],
-                            len: 0,
-                        }
-                    });
-                (empty, empty)
-            }
-        };
-
-    let mut state = EditorState::new();
-    state.original_file_path = Some(target_path.clone());
-
-    // Initialize session directory FIRST
-    initialize_session_directory(&mut state, session_time_stamp1)?;
-
-    // Get session directory path (we just initialized it)
-    let session_dir = state
-        .session_directory_path
-        .as_ref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
-
-    // Create read-copy for safety
-    let read_copy_path =
-        create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
-    println!("Read-copy: {}", read_copy_path.display());
-
-    // Initialize editor state
-    state.read_copy_path = Some(read_copy_path);
-
-    // Initialize window position
-    state.line_count_at_top_of_window = 0;
-    state.file_position_of_topline_start = 0;
-    state.horizontal_line_char_offset = 0;
-
-    // Build initial window content
-    // Get the read_copy path BEFORE the mutable borrow
-    let read_copy = state
-        .read_copy_path
-        .clone()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
-    // Now we can mutably borrow state
-    let lines_processed = build_windowmap_nowrap(&mut state, &read_copy)?;
-
-    println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
-
-    // Bootstrap initial cursor position, start of file, after "l "
-    state.cursor.row = 0;
-    state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
-
-    // Main editor loop
-    // let mut input_buffer = String::new();
-    let mut continue_editing = true;
-
-    // set up pre-allocated input buffere, short for commands
-    // and Bucket Brigade! for text input:
-    // Pre-allocate input buffers
-    let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
-    let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
-    let stdin = io::stdin();
-    let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
-
-    // Defensive: Limit loop iterations to prevent infinite loops
-    let mut iteration_count = 0;
-
-    // ///////////////////////////////
-    // Main Loop for Full Lines Editor
-    // ///////////////////////////////
-    while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
-        iteration_count += 1;
-
-        // Render TUI (convert LinesError to io::Error)
-        render_tui(&state)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
-
-        if state.mode == EditorMode::Insert {
-            /*
-            For another command area, also see:
-            ```rust
-            fn parsed_commands(){
-            ...
-            if current_mode == ...
-            ```
-            */
-            // Clear buffer before reading
-            for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
-                text_buffer[i] = 0;
-            }
-
-            // Read single command (no chunking)
-            let bytes_read = stdin_handle.read(&mut text_buffer)?;
-
-            if bytes_read == 0 {
-                continue;
-            }
-
-            // Parse command from bytes
-            let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
-
-            // Normal/Visual mode: parse as command
-            let trimmed = text_input_str.trim();
-
-            // Check for exit insert mode commands
-            if trimmed == "-n" || trimmed == "\x1b" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::EnterNormalMode)?;
-
-                // Get the read_copy path BEFORE the mutable borrow
-                let read_copy = state
-                    .read_copy_path
-                    .clone()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
-                // Now we can mutably borrow state
-                build_windowmap_nowrap(&mut state, &read_copy)?;
-            } else if trimmed == "-v" {
-                continue_editing = execute_command(&mut state, Command::EnterVisualMode)?;
-
-                // Get the read_copy path BEFORE the mutable borrow
-                let read_copy = state
-                    .read_copy_path
-                    .clone()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
-                // Now we can mutably borrow state
-                build_windowmap_nowrap(&mut state, &read_copy)?;
-            } else if trimmed == "-s" || trimmed == "-w" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::Save)?;
-            } else if trimmed == "-wq" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::SaveAndQuit)?;
-            } else if trimmed == "-q" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::Quit)?;
-            } else if trimmed == "\x1b[3~" {
-                // Do nothing if delete key entered...
-                continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
-            } else if text_input_str == "\n" || text_input_str == "\r\n" {
-                // note: empty isn't empty, it contains a newline
-                // Empty line = newline insertion
-                continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
-                build_windowmap_nowrap(&mut state, &read_copy)?; // Rebuild immediately after newline
-            } else {
-                // ///////////////
-                // Text to Insert
-                // ///////////////
-
-                // Process the chunk, handling multiple newlines
-                let mut chunk_start = 0;
-
-                while chunk_start < bytes_read {
-                    // Find next newline
-                    let remaining = &text_buffer[chunk_start..bytes_read];
-
-                    if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
-                        // Found newline - insert text before it
-                        if newline_offset > 0 {
-                            insert_text_chunk_at_cursor_position(
-                                &mut state,
-                                &read_copy,
-                                &remaining[..newline_offset],
-                            )?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-                        }
-
-                        // Insert the newline itself
-                        execute_command(&mut state, Command::InsertNewline('\n'))?;
-                        build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-
-                        // Move past the newline for next iteration
-                        chunk_start += newline_offset + 1;
-                    } else {
-                        // No more newlines - insert rest of chunk
-                        if remaining.len() > 0 {
-                            insert_text_chunk_at_cursor_position(
-                                &mut state, &read_copy, remaining,
-                            )?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-                        }
-                        break;
-                    }
-                }
-
-                // Continue bucket-brigade...
-                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
-
-                if !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
-                    let mut bucket_iteration = 1;
-
-                    loop {
-                        bucket_iteration += 1;
-
-                        if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
-                            break;
-                        }
-
-                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
-
-                        if more_bytes == 0 {
-                            break;
-                        }
-
-                        // Process this chunk's newlines
-                        let mut chunk_start = 0;
-
-                        while chunk_start < more_bytes {
-                            let remaining = &text_buffer[chunk_start..more_bytes];
-
-                            if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n')
-                            {
-                                if newline_offset > 0 {
-                                    insert_text_chunk_at_cursor_position(
-                                        &mut state,
-                                        &read_copy,
-                                        &remaining[..newline_offset],
-                                    )?;
-                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
-                                }
-
-                                execute_command(&mut state, Command::InsertNewline('\n'))?;
-                                build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
-
-                                chunk_start += newline_offset + 1;
-                            } else {
-                                if remaining.len() > 0 {
-                                    insert_text_chunk_at_cursor_position(
-                                        &mut state, &read_copy, remaining,
-                                    )?;
-                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
-                                }
-                                break;
-                            }
-                        }
-
-                        // Stop if chunk ended with newline
-                        let ends_with_newline =
-                            more_bytes > 0 && text_buffer[more_bytes - 1] == b'\n';
-                        if ends_with_newline {
-                            break;
-                        }
-                    }
-                }
-            }
-        } else {
-            // ///////////////////////////////////////////
-            // IF in Normal/Visual mode: parse as command
-            // ///////////////////////////////////////////
-
-            // Clear buffer before reading
-            for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
-                command_buffer[i] = 0;
-            }
-
-            // Read single command (no chunking)
-            let bytes_read = stdin_handle.read(&mut command_buffer)?;
-
-            // If overflow, ignore and continue
-            if bytes_read >= WHOLE_COMMAND_BUFFER_SIZE {
-                continue; // Skip oversized input
-            }
-
-            // Parse command from bytes
-            let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
-
-            // Normal/Visual mode: parse as command
-            let trimmed = command_str.trim();
-
-            let command = if trimmed.is_empty() {
-                // Empty enter: repeat last command
-                match state.the_last_command.clone() {
-                    Some(cmd) => cmd,
-                    None => Command::None, // No previous command
-                }
-            } else {
-                // Parse new command
-                parse_command(&command_str, state.mode)
-            };
-
-            // Execute command
-            continue_editing = execute_command(&mut state, command.clone())?;
-
-            // Store command for repeat (only if it's not Command::None)
-            if command != Command::None {
-                state.the_last_command = Some(command);
-            }
-        }
-    }
-
-    // Defensive: Check if we hit iteration limit
-    if iteration_count >= limits::MAIN_EDITOR_LOOP_COMMANDS {
-        eprintln!("Warning: Editor loop exceeded maximum iterations");
-    }
-
-    // Clean exit
-    println!("\nExciting Lines Editor!");
-
-    // Clean up read-copy if it exists
-    if let Some(read_copy) = state.read_copy_path {
-        if read_copy.exists() {
-            fs::remove_file(read_copy).ok(); // Ignore errors on cleanup
-        }
-    }
-
-    Ok(())
 }
 
 /// Creates a read-only copy of the file in the session directory
@@ -5622,16 +5223,30 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         .and_then(|n| n.to_str())
         .unwrap_or("unnamed");
 
+    // TODO
+    // let message_for_infobar = state.info_bar_message_buffer...
+
+    // Extract message from buffer (find null terminator or use full buffer)
+    let message_len = state
+        .info_bar_message_buffer
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(state.info_bar_message_buffer.len());
+
+    let message_for_infobar =
+        std::str::from_utf8(&state.info_bar_message_buffer[..message_len]).unwrap_or(""); // Empty string if invalid UTF-8
+
     // TODO add info_bar_message to state
     // show (snother colour? no colour? after filename)
     // keep buffer short 16 char?
 
     // Build the info bar
     let info = format!(
-        "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
-        RED,
-        mode_str,
+        // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
+        "{}{} {}{}{}:{}{}{} {}{} {}>{}",
         YELLOW,
+        mode_str,
+        // YELLOW,
         RED,
         line_display,
         YELLOW,
@@ -5640,6 +5255,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         col_display,
         YELLOW,
         filename,
+        message_for_infobar,
         RESET
     );
 
@@ -5961,6 +5577,413 @@ fn initialize_session_directory(
         state.session_directory_path.is_some(),
         "Session directory path should be set in state"
     );
+
+    Ok(())
+}
+
+/// Line-Editor, Full-Mode for editing files
+///
+/// # Purpose
+/// Main entry point for full editor functionality (not memo mode).
+/// Handles file creation, opening, and launching the editor loop.
+/// Insert Text uses the 'Bucket Brigade' method of processing
+/// an input of unknown length in known-length modular chunks.
+///
+/// # Arguments
+/// * `original_file_path` - Optional path to file or directory
+///
+/// # Returns
+/// * `Ok(())` - Editor session completed successfully
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Behavior
+/// - `None` - Error (requires path in full editor mode)
+/// - `Some(file)` - Opens existing or creates new file
+/// - `Some(dir)` - Prompts for filename, creates in directory
+///
+/// # File Creation
+/// - Creates parent directories if needed
+/// - Initializes new files with timestamp header
+/// - Creates read-copy for safety
+pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> {
+    /*
+    Workflow:
+    A: when cwd is os home dir: always memo-mode (old version mode)
+    when not in cwd is os home dir
+    B: when provided a valid exsint file file path, open file
+    C: when provided a new path, make that path
+    D: when given new file name, make that file
+    E: when given a path but no file name, ask user for file name
+
+    // Study output of this to understand the Bucket Brigade
+    fn main() -> io::Result<()> {
+        println!("Type something and press Enter:");
+        println!("(Program will read in 2-byte chunks)\n");
+
+        let mut stdin = io::stdin();
+        let mut buffer = [0u8; 2]; // TWO BYTE BUFFER
+        let mut chunk_number = 0;
+        let mut total_bytes = 0;
+
+        loop {
+            chunk_number += 1;
+            let bytes_read = stdin.read(&mut buffer)?;
+            if bytes_read == 0 {
+                println!("\n[EOF detected]");
+                break;
+            }
+            total_bytes += bytes_read;
+            println!(
+                "Chunk {}: read {} bytes: {:?}",
+                chunk_number,
+                bytes_read,
+                &buffer[..bytes_read]
+            );
+            // Show as string if valid UTF-8
+            if let Ok(s) = std::str::from_utf8(&buffer[..bytes_read]) {
+                println!("  As text: {:?}", s);
+            }
+            // Stop after newline
+            if buffer[..bytes_read].contains(&b'\n') {
+                println!("\n[Newline detected - end of input]");
+                // break; with this commented out, prints all.
+            }
+        }
+        println!("\nTotal bytes read: {}", total_bytes);
+        println!("Total chunks: {}", chunk_number);
+        Ok(())
+    }
+    */
+
+    // Resolve target file path (all path handling logic extracted)
+    let target_path = resolve_target_file_path(original_file_path)?;
+
+    println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
+    println!("File: {}", target_path.display());
+
+    // Create file if it doesn't exist
+    if !target_path.exists() {
+        println!("Creating new file...");
+        let header = memo_mode_get_header_text()?;
+
+        // Create with header
+        let mut file = File::create(&target_path)?;
+        writeln!(file, "{}", header)?;
+        writeln!(file)?; // Empty line after header
+        file.flush()?;
+
+        println!("Created new file with header");
+    }
+
+    // Initialize editor state
+    let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
+
+    let (session_time_stamp1, session_time_stamp2) =
+        match split_timestamp_no_heap(&session_time_base) {
+            Ok((ts4, ts5)) => (ts4, ts5),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                // Create two empty FixedSize32Timestamp structs as defaults
+                let empty =
+                    FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
+                        // If even the fallback fails, create manually
+                        FixedSize32Timestamp {
+                            data: [0u8; 32],
+                            len: 0,
+                        }
+                    });
+                (empty, empty)
+            }
+        };
+
+    let mut state = EditorState::new();
+    state.original_file_path = Some(target_path.clone());
+
+    // Initialize session directory FIRST
+    initialize_session_directory(&mut state, session_time_stamp1)?;
+
+    // Get session directory path (we just initialized it)
+    let session_dir = state
+        .session_directory_path
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
+
+    // Create read-copy for safety
+    let read_copy_path =
+        create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
+    println!("Read-copy: {}", read_copy_path.display());
+
+    // Initialize editor state
+    state.read_copy_path = Some(read_copy_path);
+
+    // Initialize window position
+    state.line_count_at_top_of_window = 0;
+    state.file_position_of_topline_start = 0;
+    state.horizontal_line_char_offset = 0;
+
+    // Build initial window content
+    // Get the read_copy path BEFORE the mutable borrow
+    let read_copy = state
+        .read_copy_path
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+    // Now we can mutably borrow state
+    let lines_processed = build_windowmap_nowrap(&mut state, &read_copy)?;
+
+    println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
+
+    // Bootstrap initial cursor position, start of file, after "l "
+    state.cursor.row = 0;
+    state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
+
+    // Main editor loop
+    // let mut input_buffer = String::new();
+    let mut continue_editing = true;
+
+    // set up pre-allocated input buffere, short for commands
+    // and Bucket Brigade! for text input:
+    // Pre-allocate input buffers
+    let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
+    let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
+    let stdin = io::stdin();
+    let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
+
+    // Defensive: Limit loop iterations to prevent infinite loops
+    let mut iteration_count = 0;
+
+    //  ///////////////////////////////
+    // Main Loop for Full Lines Editor
+    //  ///////////////////////////////
+    while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
+        iteration_count += 1;
+
+        // Render TUI (convert LinesError to io::Error)
+        render_tui(&state)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
+
+        if state.mode == EditorMode::Insert {
+            /* For another command area, also see:
+            fn parsed_commands(){
+            if current_mode == ... */
+
+            // Clear buffer before reading
+            for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                text_buffer[i] = 0;
+            }
+
+            // Read single command (no chunking)
+            let bytes_read = stdin_handle.read(&mut text_buffer)?;
+
+            if bytes_read == 0 {
+                continue;
+            }
+
+            // Parse command from bytes
+            let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+
+            // Normal/Visual mode: parse as command
+            let trimmed = text_input_str.trim();
+
+            // Check for exit insert mode commands
+            if trimmed == "-n" || trimmed == "\x1b" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::EnterNormalMode)?;
+
+                // Get the read_copy path BEFORE the mutable borrow
+                let read_copy = state
+                    .read_copy_path
+                    .clone()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+                // Now we can mutably borrow state
+                build_windowmap_nowrap(&mut state, &read_copy)?;
+            } else if trimmed == "-v" {
+                continue_editing = execute_command(&mut state, Command::EnterVisualMode)?;
+
+                // Get the read_copy path BEFORE the mutable borrow
+                let read_copy = state
+                    .read_copy_path
+                    .clone()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+                // Now we can mutably borrow state
+                build_windowmap_nowrap(&mut state, &read_copy)?;
+            } else if trimmed == "-s" || trimmed == "-w" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::Save)?;
+            } else if trimmed == "-wq" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::SaveAndQuit)?;
+            } else if trimmed == "-q" {
+                // Exit insert mode
+                continue_editing = execute_command(&mut state, Command::Quit)?;
+            } else if trimmed == "\x1b[3~" {
+                // Do nothing if delete key entered...
+                continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
+            } else if text_input_str == "\n" || text_input_str == "\r\n" {
+                // note: empty isn't empty, it contains a newline
+                // Empty line = newline insertion
+                continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
+                build_windowmap_nowrap(&mut state, &read_copy)?; // Rebuild immediately after newline
+            } else {
+                //  ///////////////
+                //  Text to Insert
+                //  ///////////////
+
+                // Process the chunk, handling multiple newlines
+                let mut chunk_start = 0;
+
+                while chunk_start < bytes_read {
+                    // Find next newline
+                    let remaining = &text_buffer[chunk_start..bytes_read];
+
+                    if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+                        // Found newline - insert text before it
+                        if newline_offset > 0 {
+                            insert_text_chunk_at_cursor_position(
+                                &mut state,
+                                &read_copy,
+                                &remaining[..newline_offset],
+                            )?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        }
+
+                        // Insert the newline itself
+                        execute_command(&mut state, Command::InsertNewline('\n'))?;
+                        build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+
+                        // Move past the newline for next iteration
+                        chunk_start += newline_offset + 1;
+                    } else {
+                        // No more newlines - insert rest of chunk
+                        if remaining.len() > 0 {
+                            insert_text_chunk_at_cursor_position(
+                                &mut state, &read_copy, remaining,
+                            )?;
+                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+                        }
+                        break;
+                    }
+                }
+
+                // Continue bucket-brigade...
+                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
+
+                if !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                    let mut bucket_iteration = 1;
+
+                    loop {
+                        bucket_iteration += 1;
+
+                        if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
+                            break;
+                        }
+
+                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
+
+                        if more_bytes == 0 {
+                            break;
+                        }
+
+                        // Process this chunk's newlines
+                        let mut chunk_start = 0;
+
+                        while chunk_start < more_bytes {
+                            let remaining = &text_buffer[chunk_start..more_bytes];
+
+                            if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n')
+                            {
+                                if newline_offset > 0 {
+                                    insert_text_chunk_at_cursor_position(
+                                        &mut state,
+                                        &read_copy,
+                                        &remaining[..newline_offset],
+                                    )?;
+                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+                                }
+
+                                execute_command(&mut state, Command::InsertNewline('\n'))?;
+                                build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+
+                                chunk_start += newline_offset + 1;
+                            } else {
+                                if remaining.len() > 0 {
+                                    insert_text_chunk_at_cursor_position(
+                                        &mut state, &read_copy, remaining,
+                                    )?;
+                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+                                }
+                                break;
+                            }
+                        }
+
+                        // A kind of ~halting problem
+                        // Use a specific exit command: -q -n -v
+                        // when changing mode or quitting, etc.
+                        // stdin is a process has no end to predict.
+                    }
+                }
+            }
+        } else {
+            //  ///////////////////////////////////////////
+            //  IF in Normal/Visual mode: parse as command
+            //  ///////////////////////////////////////////
+
+            // Clear buffer before reading
+            for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
+                command_buffer[i] = 0;
+            }
+
+            // Read single command (no chunking)
+            let bytes_read = stdin_handle.read(&mut command_buffer)?;
+
+            // If overflow, ignore and continue
+            if bytes_read >= WHOLE_COMMAND_BUFFER_SIZE {
+                continue; // Skip oversized input
+            }
+
+            // Parse command from bytes
+            let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+
+            // Normal/Visual mode: parse as command
+            let trimmed = command_str.trim();
+
+            let command = if trimmed.is_empty() {
+                // Empty enter: repeat last command
+                match state.the_last_command.clone() {
+                    Some(cmd) => cmd,
+                    None => Command::None, // No previous command
+                }
+            } else {
+                // Parse new command
+                parse_command(&command_str, state.mode)
+            };
+
+            // Execute command
+            continue_editing = execute_command(&mut state, command.clone())?;
+
+            // Store command for repeat (only if it's not Command::None)
+            if command != Command::None {
+                state.the_last_command = Some(command);
+            }
+        }
+    }
+
+    // Defensive: Check if we hit iteration limit
+    if iteration_count >= limits::MAIN_EDITOR_LOOP_COMMANDS {
+        eprintln!("Warning: Editor loop exceeded maximum iterations");
+    }
+
+    // Clean exit
+    println!("\nExciting Lines Editor!");
+
+    // Clean up read-copy if it exists
+    if let Some(read_copy) = state.read_copy_path {
+        if read_copy.exists() {
+            fs::remove_file(read_copy).ok(); // Ignore errors on cleanup
+        }
+    }
 
     Ok(())
 }
