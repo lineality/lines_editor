@@ -2,6 +2,67 @@
 use super::*;
 use std::io::{self, BufRead, BufReader};
 
+// /// Renders TUI to a test writer (for testing without terminal)
+// ///
+// /// # Purpose
+// /// Same as render_tui but writes to provided writer instead of stdout.
+// /// Allows testing TUI layout without actual terminal.
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state
+// /// * `input_buffer` - Current user input
+// /// * `writer` - Where to write output (e.g., test buffer)
+// ///
+// /// # Returns
+// /// * `Ok(())` - Successfully rendered
+// /// * `Err(LinesError)` - Display operation failed
+// pub fn render_tui_to_writer<W: Write>(state: &EditorState, writer: &mut W) -> Result<()> {
+//     // Top legend
+//     let legend = format_navigation_legend()?;
+//     writeln!(writer, "{}", legend)
+//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+
+//     // Content rows
+//     for row in 0..state.effective_rows {
+//         if state.display_buffer_lengths[row] > 0 {
+//             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+
+//             match std::str::from_utf8(row_content) {
+//                 Ok(row_str) => {
+//                     // ONLY CHANGE: Apply cursor highlighting if cursor is on this row
+//                     let display_str = render_row_with_cursor(state, row, row_str);
+//                     writeln!(writer, "{}", display_str)
+//                 }
+//                 Err(_) => writeln!(writer, "�"),
+//             }
+//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+//         } else {
+//             // ONLY CHANGE: Show cursor on empty rows if cursor is here
+//             if row == state.cursor.row {
+//                 writeln!(
+//                     writer,
+//                     "{}{}{}█{}",
+//                     "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m"
+//                 )
+//             } else {
+//                 writeln!(writer)
+//             }
+//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+//         }
+//     }
+
+//     // Bottom info bar
+//     let info_bar = format_info_bar(state)?;
+//     write!(writer, "{}", info_bar)
+//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+
+//     writer
+//         .flush()
+//         .map_err(|e| LinesError::DisplayError(format!("Flush failed: {}", e)))?;
+
+//     Ok(())
+// }
+
 /// Creates test files in project ./test_files/ directory
 /// Files are NEVER deleted - they persist for manual inspection
 /// If files already exist, they are reused
