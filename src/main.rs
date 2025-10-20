@@ -631,7 +631,7 @@ fn main() {
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write, stdin, stdout};
+use std::io::{self, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1942,6 +1942,285 @@ impl EditorState {
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
     }
+
+    /// TODO extensive doc string needed
+    fn handle_insert_mode_input(
+        &mut self,
+        stdin_handle: &mut StdinLock,
+        text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
+    ) -> io::Result<bool> {
+        //  ///////////
+        //  Insert Mode
+        //  ///////////
+
+        /* For another command area, also see:
+        fn parsed_commands(){
+        if current_mode == ... */
+
+        // Default: keep editor loop running (will be set to false by quit commands)
+        let mut keep_editor_loop_running: bool = true;
+
+        // Get the read_copy path BEFORE the mutable borrow
+        let read_copy = self
+            .read_copy_path
+            .clone()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+        // Clear buffer before reading
+        for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+            text_buffer[i] = 0;
+        }
+
+        // Read single command (no chunking)
+        let bytes_read = stdin_handle.read(text_buffer)?;
+
+        if bytes_read == 0 {
+            // continue;
+            return Ok(true); // Skip/ignore oversized input, continue editing
+        }
+
+        // Parse command from bytes
+        let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+
+        // Normal/Visual mode: parse as command
+        let trimmed = text_input_str.trim();
+
+        //  ////////////////////////
+        //  Check for Commands First
+        //  ////////////////////////
+
+        // Check for exit insert mode commands
+        if trimmed == "-n" || trimmed == "\x1b" {
+            // Exit insert mode
+            keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
+
+            // Now we can mutably borrow state
+            build_windowmap_nowrap(self, &read_copy)?;
+        } else if trimmed == "-v" {
+            keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
+
+            // Now we can mutably borrow state
+            build_windowmap_nowrap(self, &read_copy)?;
+        } else if trimmed == "-s" || trimmed == "-w" {
+            // Exit insert mode
+            keep_editor_loop_running = execute_command(self, Command::Save)?;
+        } else if trimmed == "-wq" {
+            // Exit insert mode
+            keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
+        } else if trimmed == "-q" {
+            // Exit insert mode
+            keep_editor_loop_running = execute_command(self, Command::Quit)?;
+        } else if trimmed == "\x1b[3~" {
+            // Do nothing if delete key entered...
+            keep_editor_loop_running = execute_command(self, Command::DeleteBackspace)?;
+        } else if text_input_str == "\n" || text_input_str == "\r\n" {
+            // note: empty isn't empty, it contains a newline
+            // Empty line = newline insertion
+            keep_editor_loop_running = execute_command(self, Command::InsertNewline('\n'))?;
+            build_windowmap_nowrap(self, &read_copy)?; // Rebuild immediately after newline
+        } else {
+            //  ///////////////
+            //  Text to Insert
+            //  ///////////////
+
+            // Determine if bucket brigade will continue after this chunk
+            // If the chunk ends with a newline, that newline is the stdin delimiter (Enter key)
+            // and we should NOT continue reading more chunks
+            let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
+            let will_continue_brigade =
+                !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE;
+
+            // Process the chunk, handling multiple newlines
+            let mut chunk_start = 0;
+
+            while chunk_start < bytes_read {
+                // Find next newline
+                let remaining = &text_buffer[chunk_start..bytes_read];
+
+                // STDIN DELIMITER DETECTION:
+                // When user types text and presses Enter, stdin delivers: "text\n"
+                // The final \n is NOT part of the intended text - it's the command delimiter
+                //
+                // We handle multiple newlines within a chunk (e.g., paste with \n characters)
+                // but skip the FINAL newline if:
+                // 1. It's at the last byte position of this chunk, AND
+                // 2. We're NOT continuing to read more chunks (bucket brigade)
+                //
+                // Examples:
+                //   "fish\n" → insert "fish", skip final \n (stdin delimiter)
+                //   "a\nb\n" → insert "a", \n, "b", skip final \n
+                //   "a\nb" (buffer full) → insert "a", \n, "b", continue reading
+
+                if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+                    // Calculate absolute position of this newline in the chunk
+                    let newline_absolute_pos = chunk_start + newline_offset;
+
+                    // Determine if this specific newline should be skipped
+                    // (Is it the stdin delimiter at the end of input?)
+                    let is_final_byte = newline_absolute_pos == (bytes_read - 1);
+                    let should_skip_newline = is_final_byte && !will_continue_brigade;
+
+                    // Found newline - insert text before it
+                    if newline_offset > 0 {
+                        insert_text_chunk_at_cursor_position(
+                            self,
+                            &read_copy,
+                            &remaining[..newline_offset],
+                        )?;
+                        build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild IMMEDIATELY
+                    }
+
+                    // Insert newline ONLY if it's not the stdin delimiter
+                    if !should_skip_newline {
+                        execute_command(self, Command::InsertNewline('\n'))?;
+                        build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild IMMEDIATELY
+                    }
+
+                    // Move past the newline for next iteration
+                    chunk_start += newline_offset + 1;
+                } else {
+                    // No more newlines - insert rest of chunk
+                    if remaining.len() > 0 {
+                        insert_text_chunk_at_cursor_position(self, &read_copy, remaining)?;
+                        build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild IMMEDIATELY
+                    }
+                    break;
+                }
+            }
+
+            // Continue bucket-brigade if buffer is full and doesn't end with delimiter
+            if will_continue_brigade {
+                let mut bucket_iteration = 1;
+
+                loop {
+                    bucket_iteration += 1;
+
+                    if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
+                        break;
+                    }
+
+                    let more_bytes = stdin_handle.read(text_buffer)?;
+
+                    if more_bytes == 0 {
+                        break;
+                    }
+
+                    // Process this chunk's newlines
+                    let mut chunk_start = 0;
+
+                    while chunk_start < more_bytes {
+                        let remaining = &text_buffer[chunk_start..more_bytes];
+
+                        if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+                            if newline_offset > 0 {
+                                insert_text_chunk_at_cursor_position(
+                                    self,
+                                    &read_copy,
+                                    &remaining[..newline_offset],
+                                )?;
+                                build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild
+                            }
+
+                            execute_command(self, Command::InsertNewline('\n'))?;
+                            build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild
+
+                            chunk_start += newline_offset + 1;
+                        } else {
+                            if remaining.len() > 0 {
+                                insert_text_chunk_at_cursor_position(self, &read_copy, remaining)?;
+                                build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild
+                            }
+                            break;
+                        }
+                    }
+
+                    // A kind of ~halting problem
+                    // Use a specific exit command: -q -n -v
+                    // when changing mode or quitting, etc.
+                    // stdin is a process has no end to predict
+                }
+            }
+        }
+
+        Ok(keep_editor_loop_running)
+    }
+
+    /// Handles input when in Normal or Visual mode.
+    /// Reads a command from stdin, parses it, executes it, and stores it for repeat.
+    ///
+    /// # Return Value Semantics
+    ///
+    /// This method returns a boolean that controls the main editor loop:
+    ///
+    /// * `Ok(true)` → keep_editor_loop_running = true → **loop continues**
+    ///   - Used when: command executed normally
+    ///   - Used when: input skipped (overflow, invalid)
+    ///   - Used when: any case where editor should keep running
+    ///
+    /// * `Ok(false)` → keep_editor_loop_running = false → **loop STOPS**
+    ///   - Used when: quit command executed
+    ///   - Used when: editor should exit
+    ///
+    /// * `Err(e)` → IO error occurred, propagates to caller
+    ///
+    /// # Important Note
+    ///
+    /// Unlike the old inline code, there is no `continue` vs normal flow distinction.
+    /// Every code path returns to the main loop. The boolean simply answers:
+    /// "Should the editor keep running?" (true = yes, false = no)
+    ///
+    /// Overflow example:
+    /// ```ignore
+    /// // OLD: continue; (skip to next iteration)
+    /// // NEW: return Ok(true); (keep loop running → goes to next iteration)
+    /// ```
+    fn handle_normalmode_and_visualmode_input(
+        &mut self,
+        stdin_handle: &mut StdinLock,
+        command_buffer: &mut [u8; WHOLE_COMMAND_BUFFER_SIZE],
+    ) -> io::Result<bool> {
+        // Clear command-buffer before reading
+        for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
+            command_buffer[i] = 0;
+        }
+
+        // Read single command (no chunking)
+        let bytes_read = stdin_handle.read(command_buffer)?;
+
+        // If overflow, ignore and continue/skip
+        // this is equivalent to loop{if X {continue};}
+        if bytes_read >= WHOLE_COMMAND_BUFFER_SIZE {
+            return Ok(true); // Skip/ignore oversized input, continue editing
+        }
+
+        // Parse command as utf-8 from bytes
+        let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+
+        // Normal/Visual mode: parse as command
+        let trimmed = command_str.trim();
+
+        let command = if trimmed.is_empty() {
+            // Empty enter: repeat last command
+            match self.the_last_command.clone() {
+                Some(cmd) => cmd,
+                None => Command::None, // No previous command
+            }
+        } else {
+            // Normal/Visual mode: Parse this command
+            parse_command(command_str, self.mode)
+        };
+
+        // Normal/Visual mode: Execute command
+        let keep_editor_loop_running = execute_command(self, command.clone())?;
+
+        // Store command for repeat (only if it's not null -> Command::None)
+        if command != Command::None {
+            self.the_last_command = Some(command);
+        }
+
+        Ok(keep_editor_loop_running)
+    }
+
     /// Gets the first valid text column for cursor's current row
     ///
     /// # Returns
@@ -4077,10 +4356,10 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             "\x1b[D" => Command::MoveLeft(count), // left over arrow
             "j" => Command::MoveDown(count),
             "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
-            "k" => Command::MoveUp(count),
-            "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
             "l" => Command::MoveRight(count),
             "\x1b[C" => Command::MoveRight(count), // starboard arrow
+            "k" => Command::MoveUp(count),
+            "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
             "i" => Command::EnterInsertMode,
             "v" => Command::EnterVisualMode,
             // Multi-character commands
@@ -4090,7 +4369,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             // "wrap" => Command::ToggleWrap,
             // "gg" => Command::MoveToTop,
             "d" => Command::DeleteLine,
-            "\x1b[3~" => Command::DeleteLine,
+            "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
             _ => Command::None,
         }
     } else if current_mode == EditorMode::Visual {
@@ -4101,7 +4380,7 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
             "n" | "\x1b" => Command::EnterNormalMode,
             "wq" => Command::SaveAndQuit,
             "d" => Command::DeleteBackspace,
-            "\x1b[3~" => Command::DeleteBackspace,
+            "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
             // // TODO: Make These, Command::Select...
             // Some('w') => Command::SelectNextWord,
             // Some('b') => Command::SelectPreviousWordBeginning,
@@ -6068,11 +6347,14 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
     // Main editor loop
     // let mut input_buffer = String::new();
-    let mut continue_editing = true;
+    let mut keep_editor_loop_running = true;
+
+    //  ////////////////
+    //  Set Up Main Loop
+    //  ////////////////
 
     // set up pre-allocated input buffere, short for commands
     // and Bucket Brigade! for text input:
-    // Pre-allocate input buffers
     let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
     let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
     let stdin = io::stdin();
@@ -6082,9 +6364,9 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     let mut iteration_count = 0;
 
     //  ///////////////////////////////
-    // Main Loop for Full Lines Editor
+    //  Main Loop for Full Lines Editor
     //  ///////////////////////////////
-    while continue_editing && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
+    while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
         // Render TUI (convert LinesError to io::Error)
@@ -6092,248 +6374,218 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
         if state.mode == EditorMode::Insert {
-            /* For another command area, also see:
-            fn parsed_commands(){
-            if current_mode == ... */
+            //  ///////////
+            //  Insert Mode
+            //  ///////////
 
-            // Clear buffer before reading
-            for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
-                text_buffer[i] = 0;
-            }
+            // Normal/Visual mode: delegate to method
+            keep_editor_loop_running =
+                state.handle_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
 
-            // Read single command (no chunking)
-            let bytes_read = stdin_handle.read(&mut text_buffer)?;
+            // /* For another command area, also see:
+            // fn parsed_commands(){
+            // if current_mode == ... */
 
-            if bytes_read == 0 {
-                continue;
-            }
+            // // Clear buffer before reading
+            // for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+            //     text_buffer[i] = 0;
+            // }
 
-            // Parse command from bytes
-            let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+            // // Read single command (no chunking)
+            // let bytes_read = stdin_handle.read(&mut text_buffer)?;
 
-            // Normal/Visual mode: parse as command
-            let trimmed = text_input_str.trim();
+            // if bytes_read == 0 {
+            //     continue;
+            // }
 
-            // Check for exit insert mode commands
-            if trimmed == "-n" || trimmed == "\x1b" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::EnterNormalMode)?;
+            // // Parse command from bytes
+            // let text_input_str = std::str::from_utf8(&text_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
 
-                // Get the read_copy path BEFORE the mutable borrow
-                let read_copy = state
-                    .read_copy_path
-                    .clone()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+            // // Normal/Visual mode: parse as command
+            // let trimmed = text_input_str.trim();
 
-                // Now we can mutably borrow state
-                build_windowmap_nowrap(&mut state, &read_copy)?;
-            } else if trimmed == "-v" {
-                continue_editing = execute_command(&mut state, Command::EnterVisualMode)?;
+            // //  ////////////////////////
+            // //  Check for Commands First
+            // //  ////////////////////////
 
-                // Get the read_copy path BEFORE the mutable borrow
-                let read_copy = state
-                    .read_copy_path
-                    .clone()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+            // // Check for exit insert mode commands
+            // if trimmed == "-n" || trimmed == "\x1b" {
+            //     // Exit insert mode
+            //     keep_editor_loop_running = execute_command(&mut state, Command::EnterNormalMode)?;
 
-                // Now we can mutably borrow state
-                build_windowmap_nowrap(&mut state, &read_copy)?;
-            } else if trimmed == "-s" || trimmed == "-w" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::Save)?;
-            } else if trimmed == "-wq" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::SaveAndQuit)?;
-            } else if trimmed == "-q" {
-                // Exit insert mode
-                continue_editing = execute_command(&mut state, Command::Quit)?;
-            } else if trimmed == "\x1b[3~" {
-                // Do nothing if delete key entered...
-                continue_editing = execute_command(&mut state, Command::DeleteBackspace)?;
-            } else if text_input_str == "\n" || text_input_str == "\r\n" {
-                // note: empty isn't empty, it contains a newline
-                // Empty line = newline insertion
-                continue_editing = execute_command(&mut state, Command::InsertNewline('\n'))?;
-                build_windowmap_nowrap(&mut state, &read_copy)?; // Rebuild immediately after newline
-            } else {
-                //  ///////////////
-                //  Text to Insert
-                //  ///////////////
+            //     // Get the read_copy path BEFORE the mutable borrow
+            //     let read_copy = state
+            //         .read_copy_path
+            //         .clone()
+            //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
 
-                // Determine if bucket brigade will continue after this chunk
-                // If the chunk ends with a newline, that newline is the stdin delimiter (Enter key)
-                // and we should NOT continue reading more chunks
-                let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
-                let will_continue_brigade =
-                    !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE;
+            //     // Now we can mutably borrow state
+            //     build_windowmap_nowrap(&mut state, &read_copy)?;
+            // } else if trimmed == "-v" {
+            //     keep_editor_loop_running = execute_command(&mut state, Command::EnterVisualMode)?;
 
-                // Process the chunk, handling multiple newlines
-                let mut chunk_start = 0;
+            //     // Get the read_copy path BEFORE the mutable borrow
+            //     let read_copy = state
+            //         .read_copy_path
+            //         .clone()
+            //         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
 
-                while chunk_start < bytes_read {
-                    // Find next newline
-                    let remaining = &text_buffer[chunk_start..bytes_read];
+            //     // Now we can mutably borrow state
+            //     build_windowmap_nowrap(&mut state, &read_copy)?;
+            // } else if trimmed == "-s" || trimmed == "-w" {
+            //     // Exit insert mode
+            //     keep_editor_loop_running = execute_command(&mut state, Command::Save)?;
+            // } else if trimmed == "-wq" {
+            //     // Exit insert mode
+            //     keep_editor_loop_running = execute_command(&mut state, Command::SaveAndQuit)?;
+            // } else if trimmed == "-q" {
+            //     // Exit insert mode
+            //     keep_editor_loop_running = execute_command(&mut state, Command::Quit)?;
+            // } else if trimmed == "\x1b[3~" {
+            //     // Do nothing if delete key entered...
+            //     keep_editor_loop_running = execute_command(&mut state, Command::DeleteBackspace)?;
+            // } else if text_input_str == "\n" || text_input_str == "\r\n" {
+            //     // note: empty isn't empty, it contains a newline
+            //     // Empty line = newline insertion
+            //     keep_editor_loop_running =
+            //         execute_command(&mut state, Command::InsertNewline('\n'))?;
+            //     build_windowmap_nowrap(&mut state, &read_copy)?; // Rebuild immediately after newline
+            // } else {
+            //     //  ///////////////
+            //     //  Text to Insert
+            //     //  ///////////////
 
-                    // STDIN DELIMITER DETECTION:
-                    // When user types text and presses Enter, stdin delivers: "text\n"
-                    // The final \n is NOT part of the intended text - it's the command delimiter
-                    //
-                    // We handle multiple newlines within a chunk (e.g., paste with \n characters)
-                    // but skip the FINAL newline if:
-                    // 1. It's at the last byte position of this chunk, AND
-                    // 2. We're NOT continuing to read more chunks (bucket brigade)
-                    //
-                    // Examples:
-                    //   "fish\n" → insert "fish", skip final \n (stdin delimiter)
-                    //   "a\nb\n" → insert "a", \n, "b", skip final \n
-                    //   "a\nb" (buffer full) → insert "a", \n, "b", continue reading
+            //     // Determine if bucket brigade will continue after this chunk
+            //     // If the chunk ends with a newline, that newline is the stdin delimiter (Enter key)
+            //     // and we should NOT continue reading more chunks
+            //     let ends_with_newline = bytes_read > 0 && text_buffer[bytes_read - 1] == b'\n';
+            //     let will_continue_brigade =
+            //         !ends_with_newline && bytes_read == TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE;
 
-                    if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
-                        // Calculate absolute position of this newline in the chunk
-                        let newline_absolute_pos = chunk_start + newline_offset;
+            //     // Process the chunk, handling multiple newlines
+            //     let mut chunk_start = 0;
 
-                        // Determine if this specific newline should be skipped
-                        // (Is it the stdin delimiter at the end of input?)
-                        let is_final_byte = newline_absolute_pos == (bytes_read - 1);
-                        let should_skip_newline = is_final_byte && !will_continue_brigade;
+            //     while chunk_start < bytes_read {
+            //         // Find next newline
+            //         let remaining = &text_buffer[chunk_start..bytes_read];
 
-                        // Found newline - insert text before it
-                        if newline_offset > 0 {
-                            insert_text_chunk_at_cursor_position(
-                                &mut state,
-                                &read_copy,
-                                &remaining[..newline_offset],
-                            )?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-                        }
+            //         // STDIN DELIMITER DETECTION:
+            //         // When user types text and presses Enter, stdin delivers: "text\n"
+            //         // The final \n is NOT part of the intended text - it's the command delimiter
+            //         //
+            //         // We handle multiple newlines within a chunk (e.g., paste with \n characters)
+            //         // but skip the FINAL newline if:
+            //         // 1. It's at the last byte position of this chunk, AND
+            //         // 2. We're NOT continuing to read more chunks (bucket brigade)
+            //         //
+            //         // Examples:
+            //         //   "fish\n" → insert "fish", skip final \n (stdin delimiter)
+            //         //   "a\nb\n" → insert "a", \n, "b", skip final \n
+            //         //   "a\nb" (buffer full) → insert "a", \n, "b", continue reading
 
-                        // Insert newline ONLY if it's not the stdin delimiter
-                        if !should_skip_newline {
-                            execute_command(&mut state, Command::InsertNewline('\n'))?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-                        }
+            //         if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+            //             // Calculate absolute position of this newline in the chunk
+            //             let newline_absolute_pos = chunk_start + newline_offset;
 
-                        // Move past the newline for next iteration
-                        chunk_start += newline_offset + 1;
-                    } else {
-                        // No more newlines - insert rest of chunk
-                        if remaining.len() > 0 {
-                            insert_text_chunk_at_cursor_position(
-                                &mut state, &read_copy, remaining,
-                            )?;
-                            build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
-                        }
-                        break;
-                    }
-                }
+            //             // Determine if this specific newline should be skipped
+            //             // (Is it the stdin delimiter at the end of input?)
+            //             let is_final_byte = newline_absolute_pos == (bytes_read - 1);
+            //             let should_skip_newline = is_final_byte && !will_continue_brigade;
 
-                // Continue bucket-brigade if buffer is full and doesn't end with delimiter
-                if will_continue_brigade {
-                    let mut bucket_iteration = 1;
+            //             // Found newline - insert text before it
+            //             if newline_offset > 0 {
+            //                 insert_text_chunk_at_cursor_position(
+            //                     &mut state,
+            //                     &read_copy,
+            //                     &remaining[..newline_offset],
+            //                 )?;
+            //                 build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+            //             }
 
-                    loop {
-                        bucket_iteration += 1;
+            //             // Insert newline ONLY if it's not the stdin delimiter
+            //             if !should_skip_newline {
+            //                 execute_command(&mut state, Command::InsertNewline('\n'))?;
+            //                 build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+            //             }
 
-                        if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
-                            break;
-                        }
+            //             // Move past the newline for next iteration
+            //             chunk_start += newline_offset + 1;
+            //         } else {
+            //             // No more newlines - insert rest of chunk
+            //             if remaining.len() > 0 {
+            //                 insert_text_chunk_at_cursor_position(
+            //                     &mut state, &read_copy, remaining,
+            //                 )?;
+            //                 build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild IMMEDIATELY
+            //             }
+            //             break;
+            //         }
+            //     }
 
-                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
+            //     // Continue bucket-brigade if buffer is full and doesn't end with delimiter
+            //     if will_continue_brigade {
+            //         let mut bucket_iteration = 1;
 
-                        if more_bytes == 0 {
-                            break;
-                        }
+            //         loop {
+            //             bucket_iteration += 1;
 
-                        // TODO NEW CODE ABOVE HERE
-                        //  ///////////////////
-                        //
-                        let more_bytes = stdin_handle.read(&mut text_buffer)?;
+            //             if bucket_iteration > limits::TEXT_INPUT_CHUNKS {
+            //                 break;
+            //             }
 
-                        if more_bytes == 0 {
-                            break;
-                        }
+            //             let more_bytes = stdin_handle.read(&mut text_buffer)?;
 
-                        // Process this chunk's newlines
-                        let mut chunk_start = 0;
+            //             if more_bytes == 0 {
+            //                 break;
+            //             }
 
-                        while chunk_start < more_bytes {
-                            let remaining = &text_buffer[chunk_start..more_bytes];
+            //             // Process this chunk's newlines
+            //             let mut chunk_start = 0;
 
-                            if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n')
-                            {
-                                if newline_offset > 0 {
-                                    insert_text_chunk_at_cursor_position(
-                                        &mut state,
-                                        &read_copy,
-                                        &remaining[..newline_offset],
-                                    )?;
-                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
-                                }
+            //             while chunk_start < more_bytes {
+            //                 let remaining = &text_buffer[chunk_start..more_bytes];
 
-                                execute_command(&mut state, Command::InsertNewline('\n'))?;
-                                build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+            //                 if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n')
+            //                 {
+            //                     if newline_offset > 0 {
+            //                         insert_text_chunk_at_cursor_position(
+            //                             &mut state,
+            //                             &read_copy,
+            //                             &remaining[..newline_offset],
+            //                         )?;
+            //                         build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+            //                     }
 
-                                chunk_start += newline_offset + 1;
-                            } else {
-                                if remaining.len() > 0 {
-                                    insert_text_chunk_at_cursor_position(
-                                        &mut state, &read_copy, remaining,
-                                    )?;
-                                    build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
-                                }
-                                break;
-                            }
-                        }
+            //                     execute_command(&mut state, Command::InsertNewline('\n'))?;
+            //                     build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
 
-                        // A kind of ~halting problem
-                        // Use a specific exit command: -q -n -v
-                        // when changing mode or quitting, etc.
-                        // stdin is a process has no end to predict
-                    }
-                }
-            }
+            //                     chunk_start += newline_offset + 1;
+            //                 } else {
+            //                     if remaining.len() > 0 {
+            //                         insert_text_chunk_at_cursor_position(
+            //                             &mut state, &read_copy, remaining,
+            //                         )?;
+            //                         build_windowmap_nowrap(&mut state, &read_copy)?; // ← Rebuild
+            //                     }
+            //                     break;
+            //                 }
+            //             }
+
+            //             // A kind of ~halting problem
+            //             // Use a specific exit command: -q -n -v
+            //             // when changing mode or quitting, etc.
+            //             // stdin is a process has no end to predict
+            //         }
+            //     }
+            // }
         } else {
             //  ///////////////////////////////////////////
             //  IF in Normal/Visual mode: parse as command
             //  ///////////////////////////////////////////
 
-            // Clear buffer before reading
-            for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
-                command_buffer[i] = 0;
-            }
-
-            // Read single command (no chunking)
-            let bytes_read = stdin_handle.read(&mut command_buffer)?;
-
-            // If overflow, ignore and continue
-            if bytes_read >= WHOLE_COMMAND_BUFFER_SIZE {
-                continue; // Skip oversized input
-            }
-
-            // Parse command from bytes
-            let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
-
-            // Normal/Visual mode: parse as command
-            let trimmed = command_str.trim();
-
-            let command = if trimmed.is_empty() {
-                // Empty enter: repeat last command
-                match state.the_last_command.clone() {
-                    Some(cmd) => cmd,
-                    None => Command::None, // No previous command
-                }
-            } else {
-                // Parse new command
-                parse_command(&command_str, state.mode)
-            };
-
-            // Execute command
-            continue_editing = execute_command(&mut state, command.clone())?;
-
-            // Store command for repeat (only if it's not Command::None)
-            if command != Command::None {
-                state.the_last_command = Some(command);
-            }
+            // Normal/Visual mode: delegate to method
+            keep_editor_loop_running = state
+                .handle_normalmode_and_visualmode_input(&mut stdin_handle, &mut command_buffer)?;
         }
     }
 
@@ -6354,60 +6606,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
 
     Ok(())
 }
-
-// Keep this legacy code to re-use / reference later as 'memo-mode' where no path argument and cwd is home
-// // Needs to be modified to not use heap
-// /// Lines - A minimal text editor for quick append-only notes
-// ///
-// /// # Usage
-// ///   lines [FILENAME | COMMAND]
-// ///
-// /// # Commands
-// ///   --files     Open file manager at notes directory
-// ///
-// /// # File Handling
-// /// - Without arguments: Creates/opens yyyy_mm_dd.txt in ~/Documents/lines_editor/
-// /// - With filename: Creates/opens filename_yyyy_mm_dd.txt in ~/Documents/lines_editor/
-// /// - With path: Uses exact path if file exists
-// fn main() -> io::Result<()> {
-//     let args: Vec<String> = env::args().collect();
-
-//     if args.len() > 1 {
-//         match args[1].as_str() {
-//             "files" | "--files" => {
-//                 let dir_path = if args.len() > 2 {
-//                     PathBuf::from(&args[2])
-//                 } else {
-//                     get_default_filepath(None)?
-//                         .parent()
-//                         .ok_or_else(|| {
-//                             io::Error::new(
-//                                 io::ErrorKind::NotFound,
-//                                 "Could not determine parent directory",
-//                             )
-//                         })?
-//                         .to_path_buf()
-//                 };
-//                 return memo_mode_open_in_file_manager(&dir_path, None);
-//             }
-//             _ => {}
-//         }
-//     }
-
-//     // Original file editing logic...
-//     let original_file_path = if args.len() > 1 {
-//         let arg_path = PathBuf::from(&args[1]);
-//         if arg_path.exists() {
-//             arg_path
-//         } else {
-//             get_default_filepath(Some(&args[1]))?
-//         }
-//     } else {
-//         get_default_filepath(None)?
-//     };
-
-//     memo_mode_mini_editor_loop(&original_file_path)
-// }
 
 /// Main entry point - routes between memo mode and full editor mode
 ///
@@ -6713,13 +6911,8 @@ fn main() -> io::Result<()> {
 
 ...
 
-0. maybe completely eliminate all heap...
+1. maybe completely eliminate all heap...
 - heap in verbose error messages?
-
-1. Restructure input to use:
-- try to fix strange last-line issue.
-- add extra buffer last newline?
-
 
 2. add --insert_from_file feature
 - how to call... tricky, file path longer than command..
@@ -6728,10 +6921,7 @@ safe to check for? (possible edge cases collisions)
 
 3. restructure legacy mode to not use heap
 
-4. add -a --append mode
-- existing legacy mode
-
-5. struct for multi-select?
+4. struct for multi-select?
 edit in reverse order?
 make a stack of operations?
 
