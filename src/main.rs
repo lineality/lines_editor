@@ -4074,13 +4074,13 @@ pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
         match command_str {
             // Single character commands
             "h" => Command::MoveLeft(count),
-            "\x1b[D" => Command::MoveLeft(count),
+            "\x1b[D" => Command::MoveLeft(count), // left over arrow
             "j" => Command::MoveDown(count),
-            "\x1b[A" => Command::MoveDown(count),
+            "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
             "k" => Command::MoveUp(count),
-            "\x1b[B" => Command::MoveUp(count),
+            "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
             "l" => Command::MoveRight(count),
-            "\x1b[C" => Command::MoveRight(count),
+            "\x1b[C" => Command::MoveRight(count), // starboard arrow
             "i" => Command::EnterInsertMode,
             "v" => Command::EnterVisualMode,
             // Multi-character commands
@@ -5569,7 +5569,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
     // Build the info bar
     let info = format!(
         // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
-        "{}{} {}{}{}:{}{}{} {}{} {}>{}",
+        "{}{} {}{}{}:{}{}{} {}{} {}>{} ",
         YELLOW,
         mode_str,
         // YELLOW,
@@ -6475,6 +6475,12 @@ fn main() -> io::Result<()> {
                     Ok(())
                 }
                 _ => {
+                    /*
+                    TODO:
+                    only open an existing file in memo-mode(append)
+                    if it has the -a flag
+                    if not existing path.. then memo mode...
+                    */
                     // Treat as file/directory path
                     if in_home && !arg.contains('/') && !arg.contains('\\') {
                         // In home + simple filename = memo mode with custom name
