@@ -96,21 +96,54 @@ Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 
 This code is under construction! Some code below may not be correct.
 Any code that violates the roles and policies is wrong or placeholder-code.
 
+
 # Build plan A
 
 
 Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
 
+0. Forever testing and cleanup:
+- works on:
+-- linux,
+-- android-termux,
+-- BSD-MacOS,
+-- windows,
+-- redox,
+-- etc.
+
+- Find and remove un-used code
+
+- Comment and document functionality
+
+- Error handling: 'Fail and try again' aka 'catch it, log it, and move on.'
+Don't crash, just move on (optional, terminal print message
+-- (info-bar message)) Are there any places where an error/exception will cause a crash rather than 'catch it, log it, and move on.'
+
+- 'Get (what is) needed, when (it is) needed.) Is anything being loaded into memory/state that does not need to be?
+
+- tests: Is there anything that can and should be tested but is not?
+
+- asserts: Is there anything that can and should be asserted but is not?
+
+- reduce redundant libraries: Are there redundant library imports?
+
+- find arbitrarily elaborate solutions -> make more maintainable
+
+- balancing modular 'simplicity' and efficiency
+
+- Other NASA Power-of-10-rules areas to try or test for?
+
+
 1. open a read-copy file: call lines from cli with a file-path
 [Done]- use function input path from argument handled by wrapper
-[Done]- make timestamped session directory in exe relative abs path directory lines_data/sessions/{timestamp}/
+[Done]- make timestamped session directory in exe relative abs path directory lines_data/tmp/sessions/{timestamp}/
 [Done]- save read-copy of file
 
 [Done]main() is a wrapper that handles arguments, e.g. get path from argument and feed it in, later help menu, etc.
 
 [Done]lines_editor_module(option(path)) is the main lines application-wrapper, called by main (or called by another application into which the lines editor is added as a module)
 
-[Done]lines_data/sessions/{timestamp}/{timestamp}_{filename}
+[Done]lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
 
 
 2. save paths in state: [Done]
@@ -136,25 +169,45 @@ Basic features to be use-able, with a design such that planned scope can be modu
 [Done]4. **Test** - Verify line numbers track correctly
 [Done]5. scroll right (see unwrapped long lines)
 [Done]6. scroll back to left
+- bump boostrap starting cursor position to +3 positions ahead on the line (not 0,0) TODO
 
+Note: for Move-Cursor & Select Characters:
+- advanced move and go-to are not needed for select to work
+- there may NOT be any need for fancy move and any select
 
-5. Moving Cursor
+5. Moving Cursor: step-move and Go-To/go to
 [Done]- hjkl
 [Done]- int+hjkl
 - w,e,b, normal mode move
+- ge (go to file end)
+- gg (go to file start)
+- g{line number}, absolute or relative
 
+(maybe future, maybe out of scope)
+- gh (go to the beginning of the line)
+- gl (go to the end of the line)
+- gw (go to word...super cool if out of scope, see Helix)
 
-6. Delete
+6. select (even if select doesn't do anything now) ( visual mode, works in POC)
+- Select Next
+- Select to delete
+- Select to copy paste
+- hjkl
+- int+hjkl
+- w,e,b, normal mode move
+- v or y, c or p
+
+7. Delete
 - figure out a coherent plan for defaults and options
 - mvp d delete... a char?
 maybe:
-MVP:
-- make backspace_style_delete_noload()
-- make delete_current_line_noload()
+MVP:[Done]
+[Done]- make backspace_style_delete_noload()
+[Done]- make delete_current_line_noload()
 
-- normal mode: 'd' is deletes current line
-- visual mode: 'd' acts like backspace (deletes character before cursor)
-- insert mode: '-d' is also backspace-style
+[Done]- normal mode: 'd' is deletes current line
+[Done]- visual mode: 'd' acts like backspace (deletes character before cursor)
+[Done]- insert mode: '-d' is also backspace-style
 After MVP: When selection is available:
 - visual mode: 'd' deletes selection
 
@@ -163,10 +216,7 @@ Note: there is no planned support for 'legacy delete' (deleting forward characte
 Note: no whole-file loading.
 
 
-7. select code (even if select doesn't do anything now) ( visual mode, works in POC)
-- hjkl
-- int+hjkl
-- w,e,b, normal mode move
+[] file & multi-file replace-all...
 
 
 8. insert:
@@ -191,19 +241,16 @@ maybe add another item into state:
 
 
 [Done] - 'wq' in Normal/Visual mode
+- 'sa' save as (important!)
 
 
-10. works on:
-- linux,
-- android-termux,
-- BSD-MacOS,
-- windows,
-- redox,
-etc.:
+10. help/instructions system
+[done] - super MVP version
+- effectively all possible commands should be A. in the header or, B. in the info-bar, C. in a help-menu
 
-
-11. Legacy 'Memo-Mode & Append functionality'
+11. Restore/Integrate/Fix Legacy 'Memo-Mode & Append functionality'
 Very practical, very useful.
+- legacy mode does whole-file loading: must do by chunks
 - For MVP, calling Lines with path argument in home directory launches the ultra-minimal legacy Memo-Mode which is simple and stable (that does not need to launch full-lines with state etc.)
 - add 'a' append mode, which is like memo-mode
 - jump to end of file
@@ -220,6 +267,50 @@ Very practical, very useful.
 [Almost Done] - calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
 - Why is it making/saving an archive directory in the new directory???
 - oh...archiving... new new file? ok... but check this... save-archives... maybe.
+
+
+14. comment/uncomment (simple?)
+- up to ~24 space
+- is there comment-tag + space?
+- yes? no?, flip it
+
+
+15. File-insert and Extract-to-File
+- export row/line (slice) of one file to a new file
+- insert file-bytes into a file (rather than input-buffer, e.g. instead of big cut and paste)
+- export selection to a file
+- "screen shot" print TUI to file instead of terminal
+
+16. integrate into ff (...It's File Fantastic...)
+
+19. Byte/Hex
+simple byte mode?
+raw...? simple view change?
+wrap...lower priority
+
+17. Tester-Bot
+- Try to make an automated testing thing-bot, that runs through what a person would input and checks the status (read-copy-file state, original file state, archived file state) at each step or otherwise routinely.
+- Automate actions that are routine.
+- Automate actions that are potentially error-prone, such as repeated edits, large files, large inputs, etc.
+
+18. maybe out of scope: undo & changelogs
+- MVP maybe to save a change-log, but not have undo-feature... for mvp
+- z or u
+- idea: save reverse operations to files that can be run back.
+
+19. simple view bytes
+How difficult would it be to do a direct hex-byte version with no character handling?
+
+
+20. alternating hex & character lines
+
+
+21: Wrap
+- maybe wrap is out of scope for now...
+
+22: raw...maybe out of scope
+
+23: backend-api for another wrapper or front-end.
 
 
 
@@ -243,6 +334,7 @@ Very practical, very useful.
 - 'Memo' Mode: (quick-start exists in original Lines)
 - open to line
 - go to end of file (just iterate, must see line number)
+- save-as
 
 
 ## Future/Probably Scope:
@@ -6616,129 +6708,130 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     Ok(())
 }
 
-/// Main entry point - routes between memo mode and full editor mode
-///
-/// # Purpose
-/// Determines which mode to use based on current directory and arguments.
-///
-/// # Command Line Usage
-/// - `lines` - Memo mode (if in home) or error (if elsewhere)
-/// - `lines file.txt` - Full editor mode with file
-/// - `lines /path/to/dir/` - Full editor mode, prompts for filename
-///
-/// # Mode Selection Logic
-/// 1. If CWD is home directory -> memo mode available
-/// 2. Otherwise -> full editor mode (requires file argument)
-///
-/// # Exit Codes
-/// - 0: Success
-/// - 1: General error
-/// - 2: Invalid arguments
-fn main() -> io::Result<()> {
-    let args: Vec<String> = env::args().collect();
+// /// This is a template for calling the lines module
+// /// Main entry point - routes between memo mode and full editor mode
+// ///
+// /// # Purpose
+// /// Determines which mode to use based on current directory and arguments.
+// ///
+// /// # Command Line Usage
+// /// - `lines` - Memo mode (if in home) or error (if elsewhere)
+// /// - `lines file.txt` - Full editor mode with file
+// /// - `lines /path/to/dir/` - Full editor mode, prompts for filename
+// ///
+// /// # Mode Selection Logic
+// /// 1. If CWD is home directory -> memo mode available
+// /// 2. Otherwise -> full editor mode (requires file argument)
+// ///
+// /// # Exit Codes
+// /// - 0: Success
+// /// - 1: General error
+// /// - 2: Invalid arguments
+// fn main() -> io::Result<()> {
+//     let args: Vec<String> = env::args().collect();
 
-    // Check if we're in home directory
-    let in_home = is_in_home_directory()?;
+//     // Check if we're in home directory
+//     let in_home = is_in_home_directory()?;
 
-    // // Diagnostics
-    // println!("=== Lines Text Editor ===");
-    // println!("Current directory: {}", env::current_dir()?.display());
-    // if in_home {
-    //     println!("Mode: Memo mode available (in home directory)");
-    // } else {
-    //     println!("Mode: Full editor (not in home directory)");
-    // }
-    // println!();
+//     // // Diagnostics
+//     // println!("=== Lines Text Editor ===");
+//     // println!("Current directory: {}", env::current_dir()?.display());
+//     // if in_home {
+//     //     println!("Mode: Memo mode available (in home directory)");
+//     // } else {
+//     //     println!("Mode: Full editor (not in home directory)");
+//     // }
+//     // println!();
 
-    // Parse command line arguments
-    match args.len() {
-        1 => {
-            // No arguments provided
-            if in_home {
-                // Memo mode: create today's file
-                println!("Starting memo mode...");
-                let original_file_path = get_default_filepath(None)?;
-                memo_mode_mini_editor_loop(&original_file_path)
-            } else {
-                // Full editor mode - prompt for filename in current directory
-                println!("No file specified. Creating new file in current directory.");
-                let filename = prompt_for_filename()?;
-                let current_dir = env::current_dir()?;
-                let original_file_path = current_dir.join(filename);
-                full_lines_editor(Some(original_file_path))
-            }
-        }
-        2 => {
-            // One argument provided
-            let arg = &args[1];
+//     // Parse command line arguments
+//     match args.len() {
+//         1 => {
+//             // No arguments provided
+//             if in_home {
+//                 // Memo mode: create today's file
+//                 println!("Starting memo mode...");
+//                 let original_file_path = get_default_filepath(None)?;
+//                 memo_mode_mini_editor_loop(&original_file_path)
+//             } else {
+//                 // Full editor mode - prompt for filename in current directory
+//                 println!("No file specified. Creating new file in current directory.");
+//                 let filename = prompt_for_filename()?;
+//                 let current_dir = env::current_dir()?;
+//                 let original_file_path = current_dir.join(filename);
+//                 full_lines_editor(Some(original_file_path))
+//             }
+//         }
+//         2 => {
+//             // One argument provided
+//             let arg = &args[1];
 
-            // Check for special commands
-            match arg.as_str() {
-                "--help" | "-h" | "help" => {
-                    print_help();
-                    Ok(())
-                }
-                "--version" | "-v" | "version" => {
-                    println!("lines editor v0.2.0");
-                    Ok(())
-                }
-                _ => {
-                    /*
-                    TODO:
-                    only open an existing file in memo-mode(append)
-                    if it has the -a flag
-                    if not existing path.. then memo mode...
-                    */
-                    // Treat as file/directory path
-                    if in_home && !arg.contains('/') && !arg.contains('\\') {
-                        // In home + simple filename = memo mode with custom name
-                        println!("Starting memo mode with custom file: {}", arg);
-                        let original_file_path = get_default_filepath(Some(arg))?;
-                        memo_mode_mini_editor_loop(&original_file_path)
-                    } else {
-                        // Full editor mode with specified path
-                        let path = PathBuf::from(arg);
-                        full_lines_editor(Some(path))
-                    }
-                }
-            }
-        }
-        3 => {
-            // Two arguments provided
-            let flag = &args[1];
-            let filepath_arg = &args[2];
+//             // Check for special commands
+//             match arg.as_str() {
+//                 "--help" | "-h" | "help" => {
+//                     print_help();
+//                     Ok(())
+//                 }
+//                 "--version" | "-v" | "version" => {
+//                     println!("lines editor v0.2.0");
+//                     Ok(())
+//                 }
+//                 _ => {
+//                     /*
+//                     TODO:
+//                     only open an existing file in memo-mode(append)
+//                     if it has the -a flag
+//                     if not existing path.. then memo mode...
+//                     */
+//                     // Treat as file/directory path
+//                     if in_home && !arg.contains('/') && !arg.contains('\\') {
+//                         // In home + simple filename = memo mode with custom name
+//                         println!("Starting memo mode with custom file: {}", arg);
+//                         let original_file_path = get_default_filepath(Some(arg))?;
+//                         memo_mode_mini_editor_loop(&original_file_path)
+//                     } else {
+//                         // Full editor mode with specified path
+//                         let path = PathBuf::from(arg);
+//                         full_lines_editor(Some(path))
+//                     }
+//                 }
+//             }
+//         }
+//         3 => {
+//             // Two arguments provided
+//             let flag = &args[1];
+//             let filepath_arg = &args[2];
 
-            // Check if first arg is append flag
-            match flag.as_str() {
-                "-a" | "--append" => {
-                    // Memo mode (append-only) with specified file path
-                    let file_path = PathBuf::from(filepath_arg);
-                    println!(
-                        "Starting memo mode (append-only) with file: {}",
-                        file_path.display()
-                    );
-                    memo_mode_mini_editor_loop(&file_path)
-                }
-                _ => {
-                    // Unknown flag combination
-                    eprintln!("Error: Invalid arguments");
-                    eprintln!("Usage: lines [filename | -a <filepath> | --help]");
-                    eprintln!("Examples:");
-                    eprintln!("  lines notes.txt          # Full editor mode");
-                    eprintln!("  lines -a notes.txt       # Append-only mode");
-                    eprintln!("  lines --append /tmp/log  # Append-only mode");
-                    std::process::exit(2);
-                }
-            }
-        }
-        _ => {
-            // Multiple arguments - currently not supported
-            eprintln!("Error: It's The Too many arguments!");
-            eprintln!("Try Usage: lines [filename | -a <filepath> | --help]");
-            std::process::exit(2);
-        }
-    }
-}
+//             // Check if first arg is append flag
+//             match flag.as_str() {
+//                 "-a" | "--append" => {
+//                     // Memo mode (append-only) with specified file path
+//                     let file_path = PathBuf::from(filepath_arg);
+//                     println!(
+//                         "Starting memo mode (append-only) with file: {}",
+//                         file_path.display()
+//                     );
+//                     memo_mode_mini_editor_loop(&file_path)
+//                 }
+//                 _ => {
+//                     // Unknown flag combination
+//                     eprintln!("Error: Invalid arguments");
+//                     eprintln!("Usage: lines [filename | -a <filepath> | --help]");
+//                     eprintln!("Examples:");
+//                     eprintln!("  lines notes.txt          # Full editor mode");
+//                     eprintln!("  lines -a notes.txt       # Append-only mode");
+//                     eprintln!("  lines --append /tmp/log  # Append-only mode");
+//                     std::process::exit(2);
+//                 }
+//             }
+//         }
+//         _ => {
+//             // Multiple arguments - currently not supported
+//             eprintln!("Error: It's The Too many arguments!");
+//             eprintln!("Try Usage: lines [filename | -a <filepath> | --help]");
+//             std::process::exit(2);
+//         }
+//     }
+// }
 
 /*
 Build Notes:
