@@ -20,6 +20,8 @@ test_analysis_report_*
 
 code_archive.txt
 
+source_crate_lines_editor_*
+
 test.csv_metadata.toml
 
 # Remove Cargo.lock from gitignore if creating an executable, leave it for libraries

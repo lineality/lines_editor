@@ -9,10 +9,28 @@ use lines_editor_module::{
 use std::env;
 use std::io;
 use std::path::PathBuf;
-// // Share Source
-// mod source_it_module;
 
-// ff as a module for any project, e.g.
+mod source_it_module;
+use source_it_module::{SourcedFile, handle_sourceit_command};
+
+// Developer explicitly lists files to embed
+const SOURCE_FILES: &[SourcedFile] = &[
+    SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
+    SourcedFile::new("src/main.rs", include_str!("main.rs")),
+    SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
+    SourcedFile::new(
+        "src/source_it_module.rs",
+        include_str!("source_it_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/lines_editor_module.rs",
+        include_str!("lines_editor_module.rs"),
+    ),
+    // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
+    SourcedFile::new("README.md", include_str!("../README.md")),
+    SourcedFile::new("LICENSE", include_str!("../LICENSE")),
+    SourcedFile::new(".gitignore", include_str!("../.gitignore")),
+];
 
 /// Main entry point - routes between memo mode and full editor mode
 ///
@@ -33,8 +51,7 @@ use std::path::PathBuf;
 /// - 1: General error
 /// - 2: Invalid arguments
 fn main() -> io::Result<()> {
-    let args: Vec<String> = env::args().collect();
-
+    let args: Vec<String> = std::env::args().collect();
     // Check if we're in home directory
     let in_home = is_in_home_directory()?;
 
@@ -72,12 +89,19 @@ fn main() -> io::Result<()> {
 
             // Check for special commands
             match arg.as_str() {
-                "--help" | "-h" | "help" => {
+                "--help" | "-h" => {
                     print_help();
                     Ok(())
                 }
-                "--version" | "-v" | "version" => {
+                "--version" | "-v" | "-V" => {
                     println!("lines editor v0.2.0");
+                    Ok(())
+                }
+                "--source" | "--source_it" => {
+                    match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
+                        Ok(path) => println!("Source extracted to: {}", path.display()),
+                        Err(e) => eprintln!("Failed to extract source: {}", e),
+                    }
                     Ok(())
                 }
                 _ => {
