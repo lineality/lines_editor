@@ -707,7 +707,174 @@ fn main() {
         }
     }
 }
- */
+*/
+
+/*
+// src/main.rs
+
+// import file fantstic module w/ these 2 lines
+mod lines_editor_module;
+use lines_editor_module::{
+    full_lines_editor, get_default_filepath, is_in_home_directory, memo_mode_mini_editor_loop,
+    print_help, prompt_for_filename,
+};
+use std::env;
+use std::io;
+use std::path::PathBuf;
+
+mod source_it_module;
+use source_it_module::{SourcedFile, handle_sourceit_command};
+
+// Developer explicitly lists files to embed
+const SOURCE_FILES: &[SourcedFile] = &[
+    SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
+    SourcedFile::new("src/main.rs", include_str!("main.rs")),
+    SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
+    SourcedFile::new(
+        "src/source_it_module.rs",
+        include_str!("source_it_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/lines_editor_module.rs",
+        include_str!("lines_editor_module.rs"),
+    ),
+    // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
+    SourcedFile::new("README.md", include_str!("../README.md")),
+    SourcedFile::new("LICENSE", include_str!("../LICENSE")),
+    SourcedFile::new(".gitignore", include_str!("../.gitignore")),
+];
+
+/// Main entry point - routes between memo mode and full editor mode
+///
+/// # Purpose
+/// Determines which mode to use based on current directory and arguments.
+///
+/// # Command Line Usage
+/// - `lines` - Memo mode (if in home) or error (if elsewhere)
+/// - `lines file.txt` - Full editor mode with file
+/// - `lines /path/to/dir/` - Full editor mode, prompts for filename
+///
+/// # Mode Selection Logic
+/// 1. If CWD is home directory -> memo mode available
+/// 2. Otherwise -> full editor mode (requires file argument)
+///
+/// # Exit Codes
+/// - 0: Success
+/// - 1: General error
+/// - 2: Invalid arguments
+fn main() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    // Check if we're in home directory
+    let in_home = is_in_home_directory()?;
+
+    // // Diagnostics
+    // println!("=== Lines Text Editor ===");
+    // println!("Current directory: {}", env::current_dir()?.display());
+    // if in_home {
+    //     println!("Mode: Memo mode available (in home directory)");
+    // } else {
+    //     println!("Mode: Full editor (not in home directory)");
+    // }
+    // println!();
+
+    // Parse command line arguments
+    match args.len() {
+        1 => {
+            // No arguments provided
+            if in_home {
+                // Memo mode: create today's file
+                println!("Starting memo mode...");
+                let original_file_path = get_default_filepath(None)?;
+                memo_mode_mini_editor_loop(&original_file_path)
+            } else {
+                // Full editor mode - prompt for filename in current directory
+                println!("No file specified. Creating new file in current directory.");
+                let filename = prompt_for_filename()?;
+                let current_dir = env::current_dir()?;
+                let original_file_path = current_dir.join(filename);
+                full_lines_editor(Some(original_file_path))
+            }
+        }
+        2 => {
+            // One argument provided
+            let arg = &args[1];
+
+            // Check for special commands
+            match arg.as_str() {
+                "--help" | "-h" => {
+                    print_help();
+                    Ok(())
+                }
+                "--version" | "-v" | "-V" => {
+                    println!("lines editor v0.2.0");
+                    Ok(())
+                }
+                "--source" | "--source_it" => {
+                    match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
+                        Ok(path) => println!("Source extracted to: {}", path.display()),
+                        Err(e) => eprintln!("Failed to extract source: {}", e),
+                    }
+                    Ok(())
+                }
+                _ => {
+                    /*
+                    TODO:
+                    only open an existing file in memo-mode(append)
+                    if it has the -a flag
+                    if not existing path.. then memo mode...
+                    */
+                    // Treat as file/directory path
+                    if in_home && !arg.contains('/') && !arg.contains('\\') {
+                        // In home + simple filename = memo mode with custom name
+                        println!("Starting memo mode with custom file: {}", arg);
+                        let original_file_path = get_default_filepath(Some(arg))?;
+                        memo_mode_mini_editor_loop(&original_file_path)
+                    } else {
+                        // Full editor mode with specified path
+                        let path = PathBuf::from(arg);
+                        full_lines_editor(Some(path))
+                    }
+                }
+            }
+        }
+        3 => {
+            // Two arguments provided
+            let flag = &args[1];
+            let filepath_arg = &args[2];
+
+            // Check if first arg is append flag
+            match flag.as_str() {
+                "-a" | "--append" => {
+                    // Memo mode (append-only) with specified file path
+                    let file_path = PathBuf::from(filepath_arg);
+                    println!(
+                        "Starting memo mode (append-only) with file: {}",
+                        file_path.display()
+                    );
+                    memo_mode_mini_editor_loop(&file_path)
+                }
+                _ => {
+                    // Unknown flag combination
+                    eprintln!("Error: Invalid arguments");
+                    eprintln!("Usage: lines [filename | -a <filepath> | --help]");
+                    eprintln!("Examples:");
+                    eprintln!("  lines notes.txt          # Full editor mode");
+                    eprintln!("  lines -a notes.txt       # Append-only mode");
+                    eprintln!("  lines --append /tmp/log  # Append-only mode");
+                    std::process::exit(2);
+                }
+            }
+        }
+        _ => {
+            // Multiple arguments - currently not supported
+            eprintln!("Error: It's The Too many arguments!");
+            eprintln!("Try Usage: lines [filename | -a <filepath> | --help]");
+            std::process::exit(2);
+        }
+    }
+}
+
+*/
 
 /*
 * Spec Notes:
@@ -785,8 +952,8 @@ const MAX_TUI_COLS: usize = 160;
 /// Default TUI text dimensions will be
 /// +/- 3 header footer,
 /// +/- at least 3 for line numbers
-const DEFAULT_ROWS: usize = 24;
-const DEFAULT_COLS: usize = 80;
+pub const DEFAULT_ROWS: usize = 24;
+pub const DEFAULT_COLS: usize = 80;
 
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
@@ -1012,7 +1179,7 @@ fn epoch_seconds_to_datetime_components(epoch_seconds: u64) -> (u32, u32, u32, u
 /// # Safety Bounds
 /// - Maximum year: 9999 (bounded loop with MAX_YEAR_ITERATIONS)
 /// - If bounds exceeded, returns safe fallback date
-fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
+pub fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
     // Constants for loop bounds and validation
     const EPOCH_YEAR: u32 = 1970;
     const MAX_YEAR: u32 = 9999;
@@ -1806,11 +1973,11 @@ pub struct WindowPosition {
 pub struct WindowMap {
     /// Pre-allocated mapping array [row][col] -> Option<FilePosition>
     /// None means this position is empty/padding
-    positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
+    pub positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
     /// Number of valid rows in current window
-    valid_rows: usize,
+    pub valid_rows: usize,
     /// Number of valid columns in current window
-    valid_cols: usize,
+    pub valid_cols: usize,
 }
 
 impl WindowMap {
@@ -2434,6 +2601,7 @@ impl EditorState {
                             &read_copy,
                             &remaining[..newline_offset],
                         )?;
+                        // ? Is this to res
                         build_windowmap_nowrap(self, &read_copy)?; // ← Rebuild IMMEDIATELY
                     }
 
@@ -5829,7 +5997,7 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 /// # Returns
 /// * `Ok(())` - Text inserted successfully
 /// * `Err(io::Error)` - File operation failed
-fn insert_text_chunk_at_cursor_position(
+pub fn insert_text_chunk_at_cursor_position(
     state: &mut EditorState,
     file_path: &Path,
     text_bytes: &[u8],
@@ -6111,7 +6279,7 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
 /// - Stored in session directory for crash recovery
 /// - Timestamp prefix ensures uniqueness
 /// - Session directory persists after exit for recovery
-fn create_a_readcopy_of_file(
+pub fn create_a_readcopy_of_file(
     original_path: &Path,
     session_dir: &Path,
     session_time_stamp: String,
@@ -6479,7 +6647,7 @@ fn render_row_with_cursor(state: &EditorState, row_index: usize, row_content: &s
 /// # Error Handling
 /// If session directory creation fails, editor should not continue as
 /// read-copy operations depend on this directory existing.
-fn initialize_session_directory(
+pub fn initialize_session_directory(
     state: &mut EditorState,
     session_time_stamp: FixedSize32Timestamp,
 ) -> io::Result<()> {

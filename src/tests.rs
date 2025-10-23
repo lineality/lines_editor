@@ -1,6 +1,28 @@
 // tests.rs (keen this in same directory as main.rs)
-use super::*;
-use std::io::{self, BufRead, BufReader};
+
+#[cfg(test)]
+use crate::lines_editor_module::double_width::{calculate_display_width, is_double_width};
+
+#[cfg(test)]
+use crate::lines_editor_module::*;
+
+#[cfg(test)]
+use std::env;
+
+#[cfg(test)]
+use std::fs::File;
+
+#[cfg(test)]
+use std::io::BufRead;
+
+#[cfg(test)]
+use std::io::BufReader;
+
+#[cfg(test)]
+use std::io::{self};
+
+#[cfg(test)]
+use std::path::{Path, PathBuf};
 
 // /// Renders TUI to a test writer (for testing without terminal)
 // ///
@@ -79,7 +101,8 @@ use std::io::{self, BufRead, BufReader};
 /// # Returns
 /// * `Ok(Vec<PathBuf>)` - Absolute paths to test files
 /// * `Err(io::Error)` - If directory creation or file writing fails
-fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
+#[cfg(test)]
+pub fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
     use std::fs::{self, File};
     use std::io::Write;
 
@@ -340,6 +363,7 @@ fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
 // }
 
 /// Diagnostic function to print contents of test files
+#[cfg(test)]
 fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
     println!("=== File Contents: {} ===", file_path.display());
     let file = File::open(file_path)?;
@@ -418,7 +442,7 @@ fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod build_window_tests4 {
-    use super::*;
+    use super::*; // ← Line 1: import from tests.rs
 
     #[test]
     fn test_build_windowmap_nowrap_basic() {
@@ -582,7 +606,7 @@ mod test_file_tests {
 
 #[cfg(test)]
 mod char_width_tests {
-    use super::double_width::*;
+    use super::*; // ← Line 1: import from tests.rs
 
     #[test]
     fn test_ascii_characters() {
@@ -921,7 +945,9 @@ mod revised_critical_distinction_tests {
 
 #[cfg(test)]
 mod revised_boundary_tests {
-    use super::*;
+    use super::*; // ← Line 1: import from tests.rs
+
+    use std::fs;
 
     #[test]
     fn test_double_width_at_boundary() -> io::Result<()> {

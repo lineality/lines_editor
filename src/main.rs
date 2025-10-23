@@ -13,6 +13,19 @@ use std::path::PathBuf;
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
 
+// Re-export things that tests need (if they're private)
+// #[cfg(test)]
+// pub(crate) use lines_editor_module::*; // Makes module contents available to tests
+
+#[cfg(test)]
+mod tests;
+
+// import file fantstic module w/ these 2 lines
+// #[cfg(test)]
+// mod lines_editor_module;
+// #[cfg(test)]
+// pub(crate) use lines_editor_module::*;
+
 // Developer explicitly lists files to embed
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
