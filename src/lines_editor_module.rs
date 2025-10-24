@@ -7114,80 +7114,6 @@ pub fn insert_text_chunk_at_cursor_position(
 //  Have a Pasty!!
 // ===============
 
-/*
-alt
-
-match input {
-    "" => {
-        if sorted_files.is_empty() {
-            error_message = "clipboard empty".to_string();
-            continue;
-        }
-        return Ok(Some(sorted_files[0].clone()));
-    }
-
-    "b" => return Ok(None),  // ← This should work now
-
-    "clear" => {
-        clear_clipboard(&clipboard_dir)?;
-        offset = 0;
-        state.set_info_bar_message("clipboard cleared");
-        continue;
-    }
-
-    "k" | "up" => {
-        offset = offset.saturating_sub(items_per_page);
-        continue;
-    }
-
-    "j" | "down" => {
-        let new_offset = offset + items_per_page;
-        if new_offset < total_count {
-            offset = new_offset;
-        }
-        continue;
-    }
-
-    input_str if input_str.starts_with("clear") => {
-        let num_str = &input_str[5..];
-        if let Ok(rank) = num_str.parse::<usize>() {
-            if rank == 0 || rank > total_count {
-                error_message = "invalid: out of range".to_string();
-            } else {
-                let file_to_delete = &sorted_files[rank - 1];
-                fs::remove_file(file_to_delete)?;
-                state.set_info_bar_message("item cleared");
-                if offset >= sorted_files.len().saturating_sub(1) && offset > 0 {
-                    offset = offset.saturating_sub(items_per_page);
-                }
-            }
-        } else {
-            error_message = "invalid clear command".to_string();
-        }
-        continue;
-    }
-
-    // NEW: Explicit filepath command with '/' prefix
-    input_str if input_str.starts_with('/') => {
-        return Ok(Some(PathBuf::from(&input_str[1..])));
-    }
-
-    // Try to parse as rank number
-    input_str => {
-        if let Ok(rank) = input_str.parse::<usize>() {
-            if rank == 0 || rank > total_count {
-                error_message = "invalid: out of range".to_string();
-                continue;
-            }
-            return Ok(Some(sorted_files[rank - 1].clone()));
-        } else {
-            // Unknown command
-            error_message = format!("unknown command: '{}'", input_str);
-            continue;  // ← Stay in loop instead of treating as filepath
-        }
-    }
-}
- */
 /// Reads clipboard directory and returns files sorted by modified time (newest first)
 fn read_and_sort_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> {
     if !clipboard_dir.exists() {
@@ -7912,9 +7838,7 @@ pub fn initialize_session_directory(
         ));
     }
 
-    // Step 2: Get timestamp for this session
-    // let session_time_stamp = get_session_timestamp()?;
-    // let session_time_stamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
+    // Step 2: Get timestamp for this session: synced at source, from parameter now
 
     // Step 3: Create this session's directory
     // let session_dir_name = format!("{}/", session_time_stamp);
