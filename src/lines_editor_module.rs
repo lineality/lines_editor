@@ -900,6 +900,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // #[cfg(test)]
 // mod tests;
 
+// TODO maybe this does not need to exist? not used...
+// note: may be used by pasty, pasty can use a smaller one
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
 /// This module manages all editor state using only pre-allocated memory.
@@ -965,6 +967,157 @@ const YELLOW: &str = "\x1b[33m";
 // const UNDERLINE: &str = "\x1b[4m";
 
 // use crate::limits;
+
+// ============================================================================
+// ERROR HANDLING SYSTEM (start)
+// ============================================================================
+
+/// Error types for the Lines text editor
+///
+/// # Design Principles
+/// - Simple enum covering main error categories
+/// - Wraps std::io::Error for file operations
+/// - Provides context-specific error messages
+/// - Supports conversion from common error types
+#[derive(Debug)]
+pub enum LinesError {
+    /// File system or I/O operation failed
+    Io(io::Error),
+
+    /// Invalid user input or argument
+    InvalidInput(String),
+
+    /// String formatting or display error
+    FormatError(String),
+
+    /// UTF-8 encoding/decoding error
+    Utf8Error(String),
+
+    /// Terminal or display rendering error
+    DisplayError(String),
+
+    /// Configuration or state error
+    StateError(String),
+}
+
+impl std::fmt::Display for LinesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinesError::Io(e) => write!(f, "IO error: {}", e),
+            LinesError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            LinesError::FormatError(msg) => write!(f, "Format error: {}", msg),
+            LinesError::Utf8Error(msg) => write!(f, "UTF-8 error: {}", msg),
+            LinesError::DisplayError(msg) => write!(f, "Display error: {}", msg),
+            LinesError::StateError(msg) => write!(f, "State error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for LinesError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LinesError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Automatic conversion from io::Error to LinesError
+impl From<io::Error> for LinesError {
+    fn from(err: io::Error) -> Self {
+        LinesError::Io(err)
+    }
+}
+
+/// Result type alias for Lines editor operations
+pub type Result<T> = std::result::Result<T, LinesError>;
+
+/// Appends an error message to the error log file
+///
+/// # Purpose
+/// Provides fail-safe error logging that never interrupts normal operation.
+/// Errors are logged to `~/Documents/lines_editor/lines_data/error_logs/yyyy_mm_dd.log`
+///
+/// # Arguments
+/// * `error_msg` - The error message to log
+/// * `context` - Optional context string (e.g., function name, operation)
+///
+/// # Behavior
+/// - Creates log directory if it doesn't exist
+/// - Appends to daily log file with timestamp
+/// - If logging fails, prints to stderr but doesn't return error
+/// - Never interrupts normal program flow
+pub fn log_error(error_msg: &str, context: Option<&str>) {
+    // Build error log path - if this fails, just print to stderr
+    let log_path = match get_error_log_path() {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("WARNING: Cannot determine error log path: {}", e);
+            eprintln!("ERROR: {}", error_msg);
+            if let Some(ctx) = context {
+                eprintln!("CONTEXT: {}", ctx);
+            }
+            return;
+        }
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = log_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            eprintln!("WARNING: Cannot create error log directory: {}", e);
+            eprintln!("ERROR: {}", error_msg);
+            return;
+        }
+    }
+
+    // Get current timestamp
+    let timestamp = match get_timestamp() {
+        Ok(ts) => ts,
+        Err(_) => String::from("UNKNOWN_TIME"),
+    };
+
+    // Build log entry
+    let log_entry = if let Some(ctx) = context {
+        format!("[{}] [{}] {}\n", timestamp, ctx, error_msg)
+    } else {
+        format!("[{}] {}\n", timestamp, error_msg)
+    };
+
+    // Attempt to write to log file
+    match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(mut file) => {
+            if let Err(e) = file.write_all(log_entry.as_bytes()) {
+                eprintln!("WARNING: Cannot write to error log: {}", e);
+                eprintln!("ERROR: {}", error_msg);
+            }
+            // Explicitly ignore flush errors - we tried our best
+            let _ = file.flush();
+        }
+        Err(e) => {
+            eprintln!("WARNING: Cannot open error log: {}", e);
+            eprintln!("ERROR: {}", error_msg);
+        }
+    }
+}
+
+/// Gets the path to today's error log file
+fn get_error_log_path() -> io::Result<PathBuf> {
+    let home = get_home_directory()?;
+    let timestamp = get_timestamp()?;
+
+    let mut log_path = home;
+    log_path.push("Documents");
+    log_path.push("lines_editor");
+    log_path.push("lines_data");
+    log_path.push("error_logs");
+    log_path.push(format!("{}.log", timestamp));
+
+    Ok(log_path)
+}
+
+// ============================================================================
+// (end) ERROR HANDLING SYSTEM
+// ============================================================================
 
 /// Defensive programming limits to prevent infinite loops and resource exhaustion
 /// Following NASA Power of 10 rules: all loops must have explicit upper bounds
@@ -1044,9 +1197,6 @@ fn main() {
     // Normal application logic...
 }
 */
-//  /////////////////
-//  Full Lines Editor
-//  /////////////////
 
 /// Creates a timestamp string specifically for archive file naming
 ///
@@ -1318,7 +1468,6 @@ pub fn createarchive_timestamp_with_precision(
 }
 
 /*
- * Solution 2
  * The attempt is to follow NASA's only-preallocated-memory rule.
  */
 
@@ -1598,153 +1747,6 @@ fn format_navigation_legend() -> Result<String> {
 
     legend.push_str(&formatted);
     Ok(legend)
-}
-
-// ============================================================================
-// ERROR HANDLING SYSTEM
-// ============================================================================
-
-/// Error types for the Lines text editor
-///
-/// # Design Principles
-/// - Simple enum covering main error categories
-/// - Wraps std::io::Error for file operations
-/// - Provides context-specific error messages
-/// - Supports conversion from common error types
-#[derive(Debug)]
-pub enum LinesError {
-    /// File system or I/O operation failed
-    Io(io::Error),
-
-    /// Invalid user input or argument
-    InvalidInput(String),
-
-    /// String formatting or display error
-    FormatError(String),
-
-    /// UTF-8 encoding/decoding error
-    Utf8Error(String),
-
-    /// Terminal or display rendering error
-    DisplayError(String),
-
-    /// Configuration or state error
-    StateError(String),
-}
-
-impl std::fmt::Display for LinesError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LinesError::Io(e) => write!(f, "IO error: {}", e),
-            LinesError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
-            LinesError::FormatError(msg) => write!(f, "Format error: {}", msg),
-            LinesError::Utf8Error(msg) => write!(f, "UTF-8 error: {}", msg),
-            LinesError::DisplayError(msg) => write!(f, "Display error: {}", msg),
-            LinesError::StateError(msg) => write!(f, "State error: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for LinesError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            LinesError::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-/// Automatic conversion from io::Error to LinesError
-impl From<io::Error> for LinesError {
-    fn from(err: io::Error) -> Self {
-        LinesError::Io(err)
-    }
-}
-
-/// Result type alias for Lines editor operations
-pub type Result<T> = std::result::Result<T, LinesError>;
-
-/// Appends an error message to the error log file
-///
-/// # Purpose
-/// Provides fail-safe error logging that never interrupts normal operation.
-/// Errors are logged to `~/Documents/lines_editor/lines_data/error_logs/yyyy_mm_dd.log`
-///
-/// # Arguments
-/// * `error_msg` - The error message to log
-/// * `context` - Optional context string (e.g., function name, operation)
-///
-/// # Behavior
-/// - Creates log directory if it doesn't exist
-/// - Appends to daily log file with timestamp
-/// - If logging fails, prints to stderr but doesn't return error
-/// - Never interrupts normal program flow
-pub fn log_error(error_msg: &str, context: Option<&str>) {
-    // Build error log path - if this fails, just print to stderr
-    let log_path = match get_error_log_path() {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("WARNING: Cannot determine error log path: {}", e);
-            eprintln!("ERROR: {}", error_msg);
-            if let Some(ctx) = context {
-                eprintln!("CONTEXT: {}", ctx);
-            }
-            return;
-        }
-    };
-
-    // Ensure parent directory exists
-    if let Some(parent) = log_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            eprintln!("WARNING: Cannot create error log directory: {}", e);
-            eprintln!("ERROR: {}", error_msg);
-            return;
-        }
-    }
-
-    // Get current timestamp
-    let timestamp = match get_timestamp() {
-        Ok(ts) => ts,
-        Err(_) => String::from("UNKNOWN_TIME"),
-    };
-
-    // Build log entry
-    let log_entry = if let Some(ctx) = context {
-        format!("[{}] [{}] {}\n", timestamp, ctx, error_msg)
-    } else {
-        format!("[{}] {}\n", timestamp, error_msg)
-    };
-
-    // Attempt to write to log file
-    match OpenOptions::new().create(true).append(true).open(&log_path) {
-        Ok(mut file) => {
-            if let Err(e) = file.write_all(log_entry.as_bytes()) {
-                eprintln!("WARNING: Cannot write to error log: {}", e);
-                eprintln!("ERROR: {}", error_msg);
-            }
-            // Explicitly ignore flush errors - we tried our best
-            let _ = file.flush();
-        }
-        Err(e) => {
-            eprintln!("WARNING: Cannot open error log: {}", e);
-            eprintln!("ERROR: {}", error_msg);
-        }
-    }
-}
-
-/// Gets the path to today's error log file
-fn get_error_log_path() -> io::Result<PathBuf> {
-    let home = get_home_directory()?;
-    let timestamp = get_timestamp()?;
-
-    let mut log_path = home;
-    log_path.push("Documents");
-    log_path.push("lines_editor");
-    log_path.push("lines_data");
-    log_path.push("error_logs");
-    log_path.push(format!("{}.log", timestamp));
-
-    Ok(log_path)
 }
 
 /// Makes, verifies, or creates a directory path relative to the executable directory location.
@@ -2071,6 +2073,8 @@ pub enum EditorMode {
     Insert,
     /// Visual selection mode
     Visual,
+    /// Visual selection mode
+    PastyMode,
     /// Multi-cursor mode (ctrl+d equivalent)
     MultiCursor,
 }
@@ -2085,6 +2089,115 @@ pub enum WrapMode {
 }
 
 // const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;// not used
+
+/// Represents valid user input commands and selections in Pasty mode
+///
+/// # Design Principle
+/// This enum contains ONLY valid operations. It does NOT contain error states,
+/// invalid input variants, or exception cases. Per project error handling policy:
+/// - Invalid input → `Err(io::Error)`
+/// - Parse failures → `Err(io::Error)`
+/// - All errors propagate via `io::Result<T>`
+///
+/// # Variants
+/// * `SelectRank(usize)` - User entered a number to select clipboard item by rank (e.g., "3")
+/// * `SelectPath(PathBuf)` - User entered a filepath (e.g., "home/user/file.txt")
+/// * `PageUp` - User entered "k" or "up" to page up
+/// * `PageDown` - User entered "j" or "down" to page down
+/// * `ClearAll` - User entered "clear" to clear entire clipboard
+/// * `ClearRank(usize)` - User entered "clearN" to clear specific clipboard item (e.g., "clear3")
+/// * `Back` - User entered "b" to exit Pasty mode
+/// * `Empty` - User pressed Enter with no input (select most recent clipboard item)
+#[derive(Debug, Clone, PartialEq)]
+pub enum PastyInputPathOrCommand {
+    SelectRank(usize),
+    SelectPath(PathBuf),
+    PageUp,
+    PageDown,
+    ClearAll,
+    ClearRank(usize),
+    Back,
+    Empty,
+}
+
+/// Renders the Pasty mode TUI display
+///
+/// # Purpose
+/// Displays the clipboard interface with:
+/// - Legend showing available commands
+/// - Clipboard items with rank numbers
+/// - Info bar with pagination state and messages
+///
+/// # Responsibilities
+/// - Display ONLY, no input handling
+/// - No command execution
+/// - No state modification (except reading from state)
+///
+/// # Arguments
+/// * `state` - Editor state (for info bar message, effective_rows)
+/// * `sorted_files` - Pre-sorted clipboard files (newest first)
+/// * `offset` - Starting index for pagination
+/// * `items_per_page` - Number of items to display per page
+///
+/// # Returns
+/// * `Ok(())` - Display rendered successfully
+/// * `Err(io::Error)` - Display operation failed (e.g., stdout write error)
+fn render_pasty_tui(
+    state: &EditorState,
+    sorted_files: &[PathBuf],
+    offset: usize,
+    items_per_page: usize,
+) -> io::Result<()> {
+    let total_count = sorted_files.len();
+
+    // Clear screen and move cursor to top-left
+    print!("\x1b[2J\x1b[H");
+
+    // Draw legend (using existing helper)
+    println!("{}", format_pasty_legend()?);
+
+    // Draw clipboard items with rank numbers
+    let end = (offset + items_per_page).min(total_count);
+
+    for idx in offset..end {
+        let rank = idx + 1; // 1-indexed display
+        let file_path = &sorted_files[idx];
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("???");
+
+        println!("{}{}. {}{}", RED, rank, YELLOW, filename);
+    }
+
+    // Draw info bar (using existing helper)
+    let first_count_visible = if total_count > 0 { offset + 1 } else { 0 };
+    let last_count_visible = end;
+
+    // Extract message from buffer (find null terminator or use full buffer)
+    let message_len = state
+        .info_bar_message_buffer
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(state.info_bar_message_buffer.len());
+
+    let message_for_infobar =
+        std::str::from_utf8(&state.info_bar_message_buffer[..message_len]).unwrap_or(""); // Empty string if invalid UTF-8
+
+    print!(
+        "{}",
+        format_pasty_info_bar(
+            total_count,
+            first_count_visible,
+            last_count_visible,
+            message_for_infobar // Use info_bar_message from state
+        )?
+    );
+
+    io::stdout().flush()?;
+
+    Ok(())
+}
 
 /// Main editor state structure with all pre-allocated buffers
 pub struct EditorState {
@@ -2125,6 +2238,8 @@ pub struct EditorState {
     /// Current window buffer containing visible text
     /// Pre-allocated to FILE_TUI_WINDOW_MAP_BUFFER_SIZE
     pub state_file_tui_window_map_buffer: [u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
+
+    pub general_use_256_buffer: [u8; 256],
 
     /// Number of valid bytes in state_file_tui_window_map_buffer
     pub filetui_windowmap_buffer_used: usize,
@@ -2211,6 +2326,7 @@ impl EditorState {
             effective_rows,
             effective_cols,
             state_file_tui_window_map_buffer: [0u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
+            general_use_256_buffer: [0u8; 256],
             filetui_windowmap_buffer_used: 0,
             window_map: WindowMap::new(),
             cursor: WindowPosition { row: 0, col: 0 },
@@ -2239,6 +2355,766 @@ impl EditorState {
             // tofile_insertinput_chunkbuffer_used: 0, // not used
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
+    }
+
+    /// Handles user input in Pasty mode using bucket-brigade accumulation
+    ///
+    /// # Purpose
+    /// Reads user input from stdin (which may be longer than buffer size), accumulates
+    /// it using bucket-brigade technique, and parses it into a PastyInputPathOrCommand.
+    ///
+    /// # Differences from Insert Mode Input Handler
+    /// **Similarities:**
+    /// - Uses bucket-brigade for inputs larger than buffer
+    /// - Uses pre-allocated buffers only (no heap)
+    /// - Bounded iteration loops for safety
+    /// - Defensive error handling
+    ///
+    /// **Key Differences:**
+    /// - **Single-line only**: No multi-line content processing (paths are single line)
+    /// - **Simpler delimiter handling**: Final `\n` is ALWAYS stdin delimiter, never content
+    /// - **No immediate processing**: Accumulate ALL chunks first, THEN parse complete string
+    /// - **Accumulates to state buffer**: Uses `state_file_tui_window_map_buffer` for accumulation
+    ///
+    /// # Bucket Brigade for Pasty Mode
+    ///
+    /// Since file paths can exceed 256 bytes (TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE),
+    /// we use bucket-brigade to accumulate input:
+    ///
+    /// 1. Clear `state_file_tui_window_map_buffer` (8192 bytes available)
+    /// 2. Read chunks from stdin into `text_buffer` (256 bytes)
+    /// 3. Copy each chunk into accumulation buffer
+    /// 4. Continue until: delimiter found, EOF, buffer full, or iteration limit
+    /// 5. Parse complete accumulated string
+    ///
+    /// **Why this works for Pasty:**
+    /// - `state_file_tui_window_map_buffer` gets cleared on every TUI render
+    /// - Pasty mode doesn't conflict with file window rendering
+    /// - 8192 bytes is plenty for any reasonable filesystem path
+    ///
+    /// # Input Parsing Priority (Fixed Order)
+    ///
+    /// After accumulation completes, input is parsed in this EXACT order:
+    ///
+    /// 1. **Empty input** → `Empty` (select most recent clipboard item)
+    /// 2. **Explicit commands** (checked first, take absolute priority):
+    ///    - "b" → `Back`
+    ///    - "k" or "up" → `PageUp`
+    ///    - "j" or "down" → `PageDown`
+    ///    - "clear" → `ClearAll`
+    ///    - "clearN" (where N is digits) → `ClearRank(N)`
+    /// 3. **Number parsing** → Try `parse::<usize>()` → If success → `SelectRank(n)`
+    /// 4. **Fallback** → Treat as filepath → `SelectPath(PathBuf::from(input))`
+    ///
+    /// **Important:** Commands take absolute priority. User CANNOT select files
+    /// literally named "b", "clear", "k", etc. This is acceptable tradeoff for
+    /// command clarity.
+    ///
+    /// # Error Handling Policy
+    ///
+    /// Per project guidelines, this function does NOT return error variants in the enum.
+    /// All failures return `Err(io::Error)`:
+    ///
+    /// * **Input too long** (exceeds 8192 bytes) → `Err(io::Error::new(InvalidInput, "input too long"))`
+    /// * **Invalid UTF-8** → `Err(io::Error::new(InvalidData, "invalid UTF-8"))`
+    /// * **Stdin read failure** → `Err(io::Error)` (propagated from read)
+    /// * **Any unexpected failure** → `Err(io::Error::new(Other, "operation failed"))`
+    ///
+    /// Caller is responsible for:
+    /// - Catching errors
+    /// - Setting info bar message
+    /// - Returning to stable state (typically stay in Pasty mode loop, re-prompt user)
+    ///
+    /// # Return Value
+    ///
+    /// * `Ok(PastyInputPathOrCommand)` - Successfully parsed valid input
+    /// * `Err(io::Error)` - Input invalid, too long, or read failure occurred
+    ///
+    /// # Arguments
+    ///
+    /// * `stdin_handle` - Locked stdin for reading (mutable to read)
+    /// * `text_buffer` - Pre-allocated chunk buffer (256 bytes, reused per chunk)
+    ///
+    /// # Safety Bounds
+    ///
+    /// * **Bucket brigade iterations**: Limited to `limits::TEXT_INPUT_CHUNKS`
+    /// * **Accumulation buffer size**: Limited to `FILE_TUI_WINDOW_MAP_BUFFER_SIZE` (8192 bytes)
+    /// * **Input validation**: All strings validated before PathBuf creation
+    ///
+    /// # Example Usage
+    ///
+    /// ```ignore
+    /// // In pasty_mode() loop:
+    /// match self.handle_pasty_mode_input(&mut stdin_handle, &mut text_buffer) {
+    ///     Ok(PastyInputPathOrCommand::Back) => {
+    ///         // Exit Pasty mode
+    ///         return Ok(true);
+    ///     }
+    ///     Ok(PastyInputPathOrCommand::SelectPath(path)) => {
+    ///         // Insert file at cursor
+    ///         insert_file_at_cursor(self, &path)?;
+    ///         return Ok(true);
+    ///     }
+    ///     Ok(other_command) => {
+    ///         // Handle pagination, clear, etc.
+    ///         // Stay in loop
+    ///     }
+    ///     Err(e) => {
+    ///         self.set_info_bar_message("invalid input");
+    ///         // Stay in loop, re-prompt user
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Edge Cases
+    ///
+    /// **Empty input (just Enter key):**
+    /// - Returns `Ok(Empty)` to select most recent clipboard item
+    ///
+    /// **Whitespace-only input:**
+    /// - Treated same as empty after trim()
+    ///
+    /// **Input exactly equals buffer size:**
+    /// - Not overflow, processed normally
+    ///
+    /// **Path with spaces:**
+    /// - Spaces preserved, treated as filepath
+    /// - Example: "my file.txt" → `SelectPath("my file.txt")`
+    ///
+    /// **Ambiguous input like "123":**
+    /// - Parsed as number first → `SelectRank(123)`
+    /// - To force filepath interpretation, not currently supported
+    /// - Future: could require prefix like "/" or "./" for paths
+    ///
+    /// **Files named after commands:**
+    /// - Commands take priority
+    /// - File named "b" cannot be selected (command "b" matches first)
+    /// - This is acceptable tradeoff for command simplicity
+    ///
+    /// # Buffer Reuse Safety
+    ///
+    /// This method reuses `state_file_tui_window_map_buffer` which is also used by TUI rendering.
+    /// This is safe because:
+    /// - Buffer is cleared at start of this function
+    /// - Buffer is cleared on every TUI render (which happens AFTER we return)
+    /// - Pasty mode doesn't display file content (no conflict with window map)
+    /// - Buffer size (8192) is sufficient for both uses
+    ///
+    /// # Defensive Programming
+    ///
+    /// - Pre-allocated buffers only (no dynamic allocation)
+    /// - Bounded iteration loops (prevent infinite loops)
+    /// - Explicit buffer overflow checks
+    /// - All strings validated before use
+    /// - No unwrap() or panic!() calls
+    /// - Early returns on error conditions
+    /// - Clear documentation of assumptions
+    ///
+    /// # Future Enhancements
+    ///
+    /// Possible improvements (out of current scope):
+    /// - Path prefix requirement (`/` or `./`) to disambiguate from numbers/commands
+    /// - Tab completion for file paths
+    /// - History of recently used paths
+    /// - Validation that path exists (currently accepted without validation)
+    fn handle_pasty_mode_input(
+        &mut self,
+        stdin_handle: &mut StdinLock,
+        text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
+    ) -> io::Result<PastyInputPathOrCommand> {
+        // Clear accumulation buffer before use
+        // (Defensive: ensure no stale data from previous operations)
+        for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+            self.state_file_tui_window_map_buffer[i] = 0;
+        }
+
+        let mut accumulated_bytes: usize = 0;
+        let mut found_delimiter = false;
+        let mut chunk_count = 0;
+
+        //  ///////////////////
+        //  Bucket Brigade Loop
+        //  ///////////////////
+
+        loop {
+            chunk_count += 1;
+
+            // Safety bound: prevent infinite loops from malformed stdin
+            if chunk_count > limits::TEXT_INPUT_CHUNKS {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "input too long (iteration limit)",
+                ));
+            }
+
+            // Clear chunk buffer before reading
+            for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+                text_buffer[i] = 0;
+            }
+
+            // Read next chunk from stdin
+            let bytes_read = stdin_handle.read(text_buffer)?;
+
+            // EOF detected
+            if bytes_read == 0 {
+                break;
+            }
+
+            // Check if this chunk contains the delimiter (newline)
+            // In Pasty mode, final \n is ALWAYS the stdin delimiter, never content
+            if text_buffer[..bytes_read].contains(&b'\n') {
+                found_delimiter = true;
+            }
+
+            // Calculate how much we can safely copy to accumulation buffer
+            let space_remaining = FILE_TUI_WINDOW_MAP_BUFFER_SIZE - accumulated_bytes;
+
+            // Check for buffer overflow
+            if space_remaining == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "input too long (buffer full)",
+                ));
+            }
+
+            let copy_len = bytes_read.min(space_remaining);
+
+            // Copy chunk into accumulation buffer
+            for i in 0..copy_len {
+                self.state_file_tui_window_map_buffer[accumulated_bytes + i] = text_buffer[i];
+            }
+
+            accumulated_bytes += copy_len;
+
+            // Check if we've copied less than read (buffer full)
+            if copy_len < bytes_read {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "input too long (truncated)",
+                ));
+            }
+
+            // Stop accumulating if:
+            // 1. Delimiter found (complete input received)
+            // 2. Buffer full (no more space)
+            // 3. Partial read (stdin has no more immediate data)
+            if found_delimiter
+                || accumulated_bytes >= FILE_TUI_WINDOW_MAP_BUFFER_SIZE
+                || bytes_read < TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE
+            {
+                break;
+            }
+        }
+
+        //  ////////////////////////////
+        //  Parse Accumulated Input
+        //  ////////////////////////////
+
+        // Convert bytes to UTF-8 string
+        let input_str =
+            std::str::from_utf8(&self.state_file_tui_window_map_buffer[..accumulated_bytes])
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
+
+        // Trim whitespace and newline delimiter
+        let trimmed = input_str.trim();
+
+        //  ////////////////////////////
+        //  Parse with Priority Order:
+        //  1. Empty
+        //  2. Explicit commands
+        //  3. Numbers (rank selection)
+        //  4. Paths (fallback)
+        //  ////////////////////////////
+
+        // 1. Empty input → Select most recent clipboard item
+        if trimmed.is_empty() {
+            return Ok(PastyInputPathOrCommand::Empty);
+        }
+
+        // 2. Explicit commands (take absolute priority)
+
+        if trimmed == "b" {
+            return Ok(PastyInputPathOrCommand::Back);
+        }
+
+        if trimmed == "k" || trimmed == "up" {
+            return Ok(PastyInputPathOrCommand::PageUp);
+        }
+
+        if trimmed == "j" || trimmed == "down" {
+            return Ok(PastyInputPathOrCommand::PageDown);
+        }
+
+        if trimmed == "clear" {
+            return Ok(PastyInputPathOrCommand::ClearAll);
+        }
+
+        // Check for "clearN" pattern (e.g., "clear3")
+        if trimmed.starts_with("clear") && trimmed.len() > 5 {
+            let num_str = &trimmed[5..];
+            if let Ok(rank) = num_str.parse::<usize>() {
+                return Ok(PastyInputPathOrCommand::ClearRank(rank));
+            }
+            // If parse fails, fall through to path handling
+            // (maybe they want a file named "clearxyz")
+        }
+
+        // 3. Try parsing as rank number
+        if let Ok(rank) = trimmed.parse::<usize>() {
+            return Ok(PastyInputPathOrCommand::SelectRank(rank));
+        }
+
+        // 4. Fallback: treat as filepath
+        // Note: No validation that path exists - caller's responsibility
+        // Note: Relative paths accepted - conversion to absolute happens elsewhere
+        Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
+    }
+
+    // // stub/placeholder/shell function
+    // // needs doc string
+    // // needs error handling, info-bar message
+    // fn pasty_mode(
+    //     &mut self,
+    //     stdin_handle: &mut StdinLock,
+    //     text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
+    // ) -> io::Result<bool> {
+    //     // Default: keep editor loop running (will be set to false by quit commands)
+    //     let mut keep_editor_loop_running: bool = true;
+
+    //     // // call handle_pasty_mode_input()
+    //     // match self.handle_pasty_mode_input(&mut stdin_handle, &mut text_buffer) {
+    //     //     Ok(PastyInputPathOrCommand::Back) => return Ok(true),
+    //     //     Ok(PastyInputPathOrCommand::PageUp) => {
+    //     //         offset = offset.saturating_sub(items_per_page);
+    //     //     }
+    //     //     Ok(PastyInputPathOrCommand::SelectPath(path)) => {
+    //     //         insert_file_at_cursor(self, &path)?;
+    //     //         return Ok(true);
+    //     //     }
+    //     //     Err(_) => {
+    //     //         self.set_info_bar_message("invalid input");
+    //     //         // Stay in loop
+    //     //     } // ... etc
+    //     // }
+
+    //     Ok(keep_editor_loop_running)
+    // }
+
+    /// Handles Pasty mode - clipboard management and file insertion interface
+    ///
+    /// # Purpose
+    /// Pasty mode provides an interactive TUI for:
+    /// - Viewing clipboard items (files in clipboard directory, sorted by modified time)
+    /// - Selecting clipboard item by rank number
+    /// - Entering custom filepath to insert
+    /// - Paginating through clipboard items
+    /// - Clearing clipboard items (all or specific rank)
+    ///
+    /// # Control Flow
+    /// ```text
+    /// Loop (bounded):
+    ///   1. Get clipboard files (fresh scan each iteration - no stored list)
+    ///   2. Render Pasty TUI (legend, items, info bar)
+    ///   3. Get user input via handle_pasty_mode_input()
+    ///   4. Process input:
+    ///      - Commands: execute (page, clear), stay in loop
+    ///      - Back: exit mode, return to editor
+    ///      - Path/Rank: insert file, exit mode
+    ///   5. Handle errors: show message, stay in loop
+    /// ```
+    ///
+    /// # Design Philosophy: No Stored List
+    ///
+    /// **Critical:** Clipboard files are NOT stored in a list between render and selection.
+    /// Each iteration:
+    /// 1. Scans clipboard directory fresh
+    /// 2. Sorts by modified time
+    /// 3. Displays with rank numbers
+    /// 4. If user selects rank N:
+    ///    - Scan again
+    ///    - Sort again
+    ///    - Count to item #N
+    ///    - Return that path
+    ///
+    /// **Rationale:** Defensive programming. Files may be added/removed/modified
+    /// between display and selection. Always use fresh data.
+    ///
+    /// # Pagination State
+    ///
+    /// `offset` is a local variable in this function, NOT stored in EditorState.
+    /// It's transient to this Pasty mode session. When user exits and re-enters
+    /// Pasty mode, pagination resets to top.
+    ///
+    /// **Calculated values:**
+    /// - `items_per_page` = `self.effective_rows` (from editor state)
+    /// - `offset` = start index for display (increments by items_per_page)
+    ///
+    /// # Commands and Actions
+    ///
+    /// | Input | Parsed As | Action | Loop Control |
+    /// |-------|-----------|--------|--------------|
+    /// | `""` | Empty | Select rank 1 (most recent), insert file | Exit loop |
+    /// | `"3"` | SelectRank(3) | Select rank 3, insert file | Exit loop |
+    /// | `"path/to/file"` | SelectPath(...) | Insert file at path | Exit loop |
+    /// | `"b"` | Back | Exit Pasty mode, no insertion | Exit loop |
+    /// | `"k"` or `"up"` | PageUp | Decrement offset, refresh display | Stay in loop |
+    /// | `"j"` or `"down"` | PageDown | Increment offset, refresh display | Stay in loop |
+    /// | `"clear"` | ClearAll | Delete all clipboard files | Stay in loop |
+    /// | `"clear3"` | ClearRank(3) | Delete clipboard item rank 3 | Stay in loop |
+    ///
+    /// # Return Value Semantics
+    ///
+    /// * `Ok(true)` → Keep main editor loop running
+    ///   - After successful file insertion
+    ///   - After user presses 'b' (back to editor)
+    ///   - Most common case
+    ///
+    /// * `Ok(false)` → Stop main editor loop (quit editor)
+    ///   - Currently not used in Pasty mode
+    ///   - Reserved for future quit commands
+    ///
+    /// * `Err(io::Error)` → Fatal error occurred
+    ///   - Propagates to main loop
+    ///   - Editor will likely exit or show error
+    ///
+    /// # Error Handling
+    ///
+    /// Follows project error handling policy: **stability over diagnostics**
+    ///
+    /// **Input errors** (invalid input, too long, parse failure):
+    /// - Caught in match Err branch
+    /// - Info bar message set: "invalid input"
+    /// - Loop continues (stay in Pasty mode, re-prompt user)
+    ///
+    /// **File operation errors** (clipboard scan, delete, insert):
+    /// - Caught and converted to info bar message
+    /// - Loop continues when possible
+    /// - Fatal errors (can't read clipboard dir) propagate
+    ///
+    /// **Rank out of range:**
+    /// - Info bar message: "invalid rank"
+    /// - Loop continues
+    ///
+    /// # Arguments
+    ///
+    /// * `stdin_handle` - Locked stdin for reading user input
+    /// * `text_buffer` - Pre-allocated buffer for bucket-brigade input accumulation
+    ///
+    /// # Safety Bounds
+    ///
+    /// * **Loop iterations**: Limited to `limits::MAIN_EDITOR_LOOP_COMMANDS` (reuse editor limit)
+    /// * **File operations**: All use io::Result error handling
+    /// * **Path validation**: Paths converted to absolute before use
+    /// * **Buffer management**: All buffers pre-allocated, no heap
+    ///
+    /// # Example Session
+    ///
+    /// ```text
+    /// [User enters Pasty mode]
+    ///
+    /// Have a Pasty!! str-filepath clearcllipboard back Empty(freshest pasty)
+    /// 1. shopping_list.txt
+    /// 2. notes.md
+    /// 3. config.toml
+    /// Pasties: 3 showing 1-3 k/j:page >
+    ///
+    /// [User types: 2]
+    /// → Selects notes.md, inserts at cursor, exits to editor
+    ///
+    /// [User types: k]
+    /// → Pages up (offset decreases), stays in Pasty mode
+    ///
+    /// [User types: clear2]
+    /// → Deletes notes.md, stays in Pasty mode, re-displays
+    ///
+    /// [User types: b]
+    /// → Exits Pasty mode, no insertion
+    /// ```
+    ///
+    /// # Integration Points
+    ///
+    /// **Called by:** Main editor loop when `mode == EditorMode::PastyMode`
+    ///
+    /// **Calls:**
+    /// - `render_pasty_tui()` - Display clipboard items and legend
+    /// - `handle_pasty_mode_input()` - Get and parse user input
+    /// - `read_and_sort_clipboard()` - Fresh scan of clipboard directory
+    /// - `insert_file_at_cursor()` - Insert selected file into document
+    /// - `clear_clipboard()` - Delete all clipboard files
+    ///
+    /// **Modifies:**
+    /// - `self.info_bar_message` - Error/status messages
+    /// - Clipboard directory contents (via clear operations)
+    /// - Document content (via insert_file_at_cursor)
+    ///
+    /// # Edge Cases
+    ///
+    /// **Empty clipboard:**
+    /// - If user presses Enter or selects rank → "clipboard empty" message
+    /// - Loop continues
+    ///
+    /// **Rank out of range:**
+    /// - User types "99" but only 3 items exist → "invalid rank" message
+    /// - Loop continues
+    ///
+    /// **File deleted between display and selection:**
+    /// - User sees item, selects it, but file gone → insert fails gracefully
+    /// - Error message shown, loop continues
+    ///
+    /// **Path doesn't exist:**
+    /// - User types custom path that doesn't exist → insert_file_at_cursor handles
+    /// - May show error or create file (depends on insert logic)
+    ///
+    /// **Pagination beyond end:**
+    /// - Page down when already at last page → offset doesn't change
+    /// - Page up when at top → offset stays at 0 (saturating_sub)
+    ///
+    /// # Future Enhancements
+    ///
+    /// Possible improvements (out of current scope):
+    /// - Refresh command to re-scan without command
+    /// - Search/filter clipboard items
+    /// - Preview file contents
+    /// - Multi-select for batch operations
+    /// - Clipboard item metadata display (size, date)
+    fn pasty_mode(
+        &mut self,
+        stdin_handle: &mut StdinLock,
+        text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
+    ) -> io::Result<bool> {
+        // Set mode to normal so leaving Pasty will not restart Pasty!
+        // Have another Pasty!!
+        self.mode = EditorMode::Normal;
+
+        // Get clipboard directory path
+        let session_dir = self.session_directory_path.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "Session directory not initialized")
+        })?;
+        let clipboard_dir = session_dir.join("clipboard");
+
+        // Create clipboard directory if it doesn't exist
+        if !clipboard_dir.exists() {
+            fs::create_dir_all(&clipboard_dir)?;
+        }
+
+        // Pagination state (transient to this Pasty session)
+        let mut offset: usize = 0;
+        let items_per_page = self.effective_rows;
+
+        // Loop iteration counter (defensive bounds)
+        let mut pasty_iteration = 0;
+
+        //  /////////////////
+        //  Pasty Mode Loop
+        //  /////////////////
+
+        loop {
+            pasty_iteration += 1;
+
+            // Safety bound: prevent infinite loops
+            if pasty_iteration > limits::MAIN_EDITOR_LOOP_COMMANDS {
+                self.set_info_bar_message("pasty mode iteration limit");
+
+                return Ok(true); // Exit gracefully, return to normal mode
+            }
+
+            //  ///////////////////
+            //  Get Clipboard Files
+            //  ///////////////////
+
+            // Fresh scan each iteration (defensive: no stale cached list)
+            let sorted_files = match read_and_sort_clipboard(&clipboard_dir) {
+                Ok(files) => files,
+                Err(_) => {
+                    self.set_info_bar_message("clipboard read failed");
+                    // Try to continue anyway with empty list
+                    Vec::new()
+                }
+            };
+
+            let total_count = sorted_files.len();
+
+            // Adjust offset if it's beyond the current list
+            // (Defensive: files may have been deleted since last iteration)
+            if offset >= total_count && total_count > 0 {
+                offset = total_count.saturating_sub(items_per_page).max(0);
+            }
+
+            //  //////////////////
+            //  Render Pasty TUI
+            //  //////////////////
+
+            if let Err(_) = render_pasty_tui(self, &sorted_files, offset, items_per_page) {
+                self.set_info_bar_message("display error");
+                // Try to continue anyway
+            }
+
+            //  ////////////////////
+            //  Get User Input
+            //  ////////////////////
+
+            let input_result = self.handle_pasty_mode_input(stdin_handle, text_buffer);
+
+            //  ////////////////////
+            //  Process Input
+            //  ////////////////////
+
+            match input_result {
+                //  ////////
+                //  Back Command - Exit Pasty Mode
+                //  ////////
+                Ok(PastyInputPathOrCommand::Back) => {
+                    self.set_info_bar_message(""); // Clear any error messages
+                    return Ok(true); // Exit Pasty mode, back to editor
+                }
+
+                //  ////////
+                //  Empty Input - Select Most Recent (Rank 1)
+                //  ////////
+                Ok(PastyInputPathOrCommand::Empty) => {
+                    if sorted_files.is_empty() {
+                        self.set_info_bar_message("clipboard empty");
+                        continue; // Stay in loop
+                    }
+
+                    // Select rank 1 (most recent file)
+                    let selected_path = &sorted_files[0];
+
+                    // Insert file at cursor
+                    if let Err(_) = insert_file_at_cursor(self, selected_path) {
+                        self.set_info_bar_message("insert failed");
+                        continue; // Stay in loop
+                    }
+
+                    self.set_info_bar_message(""); // Clear messages
+                    return Ok(true); // Exit Pasty mode
+                }
+
+                //  ////////
+                //  Select by Rank Number
+                //  ////////
+                Ok(PastyInputPathOrCommand::SelectRank(rank)) => {
+                    // Validate rank is in range (1-indexed display, 0-indexed array)
+                    if rank == 0 || rank > total_count {
+                        self.set_info_bar_message("invalid rank");
+                        continue; // Stay in loop
+                    }
+
+                    // Get file at this rank (convert to 0-indexed)
+                    let selected_path = &sorted_files[rank - 1];
+
+                    // Insert file at cursor
+                    if let Err(_) = insert_file_at_cursor(self, selected_path) {
+                        self.set_info_bar_message("insert failed");
+                        continue; // Stay in loop
+                    }
+
+                    self.set_info_bar_message(""); // Clear messages
+                    return Ok(true); // Exit Pasty mode
+                }
+
+                //  ////////
+                //  Select by Path
+                //  ////////
+                Ok(PastyInputPathOrCommand::SelectPath(path)) => {
+                    // Convert to absolute path (defensive)
+                    let absolute_path = if path.is_absolute() {
+                        path
+                    } else {
+                        // Make relative to current working directory
+                        match std::env::current_dir() {
+                            Ok(cwd) => cwd.join(&path),
+                            Err(_) => {
+                                self.set_info_bar_message("path resolution failed");
+                                continue; // Stay in loop
+                            }
+                        }
+                    };
+
+                    // Insert file at cursor
+                    if let Err(_) = insert_file_at_cursor(self, &absolute_path) {
+                        self.set_info_bar_message("insert failed");
+                        continue; // Stay in loop
+                    }
+
+                    self.set_info_bar_message(""); // Clear messages
+                    return Ok(true); // Exit Pasty mode
+                }
+
+                //  ////////
+                //  Page Up
+                //  ////////
+                Ok(PastyInputPathOrCommand::PageUp) => {
+                    offset = offset.saturating_sub(items_per_page);
+                    self.set_info_bar_message(""); // Clear any previous messages
+                    continue; // Stay in loop, refresh display
+                }
+
+                //  ////////
+                //  Page Down
+                //  ////////
+                Ok(PastyInputPathOrCommand::PageDown) => {
+                    let new_offset = offset + items_per_page;
+                    // Only advance if there are more items to show
+                    if new_offset < total_count {
+                        offset = new_offset;
+                    }
+                    self.set_info_bar_message(""); // Clear any previous messages
+                    continue; // Stay in loop, refresh display
+                }
+
+                //  ////////
+                //  Clear All Clipboard
+                //  ////////
+                Ok(PastyInputPathOrCommand::ClearAll) => {
+                    if let Err(_) = clear_clipboard(&clipboard_dir) {
+                        self.set_info_bar_message("clear failed");
+                        continue; // Stay in loop
+                    }
+
+                    offset = 0; // Reset pagination
+                    self.set_info_bar_message("clipboard cleared");
+                    continue; // Stay in loop, refresh display
+                }
+
+                //  ////////
+                //  Clear Specific Rank
+                //  ////////
+                Ok(PastyInputPathOrCommand::ClearRank(rank)) => {
+                    // Validate rank is in range
+                    if rank == 0 || rank > total_count {
+                        self.set_info_bar_message("invalid rank");
+                        continue; // Stay in loop
+                    }
+
+                    // Get file at this rank (convert to 0-indexed)
+                    let file_to_delete = &sorted_files[rank - 1];
+
+                    // Delete the file
+                    if let Err(_) = fs::remove_file(file_to_delete) {
+                        self.set_info_bar_message("delete failed");
+                        continue; // Stay in loop
+                    }
+
+                    // Adjust offset if we deleted last item on current page
+                    if offset >= total_count.saturating_sub(1) && offset > 0 {
+                        offset = offset.saturating_sub(items_per_page);
+                    }
+
+                    self.set_info_bar_message("item cleared");
+                    continue; // Stay in loop, refresh display
+                }
+
+                //  ////////
+                //  Input Error (invalid, too long, parse failure)
+                //  ////////
+                Err(_) => {
+                    self.set_info_bar_message("invalid input");
+                    continue; // Stay in loop, re-prompt user
+                }
+            }
+        }
+        // Ok(keep_editor_loop_running)
     }
 
     /// Handles all input when the editor is in Insert mode.
@@ -2683,6 +3559,159 @@ impl EditorState {
         Ok(keep_editor_loop_running)
     }
 
+    /// Parses user input into a command
+    ///
+    /// # Arguments
+    /// * `input` - Raw input string from user
+    /// * `current_mode` - Current editor mode for context-aware parsing
+    ///
+    /// # Returns
+    /// * `Command` - Parsed command or Command::None if invalid
+    ///
+    /// # Format
+    /// - Single char: `j` -> MoveDown(1)
+    /// - With count: `5j` -> MoveDown(5)
+    /// - Count then command: `10l` -> MoveRight(10)
+    /// - Mode commands: `i` -> EnterInsertMode
+    ///
+    /// # Examples
+    /// - "j" -> MoveDown(1)
+    /// - "5j" -> MoveDown(5)
+    /// - "10k" -> MoveUp(10)
+    /// - "3h" -> MoveLeft(3)
+    /// - "7l" -> MoveRight(7)
+    ///
+    /// Note: For other command handling, also see: full_lines_editor()
+    ///
+    pub fn parse_command(&mut self, input: &str, current_mode: EditorMode) -> Command {
+        let trimmed = input.trim();
+
+        if trimmed.is_empty() {
+            return Command::None;
+        }
+
+        // In insert mode, most keys are text, not commands
+        if current_mode == EditorMode::Insert {
+            // Check for escape sequences to exit insert mode
+            if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "n" {
+                return Command::EnterNormalMode;
+            }
+
+            // delete key
+            if trimmed == "\x1b[3~" {
+                return Command::None;
+            }
+            // // Check for special commands in insert mode
+            // if trimmed == "-d" || trimmed == "\x1b[3~" {
+            //     return Command::DeleteBackspace;
+            // }
+            // Everything else is text input (handled separately)
+            return Command::None;
+        }
+
+        // Parse potential repeat count and command
+        let mut chars = trimmed.chars().peekable();
+        let mut count = 0usize;
+        let mut command_start = 0;
+
+        // // Defensive: Limit iteration on input parsing (not movement)
+        let mut iterations = 0;
+
+        // Parse numeric prefix
+        while let Some(&ch) = chars.peek() {
+            // Check for size of number for actions:
+            // this might be done more cleanly but is maybe ok.
+            // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
+            if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
+                return Command::None; // Too long to be valid command
+            }
+            iterations += 1;
+
+            if ch.is_ascii_digit() {
+                count = count
+                    .saturating_mul(10)
+                    .saturating_add((ch as usize) - ('0' as usize));
+                chars.next();
+                command_start += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Default count to 1 if not specified
+        if count == 0 {
+            count = 1;
+        }
+
+        // Get the command string (everything after the number)
+        let command_str = &trimmed[command_start..];
+
+        /*
+        For another command area, also see:
+        ```rust
+        fn full_lines_editor(){
+        ...
+        if state.mode == ...
+        ```
+         */
+
+        if current_mode == EditorMode::Normal {
+            match command_str {
+                // Single character commands
+                "h" => Command::MoveLeft(count),
+                "\x1b[D" => Command::MoveLeft(count), // left over arrow
+                "j" => Command::MoveDown(count),
+                "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
+                "l" => Command::MoveRight(count),
+                "\x1b[C" => Command::MoveRight(count), // starboard arrow
+                "k" => Command::MoveUp(count),
+                "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
+                "i" => Command::EnterInsertMode,
+                "v" => Command::EnterVisualMode,
+                // Multi-character commands
+                "wq" => Command::SaveAndQuit,
+                "s" | "w" => Command::Save,
+                "q" => Command::Quit,
+                "p" | "pasty" => Command::EnterPastyClipboardMode,
+                // "wrap" => Command::ToggleWrap,
+                // "gg" => Command::MoveToTop,
+                "d" => Command::DeleteLine,
+                "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
+                _ => Command::None,
+            }
+        } else if current_mode == EditorMode::Visual {
+            match command_str {
+                "i" => Command::EnterInsertMode,
+                "q" => Command::Quit,
+                "s" | "w" => Command::Save,
+                "n" | "\x1b" => Command::EnterNormalMode,
+                "wq" => Command::SaveAndQuit,
+                "d" => Command::DeleteBackspace,
+                "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
+
+                "v" | "p" => Command::EnterPastyClipboardMode,
+                // Some('p') => Command::PastyClipboard(count),
+                // // TODO: Make These, Command::Select...
+                // Some('w') => Command::SelectNextWord,
+                // Some('b') => Command::SelectPreviousWordBeginning,
+                // Some('e') => Command::SelectNextWordEnd,
+                //
+                // Some('h') => Command::SelectLeft(count),
+                // Some('j') => Command::SelectDown(count),
+                // Some('k') => Command::SelectUp(count),
+                // Some('l') => Command::SelectRight(count),
+                _ => Command::None,
+            }
+        } else {
+            match command_str {
+                // if current_mode == EditorMode::Insert {
+                // This is an edge case, see above
+                // (length limit not apply?)
+                _ => Command::None,
+            }
+        }
+    }
+
     /// Handles input when in Normal or Visual mode.
     /// Reads a command from stdin, parses it, executes it, and stores it for repeat.
     ///
@@ -2802,7 +3831,7 @@ impl EditorState {
             }
         } else {
             // Normal/Visual mode: Parse this command
-            parse_command(command_str, self.mode)
+            self.parse_command(command_str, self.mode)
         };
 
         // Normal/Visual mode: Execute command
@@ -3003,8 +4032,9 @@ impl EditorState {
         Ok(())
     }
 
+    // TODO What is this doing??? fix this
     /// Clears the window buffer and map
-    pub fn clear_window(&mut self) {
+    pub fn clear_full_tui_map_window_buffer(&mut self) {
         // Clear buffer
         for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
             self.state_file_tui_window_map_buffer[i] = 0;
@@ -3013,6 +4043,13 @@ impl EditorState {
 
         // Clear map
         self.window_map.clear();
+    }
+    /// Clears the window buffer and map
+    pub fn clear_general_256_buffer(&mut self) {
+        // Clear buffer
+        for i in 0..256 {
+            self.general_use_256_buffer[i] = 0;
+        }
     }
 }
 
@@ -3025,7 +4062,7 @@ fn get_timestamp() -> io::Result<String> {
     let secs = time.as_secs();
     let days_since_epoch = secs / (24 * 60 * 60);
 
-    // These arrays help us handle different month lengths
+    // These arrays to handle different month lengths
     let days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
     let mut year = 1970;
@@ -4824,6 +5861,8 @@ pub enum Command {
     EnterVisualMode, // v
     EnterNormalMode, // n or Esc or ??? -> Ctrl-[
 
+    EnterPastyClipboardMode, // pasty: clipboard et al
+
     // Text editing
     InsertNewline(char), // Insert single \n at cursor's file-position
     InsertText(String),  // Insert input buffer string at cursor
@@ -4848,155 +5887,6 @@ pub enum Command {
 
     // No operation
     None,
-}
-
-/// Parses user input into a command
-///
-/// # Arguments
-/// * `input` - Raw input string from user
-/// * `current_mode` - Current editor mode for context-aware parsing
-///
-/// # Returns
-/// * `Command` - Parsed command or Command::None if invalid
-///
-/// # Format
-/// - Single char: `j` -> MoveDown(1)
-/// - With count: `5j` -> MoveDown(5)
-/// - Count then command: `10l` -> MoveRight(10)
-/// - Mode commands: `i` -> EnterInsertMode
-///
-/// # Examples
-/// - "j" -> MoveDown(1)
-/// - "5j" -> MoveDown(5)
-/// - "10k" -> MoveUp(10)
-/// - "3h" -> MoveLeft(3)
-/// - "7l" -> MoveRight(7)
-///
-/// Note: For other command handling, also see: full_lines_editor()
-///
-pub fn parse_command(input: &str, current_mode: EditorMode) -> Command {
-    let trimmed = input.trim();
-
-    if trimmed.is_empty() {
-        return Command::None;
-    }
-
-    // In insert mode, most keys are text, not commands
-    if current_mode == EditorMode::Insert {
-        // Check for escape sequences to exit insert mode
-        if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "n" {
-            return Command::EnterNormalMode;
-        }
-
-        // delete key
-        if trimmed == "\x1b[3~" {
-            return Command::None;
-        }
-        // // Check for special commands in insert mode
-        // if trimmed == "-d" || trimmed == "\x1b[3~" {
-        //     return Command::DeleteBackspace;
-        // }
-        // Everything else is text input (handled separately)
-        return Command::None;
-    }
-
-    // Parse potential repeat count and command
-    let mut chars = trimmed.chars().peekable();
-    let mut count = 0usize;
-    let mut command_start = 0;
-
-    // // Defensive: Limit iteration on input parsing (not movement)
-    let mut iterations = 0;
-
-    // Parse numeric prefix
-    while let Some(&ch) = chars.peek() {
-        // Check for size of number for actions:
-        // this might be done more cleanly but is maybe ok.
-        // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
-        if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
-            return Command::None; // Too long to be valid command
-        }
-        iterations += 1;
-
-        if ch.is_ascii_digit() {
-            count = count
-                .saturating_mul(10)
-                .saturating_add((ch as usize) - ('0' as usize));
-            chars.next();
-            command_start += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Default count to 1 if not specified
-    if count == 0 {
-        count = 1;
-    }
-
-    // Get the command string (everything after the number)
-    let command_str = &trimmed[command_start..];
-
-    /*
-    For another command area, also see:
-    ```rust
-    fn full_lines_editor(){
-    ...
-    if state.mode == ...
-    ```
-     */
-
-    if current_mode == EditorMode::Normal {
-        match command_str {
-            // Single character commands
-            "h" => Command::MoveLeft(count),
-            "\x1b[D" => Command::MoveLeft(count), // left over arrow
-            "j" => Command::MoveDown(count),
-            "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
-            "l" => Command::MoveRight(count),
-            "\x1b[C" => Command::MoveRight(count), // starboard arrow
-            "k" => Command::MoveUp(count),
-            "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
-            "i" => Command::EnterInsertMode,
-            "v" => Command::EnterVisualMode,
-            // Multi-character commands
-            "wq" => Command::SaveAndQuit,
-            "s" | "w" => Command::Save,
-            "q" => Command::Quit,
-            // "wrap" => Command::ToggleWrap,
-            // "gg" => Command::MoveToTop,
-            "d" => Command::DeleteLine,
-            "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
-            _ => Command::None,
-        }
-    } else if current_mode == EditorMode::Visual {
-        match command_str {
-            "i" => Command::EnterInsertMode,
-            "q" => Command::Quit,
-            "s" | "w" => Command::Save,
-            "n" | "\x1b" => Command::EnterNormalMode,
-            "wq" => Command::SaveAndQuit,
-            "d" => Command::DeleteBackspace,
-            "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
-            // // TODO: Make These, Command::Select...
-            // Some('w') => Command::SelectNextWord,
-            // Some('b') => Command::SelectPreviousWordBeginning,
-            // Some('e') => Command::SelectNextWordEnd,
-            //
-            // Some('h') => Command::SelectLeft(count),
-            // Some('j') => Command::SelectDown(count),
-            // Some('k') => Command::SelectUp(count),
-            // Some('l') => Command::SelectRight(count),
-            _ => Command::None,
-        }
-    } else {
-        match command_str {
-            // if current_mode == EditorMode::Insert {
-            // This is an edge case, see above
-            // (length limit not apply?)
-            _ => Command::None,
-        }
-    }
 }
 
 /// Cleans up session directory and all its contents
@@ -5342,6 +6232,11 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
         Command::EnterNormalMode => {
             state.mode = EditorMode::Normal;
+            Ok(true)
+        }
+
+        Command::EnterPastyClipboardMode => {
+            state.mode = EditorMode::PastyMode;
             Ok(true)
         }
 
@@ -5713,6 +6608,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::
     Ok(())
 }
 
+// TODO why is this re-allocating the same chunk-buffer size?
 /// Deletes a byte range from file using chunked operations
 ///
 /// # Algorithm
@@ -5830,6 +6726,7 @@ fn calculate_line_number_width(line_number: usize) -> usize {
     digits + 1 // Add 1 for the space after the number
 }
 
+// TODO: this should use general_use_256_buffer
 /// Inserts a newline character at cursor position WITHOUT loading whole file
 ///
 /// # Purpose
@@ -5890,9 +6787,15 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
     let mut source = File::open(file_path)?;
     let mut dest = File::create(&temp_path)?;
 
+    // TODO this should not be be allocating MORE memory
+    // this should use a standard modular buffer
     // Pre-allocated 8KB buffer
     const CHUNK_SIZE: usize = 8192;
     let mut buffer = [0u8; CHUNK_SIZE];
+
+    // ...general_use_256_buffer
+    //
+    // state.clear_general_256_buffer;
 
     // Step 4: Copy bytes before insertion point
     let mut bytes_copied = 0u64;
@@ -5902,6 +6805,9 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
         iterations += 1;
 
         let to_read = ((insert_position - bytes_copied) as usize).min(CHUNK_SIZE);
+
+        // TODO use state buffer
+        // let n = source.read(state.general_use_256_buffer[..to_read])?;
         let n = source.read(&mut buffer[..to_read])?;
 
         if n == 0 {
@@ -6398,6 +7304,398 @@ pub fn insert_text_chunk_at_cursor_position(
     Ok(())
 }
 
+// ===============
+//  Have a Pasty!!
+// ===============
+
+// use std::fs;
+// use std::io::{self, Write};
+// use std::path::PathBuf;
+
+// const RESET: &str = "\x1b[0m";
+// const RED: &str = "\x1b[31m";
+// const YELLOW: &str = "\x1b[33m";
+
+// /// Displays the Pasty TUI for clipboard management and file selection
+// ///
+// /// # Purpose
+// /// Shows clipboard items sorted by modified time, allows user to:
+// /// - Select a clipboard item by number
+// /// - Enter a custom filepath
+// /// - Paginate through clipboard items
+// /// - Clear clipboard items
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state (for session directory and effective_rows)
+// ///
+// /// # Returns
+// /// * `Ok(Some(PathBuf))` - User selected a file (clipboard item or custom path)
+// /// * `Ok(None)` - User backed out with 'b'
+// /// * `Err(io::Error)` - I/O error occurred
+// ///
+// /// # Display Layout
+// /// ```
+// /// [LEGEND]
+// /// 1. fishtownatnoon
+// /// 2. halibut
+// /// ...
+// /// [INFO BAR with count and input]
+// /// ```
+// pub fn pasty_tui(state: &mut EditorState) -> io::Result<Option<PathBuf>> {
+//     // Get clipboard directory path
+//     let session_dir = state
+//         .session_directory_path
+//         .as_ref()
+//         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
+//     let clipboard_dir = session_dir.join("clipboard");
+
+//     // Create clipboard directory if it doesn't exist
+//     if !clipboard_dir.exists() {
+//         fs::create_dir_all(&clipboard_dir)?;
+//     }
+
+//     let mut offset: usize = 0;
+//     let mut error_message = String::new();
+
+//     loop {
+//         // Read and sort clipboard files
+//         let sorted_files = read_and_sort_clipboard(&clipboard_dir)?;
+//         let total_count = sorted_files.len();
+//         let items_per_page = state.effective_rows;
+
+//         // Clear screen and draw UI
+//         print!("\x1b[2J\x1b[H"); // Clear screen, move cursor to top-left
+
+//         // Draw legend
+//         println!("{}", format_pasty_legend()?);
+
+//         // Draw clipboard items
+//         let visible_files = draw_clipboard_items(&sorted_files, offset, items_per_page);
+
+//         // Draw info bar
+//         let first_visible = if total_count > 0 { offset + 1 } else { 0 };
+//         let last_visible = (offset + visible_files).min(total_count);
+//         print!(
+//             "{}",
+//             format_pasty_info_bar(total_count, first_visible, last_visible, &error_message)?
+//         );
+//         io::stdout().flush()?;
+
+//         // Read user input
+//         // let mut input = String::new();
+//         // io::stdin().read_line(&mut input)?;
+//         // let input = input.trim();
+//         // Read user input
+//         let mut input = String::new();
+//         match io::stdin().read_line(&mut input) {
+//             Ok(_) => {
+//                 println!("DEBUG: read_line succeeded, input: {:?}", input);
+//             }
+//             Err(e) => {
+//                 println!("DEBUG: read_line FAILED: {:?}", e);
+//                 std::thread::sleep(std::time::Duration::from_secs(3));
+//                 return Err(e);
+//             }
+//         }
+//         let input = input.trim();
+//         println!("DEBUG: After trim: {:?}", input);
+//         // Clear error message for next iteration
+//         error_message.clear();
+
+//         // // Process command
+//         // match input {
+//         //     // Empty enter - select most recent (rank 1)
+//         //     "" => {
+//         //         println!("matched empty");
+//         //         if sorted_files.is_empty() {
+//         //             error_message = "clipboard empty".to_string();
+//         //             continue;
+//         //         }
+//         //         return Ok(Some(sorted_files[0].clone()));
+//         //     }
+
+//         //     // Back command
+//         //     "b" => {
+//         //         println!("matched b");
+
+//         //         return Ok(None);
+//         //     }
+
+//         //     // Clear all clipboard
+//         //     "clear" => {
+//         //         println!("matched clear");
+//         //         clear_clipboard(&clipboard_dir)?;
+//         //         offset = 0;
+//         //         state.set_info_bar_message("clipboard cleared");
+//         //         continue;
+//         //     }
+
+//         //     // Page up
+//         //     "k" | "up" => {
+//         //         println!("matched k");
+//         //         offset = offset.saturating_sub(items_per_page);
+//         //         continue;
+//         //     }
+
+//         //     // Page down
+//         //     "j" | "down" => {
+//         //         println!("matched j");
+//         //         let new_offset = offset + items_per_page;
+//         //         if new_offset < total_count {
+//         //             offset = new_offset;
+//         //         }
+//         //         continue;
+//         //     }
+
+//         //     // Check for clearN command
+//         //     input_str if input_str.starts_with("clear") => {
+//         //         println!("matched clear+");
+//         //         let num_str = &input_str[5..];
+//         //         if let Ok(rank) = num_str.parse::<usize>() {
+//         //             if rank == 0 || rank > total_count {
+//         //                 error_message = "invalid: out of range".to_string();
+//         //             } else {
+//         //                 // Delete the file at rank position
+//         //                 let file_to_delete = &sorted_files[rank - 1];
+//         //                 fs::remove_file(file_to_delete)?;
+//         //                 state.set_info_bar_message("item cleared");
+//         //                 // Adjust offset if needed
+//         //                 if offset >= sorted_files.len().saturating_sub(1) && offset > 0 {
+//         //                     offset = offset.saturating_sub(items_per_page);
+//         //                 }
+//         //             }
+//         //         } else {
+//         //             error_message = "invalid clear command".to_string();
+//         //         }
+//         //         continue;
+//         //     }
+
+//         //     // Check if input is a number (selecting rank)
+//         //     input_str => {
+//         //         println!("input_str parse...");
+//         //         if let Ok(rank) = input_str.parse::<usize>() {
+//         //             if rank == 0 || rank > total_count {
+//         //                 error_message = "invalid: out of range".to_string();
+//         //                 continue;
+//         //             }
+//         //             // Return the file at this rank (convert 1-indexed to 0-indexed)
+//         //             return Ok(Some(sorted_files[rank - 1].clone()));
+//         //         } else {
+//         //             // Treat as filepath
+//         //             return Ok(Some(PathBuf::from(input_str)));
+//         //         }
+//         //     }
+//         // }
+//         match input {
+//             "" => {
+//                 println!("matched ''");
+//                 if sorted_files.is_empty() {
+//                     error_message = "clipboard empty".to_string();
+//                     continue;
+//                 }
+//                 return Ok(Some(sorted_files[0].clone()));
+//             }
+
+//             "b" => {
+//                 println!("matched b");
+//                 return Ok(None);
+//             }
+
+//             _ => {
+//                 // Try to parse as number
+//                 if let Ok(rank) = input.parse::<usize>() {
+//                     if rank > 0 && rank <= total_count {
+//                         return Ok(Some(sorted_files[rank - 1].clone()));
+//                     }
+//                 }
+//                 // Otherwise treat as filepath
+//                 return Ok(Some(PathBuf::from(input)));
+//             }
+//         }
+//     }
+// }
+/*
+alt
+
+match input {
+    "" => {
+        if sorted_files.is_empty() {
+            error_message = "clipboard empty".to_string();
+            continue;
+        }
+        return Ok(Some(sorted_files[0].clone()));
+    }
+
+    "b" => return Ok(None),  // ← This should work now
+
+    "clear" => {
+        clear_clipboard(&clipboard_dir)?;
+        offset = 0;
+        state.set_info_bar_message("clipboard cleared");
+        continue;
+    }
+
+    "k" | "up" => {
+        offset = offset.saturating_sub(items_per_page);
+        continue;
+    }
+
+    "j" | "down" => {
+        let new_offset = offset + items_per_page;
+        if new_offset < total_count {
+            offset = new_offset;
+        }
+        continue;
+    }
+
+    input_str if input_str.starts_with("clear") => {
+        let num_str = &input_str[5..];
+        if let Ok(rank) = num_str.parse::<usize>() {
+            if rank == 0 || rank > total_count {
+                error_message = "invalid: out of range".to_string();
+            } else {
+                let file_to_delete = &sorted_files[rank - 1];
+                fs::remove_file(file_to_delete)?;
+                state.set_info_bar_message("item cleared");
+                if offset >= sorted_files.len().saturating_sub(1) && offset > 0 {
+                    offset = offset.saturating_sub(items_per_page);
+                }
+            }
+        } else {
+            error_message = "invalid clear command".to_string();
+        }
+        continue;
+    }
+
+    // NEW: Explicit filepath command with '/' prefix
+    input_str if input_str.starts_with('/') => {
+        return Ok(Some(PathBuf::from(&input_str[1..])));
+    }
+
+    // Try to parse as rank number
+    input_str => {
+        if let Ok(rank) = input_str.parse::<usize>() {
+            if rank == 0 || rank > total_count {
+                error_message = "invalid: out of range".to_string();
+                continue;
+            }
+            return Ok(Some(sorted_files[rank - 1].clone()));
+        } else {
+            // Unknown command
+            error_message = format!("unknown command: '{}'", input_str);
+            continue;  // ← Stay in loop instead of treating as filepath
+        }
+    }
+}
+ */
+/// Reads clipboard directory and returns files sorted by modified time (newest first)
+fn read_and_sort_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> {
+    if !clipboard_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files_with_time: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+
+    // Read directory entries
+    for entry in fs::read_dir(clipboard_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Only include files (not directories)
+        if path.is_file() {
+            if let Ok(metadata) = fs::metadata(&path) {
+                if let Ok(modified) = metadata.modified() {
+                    files_with_time.push((path, modified));
+                }
+            }
+        }
+    }
+
+    // Sort by modified time (newest first)
+    files_with_time.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Extract just the paths
+    Ok(files_with_time.into_iter().map(|(path, _)| path).collect())
+}
+
+/// Draws clipboard items with rank numbers, returns count of visible items drawn
+fn draw_clipboard_items(sorted_files: &[PathBuf], offset: usize, items_per_page: usize) -> usize {
+    let end = (offset + items_per_page).min(sorted_files.len());
+    let mut visible_count = 0;
+
+    for (idx, file_path) in sorted_files
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(items_per_page)
+    {
+        let rank = idx + 1; // 1-indexed display
+        let filename = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("???");
+
+        println!("{}{}. {}{}", RED, rank, YELLOW, filename);
+        visible_count += 1;
+    }
+
+    visible_count
+}
+
+/// Formats the Pasty legend with color-coded commands
+fn format_pasty_legend() -> io::Result<String> {
+    Ok(format!(
+        "{}Have a Pasty!! {}str{}-{}filepath {}clear{}clipboard {}b{}ack {}Empty{}(freshest pasty){}",
+        YELLOW, RED, YELLOW, YELLOW, RED, YELLOW, RED, YELLOW, RED, YELLOW, RESET
+    ))
+}
+
+/// Formats the Pasty info bar with count, pagination, and error messages
+fn format_pasty_info_bar(
+    total_count: usize,
+    first_count_visible: usize,
+    last_count_visible: usize,
+    info_bar_message: &str,
+) -> io::Result<String> {
+    let infobar_message_display = if !info_bar_message.is_empty() {
+        format!(" {}", info_bar_message)
+    } else {
+        String::new()
+    };
+
+    Ok(format!(
+        "{}Pasties: {}{}{} showing {}{}-{}{} k/j:page{} {}>{} ",
+        YELLOW,
+        RED,
+        total_count,
+        YELLOW,
+        RED,
+        first_count_visible,
+        last_count_visible,
+        YELLOW,
+        infobar_message_display,
+        YELLOW,
+        RESET
+    ))
+}
+
+/// Clears all files from clipboard directory
+fn clear_clipboard(clipboard_dir: &PathBuf) -> io::Result<()> {
+    if !clipboard_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(clipboard_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            fs::remove_file(path)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Resolves and prepares the target file path for editing
 ///
 /// # Purpose
@@ -6726,6 +8024,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         EditorMode::Normal => "NORMAL",
         EditorMode::Insert => "INSERT",
         EditorMode::Visual => "VISUAL",
+        EditorMode::PastyMode => "PASTY",
         EditorMode::MultiCursor => "MULTI",
     };
 
@@ -7201,6 +8500,12 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
             //  ///////////
             keep_editor_loop_running =
                 lines_editor_state.handle_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
+        } else if lines_editor_state.mode == EditorMode::PastyMode {
+            //  ///////////
+            //  Pasty Mode
+            //  ///////////
+            keep_editor_loop_running =
+                lines_editor_state.pasty_mode(&mut stdin_handle, &mut text_buffer)?;
         } else {
             //  ///////////////////////////////////////////
             //  IF in Normal/Visual mode: parse as command
