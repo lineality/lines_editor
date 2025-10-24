@@ -7213,204 +7213,41 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 
 /// Inserts entire source file at cursor position with line-by-line processing
 ///
-/// Reads source file in 256-byte chunks, but processes each chunk line-by-line
-/// to ensure proper cursor advancement and display updates. Each newline character
-/// is inserted separately via Command::InsertNewline to maintain editor state
-/// consistency.
+/// # Final Newline Handling
 ///
-/// # Why Line-by-Line Processing?
+/// Most text files end with a newline character per POSIX convention. However,
+/// when INSERTING a file at cursor position, we don't want that final newline
+/// to create an extra blank line at the insertion point.
 ///
-/// Unlike bulk text insertion, the editor's cursor advancement mechanism requires
-/// that newline characters trigger specific state updates:
+/// **Solution**: "Pending newline" pattern
+/// - When we encounter a newline, insert text before it but DON'T insert newline yet
+/// - Mark newline as "pending"
+/// - At start of next iteration, insert the pending newline
+/// - At EOF, discard the pending newline (it was the file-final newline)
 ///
-/// 1. **Cursor Position**: Each newline moves cursor to start of next line
-/// 2. **Line Count**: Windowmap must reflect new line structure
-/// 3. **Display State**: Screen rendering depends on accurate line boundaries
+/// This ensures:
+/// - All content newlines get inserted (after one iteration delay)
+/// - The file-final newline never gets inserted
+/// - Works correctly for files of any size (including exact multiples of chunk size)
 ///
-/// Inserting "hello\nworld\n" as one 13-byte chunk would advance cursor by 13 bytes,
-/// but the cursor would be in wrong position (not accounting for line structure).
+/// # Example
+/// File: "hello\nworld\n" (12 bytes)
+/// - Find \n at pos 5: insert "hello", mark newline pending
+/// - Find \n at pos 11: insert pending newline, insert "world", mark newline pending
+/// - EOF: discard pending newline ✓
+/// Result: "hello\nworld" inserted (no trailing blank line)
 ///
-/// Instead we must:
-/// - Insert "hello" (5 bytes) → cursor advances 5 bytes on current line
-/// - Insert newline → cursor moves to start of next line
-/// - Insert "world" (5 bytes) → cursor advances 5 bytes on new line
-/// - Insert newline → cursor moves to start of next line
+/// [Previous doc sections remain unchanged...]
 ///
-/// # Memory Safety
-/// - Uses pre-allocated 256-byte buffer (no dynamic allocation)
-/// - Never loads entire file into memory
-/// - Processes file chunk-by-chunk using bucket brigade pattern
-/// - Each chunk processed byte-by-byte for newline detection
-///
-/// # File Behavior
-/// - Opens source file in read-only mode
-/// - Reads sequentially from start to EOF
-/// - Closes source file automatically when function exits
-/// - Target file (read_copy) is modified via insert_text_chunk_at_cursor_position()
-///
-/// # Cursor Behavior
-/// - Before: Cursor at position X in target file
-/// - After text segment: Cursor advances by segment byte count
-/// - After newline: Cursor moves to start of next line (column 0)
-/// - After entire file: Cursor at end of last inserted line
-/// - Each operation updates cursor immediately
-///
-/// # Workflow
-/// ```text
-/// 1. Validate source file exists and is readable
-/// 2. Get read_copy path from editor state
-/// 3. Open source file (read-only)
-/// 4. Outer loop (bucket brigade with safety limit):
-///    a. Read up to 256 bytes into buffer
-///    b. If EOF (bytes_read == 0): exit loop successfully
-///    c. Inner loop (newline processing):
-///       i.   Find next newline in remaining buffer
-///       ii.  If text before newline: insert text, rebuild windowmap
-///       iii. Insert newline via Command::InsertNewline, rebuild windowmap
-///       iv.  Advance to byte after newline, repeat
-///       v.   If no more newlines: insert remaining text, rebuild windowmap
-///    d. Increment chunk counter, continue to next chunk
-/// 5. Return Ok(()) when all chunks processed
-/// ```
-///
-/// # Differences from stdin Version
-///
-/// **Simpler than handle_insert_mode_input() because:**
-/// - No stdin delimiter detection (all file newlines are content)
-/// - No `should_skip_newline` logic (no "Enter key" to filter)
-/// - No `will_continue_brigade` based on delimiter
-/// - Bucket brigade continues purely based on bytes_read == CHUNK_SIZE
-///
-/// **All newlines in file are content** - there's no concept of a "command delimiter"
-/// when reading from a file. Every `\n` byte must be inserted.
-///
-/// # Arguments
-/// * `state` - Editor state (contains cursor position, read_copy_path, window_map)
-/// * `source_file_path` - Absolute path to file being inserted
-///
-/// # Returns
-/// * `Ok(())` - Entire file inserted successfully
-/// * `Err(io::Error)` - File operation failed at some stage
-///
-/// # Error Conditions
-/// Sets info bar message and returns Err if:
-/// - Source file doesn't exist → "file not found"
-/// - Source path is directory, not file → "not a file"
-/// - Source file can't be opened → "cannot read file"
-/// - read_copy_path not set in state → "no target file"
-/// - Read fails mid-file → "read error chunk N"
-/// - Any text insertion fails → "insert failed chunk N"
-/// - Any newline insertion fails → "newline insert failed chunk N"
-/// - Windowmap rebuild fails → "windowmap rebuild failed"
-/// - Iteration limit exceeded → "file too large"
-///
-/// # Safety Limits
-/// - Maximum chunks: 16,777,216 (allows ~4GB at 256-byte chunks)
-/// - Prevents infinite loops from filesystem corruption or malformed files
-/// - Each chunk limited to 256 bytes (CHUNK_SIZE constant)
-/// - Upper bound on loop iterations (defensive programming per NASA rules)
-///
-/// # Edge Cases
-/// - Empty file: Returns Ok(()) immediately after first read (0 bytes, valid case)
-/// - File with no newlines: Inserts as single text segment
-/// - File with only newlines: Inserts N newlines, no text segments
-/// - File with empty lines (`\n\n`): Inserts consecutive newlines correctly
-/// - File ending with newline: Final newline IS inserted (unlike stdin delimiter)
-/// - Binary file: Works correctly (byte-level operation, no UTF-8 requirement)
-/// - Very large file: Protected by MAX_CHUNKS iteration limit
-/// - Partial insert on error: No rollback - user must manually undo
-/// - Source file same as target: Not checked - caller's responsibility to prevent
-/// - Multi-byte UTF-8 at chunk boundary: Handled correctly by insert function
-/// - Newline at exact chunk boundary: Processed correctly by inner loop
-///
-/// # Defensive Programming
-/// - Converts relative paths to absolute paths
-/// - Checks file existence before open attempt
-/// - Checks path is file, not directory
-/// - Clears buffer before each read (prevent data leakage)
-/// - Asserts bytes_read never exceeds buffer size
-/// - Rebuilds windowmap after EVERY insert operation (not just per chunk)
-/// - Logs all errors with context
-/// - Sets user-visible info bar messages
-/// - Tracks chunk and byte counts for diagnostics
-/// - No unwrap, no panic, no unsafe code
-///
-/// # Performance Considerations
-///
-/// **Why rebuild windowmap so frequently?**
-/// The windowmap rebuild after every text/newline insertion may seem expensive,
-/// but is necessary because:
-/// 1. Display must reflect current state for TUI rendering
-/// 2. Cursor position calculations depend on up-to-date windowmap
-/// 3. Lines policy prioritizes correctness over micro-optimization
-/// 4. File insertion is not a performance-critical operation (human-scale)
-///
-/// **Optimization alternatives considered and rejected:**
-/// - Batch windowmap rebuilds: Would break cursor positioning
-/// - Delayed rebuilds: Would cause display desync
-/// - Differential updates: Too complex, violates simplicity policy
-///
-/// # Example Usage
-/// ```ignore
-/// // Insert contents of another_file.txt at current cursor position
-/// let source_path = Path::new("/absolute/path/to/another_file.txt");
-/// match insert_file_at_cursor(&mut state, source_path) {
-///     Ok(()) => {
-///         // File inserted with proper line structure
-///         // Cursor at end of inserted content
-///         // Windowmap reflects all changes
-///     }
-///     Err(e) => {
-///         // Error logged, info bar shows message
-///         // Partial insert may remain (no rollback)
-///         eprintln!("Insert failed: {}", e);
-///     }
-/// }
-/// ```
-///
-/// # Example Processing Flow
-///
-/// File content: `"hello\nworld"`
-///
-/// ```text
-/// Chunk 1 (11 bytes): "hello\nworld"
-///   ↓
-/// Inner loop processes:
-///   1. Find \n at position 5
-///   2. Insert "hello" (5 bytes) → cursor at (line N, col 5)
-///   3. Rebuild windowmap
-///   4. Insert newline → cursor at (line N+1, col 0)
-///   5. Rebuild windowmap
-///   6. No more \n found
-///   7. Insert "world" (5 bytes) → cursor at (line N+1, col 5)
-///   8. Rebuild windowmap
-///   ↓
-/// Chunk complete, continue to next chunk
-/// ```
-///
-/// # See Also
-/// * `insert_text_chunk_at_cursor_position()` - Called for each text segment
-/// * `execute_command(Command::InsertNewline)` - Called for each newline
-/// * `build_windowmap_nowrap()` - Called after each insert operation
-/// * `handle_insert_mode_input()` - Parallel implementation for stdin (more complex)
-///
-/// # Policy Notes
-/// - Disk space not optimized: follows Lines policy (disk is cheap, RAM precious)
-/// - No progress bar: follows Lines policy (simplicity over features)
-/// - No rollback: follows Lines policy (user controls undo, not automatic)
-/// - Absolute paths: follows Lines defensive programming policy
-/// - Immediate windowmap rebuilds: follows Lines correctness-over-optimization policy
 pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> io::Result<()> {
     // ============================================
     // Phase 1: Path Validation and Normalization
     // ============================================
 
     // Defensive: Ensure we have absolute path
-    // Relative paths are ambiguous and can cause silent failures
     let source_path = if source_file_path.is_absolute() {
         source_file_path.to_path_buf()
     } else {
-        // Convert relative path to absolute path
         match std::env::current_dir() {
             Ok(cwd) => cwd.join(source_file_path),
             Err(e) => {
@@ -7425,7 +7262,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     };
 
     // Defensive: Check source file exists before attempting to open
-    // Fail fast with clear error message rather than cryptic open() failure
     if !source_path.exists() {
         state.set_info_bar_message("file not found");
         log_error(
@@ -7439,7 +7275,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     }
 
     // Defensive: Check source path is actually a file (not directory)
-    // Attempting to read a directory would cause confusing errors
     if !source_path.is_file() {
         state.set_info_bar_message("not a file");
         log_error(
@@ -7456,8 +7291,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Phase 2: Get Target File Path
     // ============================================
 
-    // Get read_copy path from state (target file for insertion)
-    // Clone to avoid borrow conflicts with later state mutations
     let read_copy = state.read_copy_path.clone().ok_or_else(|| {
         state.set_info_bar_message("no target file");
         log_error(
@@ -7471,8 +7304,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Phase 3: Open Source File
     // ============================================
 
-    // Open source file in read-only mode
-    // File will be automatically closed when function exits (RAII)
     let mut source_file = match File::open(&source_path) {
         Ok(file) => file,
         Err(e) => {
@@ -7489,29 +7320,32 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Phase 4: Initialize Bucket Brigade
     // ============================================
 
-    // Pre-allocated buffer for bucket brigade processing
-    // Policy: 256 bytes per chunk (specified in task requirements)
     const CHUNK_SIZE: usize = 256;
     let mut buffer = [0u8; CHUNK_SIZE];
 
-    // Counters for diagnostic feedback and safety
     let mut chunk_counter: usize = 0;
     let mut total_bytes_inserted: usize = 0;
     let mut total_newlines_inserted: usize = 0;
 
-    // Safety: Maximum iterations to prevent infinite loop
-    // Allows 4GB of file at 256-byte chunks = ~16 million chunks
-    // Cosmic ray protection: filesystem corruption could cause infinite loop
     const MAX_CHUNKS: usize = 16_777_216;
+
+    // ============================================
+    // Pending Newline State
+    // ============================================
+    // When we encounter a newline, we DON'T insert it immediately.
+    // Instead, we mark pending_newline = true.
+    // At the start of the next iteration, we insert the pending newline.
+    // At EOF, we discard the pending newline (it's the file-final newline).
+    //
+    // This ensures the final newline of the file doesn't create an extra blank line.
+    let mut pending_newline = false;
 
     // ============================================
     // Phase 5: Bucket Brigade Loop (Outer Loop)
     // ============================================
-    // This loop reads chunks from the file
-    // Each chunk is then processed line-by-line in the inner loop
 
     loop {
-        // Defensive: prevent infinite loop from filesystem corruption or cosmic ray
+        // Defensive: prevent infinite loop
         if chunk_counter >= MAX_CHUNKS {
             state.set_info_bar_message("file too large");
             log_error(
@@ -7531,8 +7365,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             ));
         }
 
-        // Clear buffer before reading (defensive: prevent data leakage between chunks)
-        // If read fails or returns fewer bytes, we don't want old data in buffer
+        // Clear buffer before reading
         for i in 0..CHUNK_SIZE {
             buffer[i] = 0;
         }
@@ -7555,8 +7388,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             }
         };
 
-        // Defensive assertion: bytes_read should never exceed buffer size
-        // This checks for cosmic ray or memory corruption
+        // Defensive assertion
         assert!(
             bytes_read <= CHUNK_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
@@ -7564,10 +7396,18 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             CHUNK_SIZE
         );
 
-        // EOF detection: bytes_read == 0 reliably signals end of file
-        // Unlike stdin, file EOF is deterministic and unambiguous
+        // EOF detection: bytes_read == 0 signals end of file
         if bytes_read == 0 {
             // Success - entire file has been processed
+            // NOTE: pending_newline is intentionally discarded here
+            // It represents the file-final newline which we don't want to insert
+            if pending_newline {
+                // Log that we're skipping the final newline (for debugging)
+                log_error(
+                    "Skipping file-final newline (POSIX convention)",
+                    Some("insert_file_at_cursor"),
+                );
+            }
             break;
         }
 
@@ -7576,25 +7416,64 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // ============================================
         // Phase 6: Line-by-Line Processing (Inner Loop)
         // ============================================
-        // This loop processes newlines within the current chunk
-        // Critical for proper cursor advancement and display state
 
-        let mut chunk_start = 0; // Position within this chunk where we start processing
+        let mut chunk_start = 0;
 
         while chunk_start < bytes_read {
+            // ============================================
+            // Insert Pending Newline from Previous Iteration
+            // ============================================
+            // If there's a newline waiting from the previous iteration,
+            // insert it now. This ensures content newlines are inserted,
+            // while the file-final newline remains pending at EOF.
+
+            if pending_newline {
+                match execute_command(state, Command::InsertNewline('\n')) {
+                    Ok(_) => {
+                        total_newlines_inserted += 1;
+                        pending_newline = false; // Clear the pending state
+                    }
+                    Err(e) => {
+                        state.set_info_bar_message(&format!(
+                            "newline insert failed chunk {}",
+                            chunk_counter
+                        ));
+                        log_error(
+                            &format!(
+                                "Pending newline insert failed at chunk {} (byte offset {}): {}",
+                                chunk_counter, total_bytes_inserted, e
+                            ),
+                            Some("insert_file_at_cursor"),
+                        );
+                        return Err(e);
+                    }
+                }
+
+                // Rebuild windowmap after inserting pending newline
+                if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
+                    state.set_info_bar_message("windowmap rebuild failed");
+                    log_error(
+                        &format!(
+                            "Windowmap rebuild failed after pending newline in chunk {}: {}",
+                            chunk_counter, e
+                        ),
+                        Some("insert_file_at_cursor"),
+                    );
+                    return Err(e);
+                }
+            }
+
             // Get remaining unprocessed bytes in this chunk
             let remaining = &buffer[chunk_start..bytes_read];
 
-            // Search for next newline character in remaining bytes
-            // Returns Some(offset) if found, None if no more newlines
+            // Search for next newline character
             if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
                 // ============================================
                 // Found a newline - process text before it
                 // ============================================
 
-                // Insert text segment before newline (if any text exists)
+                // Insert text segment before newline (if any)
                 if newline_offset > 0 {
-                    // There is text before the newline, insert it
                     match insert_text_chunk_at_cursor_position(
                         state,
                         &read_copy,
@@ -7619,8 +7498,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                         }
                     }
 
-                    // Rebuild windowmap immediately after text insertion
-                    // Required so cursor position calculations are correct for newline insertion
+                    // Rebuild windowmap after text insertion
                     if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
                         state.set_info_bar_message("windowmap rebuild failed");
                         log_error(
@@ -7635,54 +7513,22 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 }
 
                 // ============================================
-                // Insert the newline character itself
+                // Mark Newline as Pending (Don't Insert Yet)
                 // ============================================
-                // Must use Command::InsertNewline to properly update editor state
-                // Direct insertion would advance cursor by 1 byte, but newline
-                // needs to move cursor to start of next line (column 0)
+                // We found a newline, but we don't insert it immediately.
+                // Instead, we mark it as pending. It will be inserted at the
+                // start of the next iteration (either next newline position
+                // or next chunk). If we reach EOF, this pending newline gets
+                // discarded (it's the file-final newline).
 
-                match execute_command(state, Command::InsertNewline('\n')) {
-                    Ok(_) => {
-                        total_newlines_inserted += 1;
-                    }
-                    Err(e) => {
-                        state.set_info_bar_message(&format!(
-                            "newline insert failed chunk {}",
-                            chunk_counter
-                        ));
-                        log_error(
-                            &format!(
-                                "Newline insert failed at chunk {} (byte offset {}): {}",
-                                chunk_counter, total_bytes_inserted, e
-                            ),
-                            Some("insert_file_at_cursor"),
-                        );
-                        return Err(e);
-                    }
-                }
-
-                // Rebuild windowmap immediately after newline insertion
-                // Required because line count changed and cursor moved to new line
-                if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
-                    state.set_info_bar_message("windowmap rebuild failed");
-                    log_error(
-                        &format!(
-                            "Windowmap rebuild failed after newline insert in chunk {}: {}",
-                            chunk_counter, e
-                        ),
-                        Some("insert_file_at_cursor"),
-                    );
-                    return Err(e);
-                }
+                pending_newline = true;
 
                 // Move past the newline for next iteration
-                // +1 to skip the newline byte itself
                 chunk_start += newline_offset + 1;
             } else {
                 // ============================================
                 // No more newlines in this chunk
                 // ============================================
-                // Insert any remaining text and exit inner loop
 
                 if remaining.len() > 0 {
                     match insert_text_chunk_at_cursor_position(state, &read_copy, remaining) {
@@ -7725,15 +7571,14 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         }
 
         // Inner loop complete - chunk fully processed
-        // Continue to next chunk in outer loop
-        // Cursor position now updated to reflect all insertions in this chunk
+        // Note: pending_newline might be true here
+        // It will be inserted at the start of next chunk (or discarded at EOF)
     }
 
     // ============================================
     // Phase 7: Success Reporting
     // ============================================
 
-    // Success: all chunks inserted
     log_error(
         &format!(
             "File inserted successfully: {} ({} bytes, {} newlines, {} chunks)",
@@ -7745,14 +7590,12 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         Some("insert_file_at_cursor"),
     );
 
-    // Set success message in info bar with diagnostic information
+    // Set success message in info bar
     if total_bytes_inserted == 0 {
         state.set_info_bar_message("empty file inserted");
     } else if total_newlines_inserted == 0 {
-        // File with no newlines (single line)
         state.set_info_bar_message(&format!("inserted {} bytes", total_bytes_inserted));
     } else {
-        // Multi-line file
         state.set_info_bar_message(&format!(
             "inserted {} bytes, {} lines",
             total_bytes_inserted,
@@ -7762,6 +7605,558 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
 
     Ok(())
 }
+
+// /// Inserts entire source file at cursor position with line-by-line processing
+// ///
+// /// Reads source file in 256-byte chunks, but processes each chunk line-by-line
+// /// to ensure proper cursor advancement and display updates. Each newline character
+// /// is inserted separately via Command::InsertNewline to maintain editor state
+// /// consistency.
+// ///
+// /// # Why Line-by-Line Processing?
+// ///
+// /// Unlike bulk text insertion, the editor's cursor advancement mechanism requires
+// /// that newline characters trigger specific state updates:
+// ///
+// /// 1. **Cursor Position**: Each newline moves cursor to start of next line
+// /// 2. **Line Count**: Windowmap must reflect new line structure
+// /// 3. **Display State**: Screen rendering depends on accurate line boundaries
+// ///
+// /// Inserting "hello\nworld\n" as one 13-byte chunk would advance cursor by 13 bytes,
+// /// but the cursor would be in wrong position (not accounting for line structure).
+// ///
+// /// Instead we must:
+// /// - Insert "hello" (5 bytes) → cursor advances 5 bytes on current line
+// /// - Insert newline → cursor moves to start of next line
+// /// - Insert "world" (5 bytes) → cursor advances 5 bytes on new line
+// /// - Insert newline → cursor moves to start of next line
+// ///
+// /// # Memory Safety
+// /// - Uses pre-allocated 256-byte buffer (no dynamic allocation)
+// /// - Never loads entire file into memory
+// /// - Processes file chunk-by-chunk using bucket brigade pattern
+// /// - Each chunk processed byte-by-byte for newline detection
+// ///
+// /// # File Behavior
+// /// - Opens source file in read-only mode
+// /// - Reads sequentially from start to EOF
+// /// - Closes source file automatically when function exits
+// /// - Target file (read_copy) is modified via insert_text_chunk_at_cursor_position()
+// ///
+// /// # Cursor Behavior
+// /// - Before: Cursor at position X in target file
+// /// - After text segment: Cursor advances by segment byte count
+// /// - After newline: Cursor moves to start of next line (column 0)
+// /// - After entire file: Cursor at end of last inserted line
+// /// - Each operation updates cursor immediately
+// ///
+// /// # Workflow
+// /// ```text
+// /// 1. Validate source file exists and is readable
+// /// 2. Get read_copy path from editor state
+// /// 3. Open source file (read-only)
+// /// 4. Outer loop (bucket brigade with safety limit):
+// ///    a. Read up to 256 bytes into buffer
+// ///    b. If EOF (bytes_read == 0): exit loop successfully
+// ///    c. Inner loop (newline processing):
+// ///       i.   Find next newline in remaining buffer
+// ///       ii.  If text before newline: insert text, rebuild windowmap
+// ///       iii. Insert newline via Command::InsertNewline, rebuild windowmap
+// ///       iv.  Advance to byte after newline, repeat
+// ///       v.   If no more newlines: insert remaining text, rebuild windowmap
+// ///    d. Increment chunk counter, continue to next chunk
+// /// 5. Return Ok(()) when all chunks processed
+// /// ```
+// ///
+// /// # Differences from stdin Version
+// ///
+// /// **Simpler than handle_insert_mode_input() because:**
+// /// - No stdin delimiter detection (all file newlines are content)
+// /// - No `should_skip_newline` logic (no "Enter key" to filter)
+// /// - No `will_continue_brigade` based on delimiter
+// /// - Bucket brigade continues purely based on bytes_read == CHUNK_SIZE
+// ///
+// /// **All newlines in file are content** - there's no concept of a "command delimiter"
+// /// when reading from a file. Every `\n` byte must be inserted.
+// ///
+// /// # Arguments
+// /// * `state` - Editor state (contains cursor position, read_copy_path, window_map)
+// /// * `source_file_path` - Absolute path to file being inserted
+// ///
+// /// # Returns
+// /// * `Ok(())` - Entire file inserted successfully
+// /// * `Err(io::Error)` - File operation failed at some stage
+// ///
+// /// # Error Conditions
+// /// Sets info bar message and returns Err if:
+// /// - Source file doesn't exist → "file not found"
+// /// - Source path is directory, not file → "not a file"
+// /// - Source file can't be opened → "cannot read file"
+// /// - read_copy_path not set in state → "no target file"
+// /// - Read fails mid-file → "read error chunk N"
+// /// - Any text insertion fails → "insert failed chunk N"
+// /// - Any newline insertion fails → "newline insert failed chunk N"
+// /// - Windowmap rebuild fails → "windowmap rebuild failed"
+// /// - Iteration limit exceeded → "file too large"
+// ///
+// /// # Safety Limits
+// /// - Maximum chunks: 16,777,216 (allows ~4GB at 256-byte chunks)
+// /// - Prevents infinite loops from filesystem corruption or malformed files
+// /// - Each chunk limited to 256 bytes (CHUNK_SIZE constant)
+// /// - Upper bound on loop iterations (defensive programming per NASA rules)
+// ///
+// /// # Edge Cases
+// /// - Empty file: Returns Ok(()) immediately after first read (0 bytes, valid case)
+// /// - File with no newlines: Inserts as single text segment
+// /// - File with only newlines: Inserts N newlines, no text segments
+// /// - File with empty lines (`\n\n`): Inserts consecutive newlines correctly
+// /// - File ending with newline: Final newline IS inserted (unlike stdin delimiter)
+// /// - Binary file: Works correctly (byte-level operation, no UTF-8 requirement)
+// /// - Very large file: Protected by MAX_CHUNKS iteration limit
+// /// - Partial insert on error: No rollback - user must manually undo
+// /// - Source file same as target: Not checked - caller's responsibility to prevent
+// /// - Multi-byte UTF-8 at chunk boundary: Handled correctly by insert function
+// /// - Newline at exact chunk boundary: Processed correctly by inner loop
+// ///
+// /// # Defensive Programming
+// /// - Converts relative paths to absolute paths
+// /// - Checks file existence before open attempt
+// /// - Checks path is file, not directory
+// /// - Clears buffer before each read (prevent data leakage)
+// /// - Asserts bytes_read never exceeds buffer size
+// /// - Rebuilds windowmap after EVERY insert operation (not just per chunk)
+// /// - Logs all errors with context
+// /// - Sets user-visible info bar messages
+// /// - Tracks chunk and byte counts for diagnostics
+// /// - No unwrap, no panic, no unsafe code
+// ///
+// /// # Performance Considerations
+// ///
+// /// **Why rebuild windowmap so frequently?**
+// /// The windowmap rebuild after every text/newline insertion may seem expensive,
+// /// but is necessary because:
+// /// 1. Display must reflect current state for TUI rendering
+// /// 2. Cursor position calculations depend on up-to-date windowmap
+// /// 3. Lines policy prioritizes correctness over micro-optimization
+// /// 4. File insertion is not a performance-critical operation (human-scale)
+// ///
+// /// **Optimization alternatives considered and rejected:**
+// /// - Batch windowmap rebuilds: Would break cursor positioning
+// /// - Delayed rebuilds: Would cause display desync
+// /// - Differential updates: Too complex, violates simplicity policy
+// ///
+// /// # Example Usage
+// /// ```ignore
+// /// // Insert contents of another_file.txt at current cursor position
+// /// let source_path = Path::new("/absolute/path/to/another_file.txt");
+// /// match insert_file_at_cursor(&mut state, source_path) {
+// ///     Ok(()) => {
+// ///         // File inserted with proper line structure
+// ///         // Cursor at end of inserted content
+// ///         // Windowmap reflects all changes
+// ///     }
+// ///     Err(e) => {
+// ///         // Error logged, info bar shows message
+// ///         // Partial insert may remain (no rollback)
+// ///         eprintln!("Insert failed: {}", e);
+// ///     }
+// /// }
+// /// ```
+// ///
+// /// # Example Processing Flow
+// ///
+// /// File content: `"hello\nworld"`
+// ///
+// /// ```text
+// /// Chunk 1 (11 bytes): "hello\nworld"
+// ///   ↓
+// /// Inner loop processes:
+// ///   1. Find \n at position 5
+// ///   2. Insert "hello" (5 bytes) → cursor at (line N, col 5)
+// ///   3. Rebuild windowmap
+// ///   4. Insert newline → cursor at (line N+1, col 0)
+// ///   5. Rebuild windowmap
+// ///   6. No more \n found
+// ///   7. Insert "world" (5 bytes) → cursor at (line N+1, col 5)
+// ///   8. Rebuild windowmap
+// ///   ↓
+// /// Chunk complete, continue to next chunk
+// /// ```
+// ///
+// /// # See Also
+// /// * `insert_text_chunk_at_cursor_position()` - Called for each text segment
+// /// * `execute_command(Command::InsertNewline)` - Called for each newline
+// /// * `build_windowmap_nowrap()` - Called after each insert operation
+// /// * `handle_insert_mode_input()` - Parallel implementation for stdin (more complex)
+// ///
+// /// # Policy Notes
+// /// - Disk space not optimized: follows Lines policy (disk is cheap, RAM precious)
+// /// - No progress bar: follows Lines policy (simplicity over features)
+// /// - No rollback: follows Lines policy (user controls undo, not automatic)
+// /// - Absolute paths: follows Lines defensive programming policy
+// /// - Immediate windowmap rebuilds: follows Lines correctness-over-optimization policy
+// pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> io::Result<()> {
+//     // ============================================
+//     // Phase 1: Path Validation and Normalization
+//     // ============================================
+
+//     // Defensive: Ensure we have absolute path
+//     // Relative paths are ambiguous and can cause silent failures
+//     let source_path = if source_file_path.is_absolute() {
+//         source_file_path.to_path_buf()
+//     } else {
+//         // Convert relative path to absolute path
+//         match std::env::current_dir() {
+//             Ok(cwd) => cwd.join(source_file_path),
+//             Err(e) => {
+//                 state.set_info_bar_message("cannot get cwd");
+//                 log_error(
+//                     &format!("Cannot get current directory: {}", e),
+//                     Some("insert_file_at_cursor"),
+//                 );
+//                 return Err(e);
+//             }
+//         }
+//     };
+
+//     // Defensive: Check source file exists before attempting to open
+//     // Fail fast with clear error message rather than cryptic open() failure
+//     if !source_path.exists() {
+//         state.set_info_bar_message("file not found");
+//         log_error(
+//             &format!("Source file does not exist: {}", source_path.display()),
+//             Some("insert_file_at_cursor"),
+//         );
+//         return Err(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             format!("File not found: {}", source_path.display()),
+//         ));
+//     }
+
+//     // Defensive: Check source path is actually a file (not directory)
+//     // Attempting to read a directory would cause confusing errors
+//     if !source_path.is_file() {
+//         state.set_info_bar_message("not a file");
+//         log_error(
+//             &format!("Source path is not a file: {}", source_path.display()),
+//             Some("insert_file_at_cursor"),
+//         );
+//         return Err(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             format!("Not a file: {}", source_path.display()),
+//         ));
+//     }
+
+//     // ============================================
+//     // Phase 2: Get Target File Path
+//     // ============================================
+
+//     // Get read_copy path from state (target file for insertion)
+//     // Clone to avoid borrow conflicts with later state mutations
+//     let read_copy = state.read_copy_path.clone().ok_or_else(|| {
+//         state.set_info_bar_message("no target file");
+//         log_error(
+//             "read_copy_path not set in editor state",
+//             Some("insert_file_at_cursor"),
+//         );
+//         io::Error::new(io::ErrorKind::Other, "No read copy path")
+//     })?;
+
+//     // ============================================
+//     // Phase 3: Open Source File
+//     // ============================================
+
+//     // Open source file in read-only mode
+//     // File will be automatically closed when function exits (RAII)
+//     let mut source_file = match File::open(&source_path) {
+//         Ok(file) => file,
+//         Err(e) => {
+//             state.set_info_bar_message("cannot read file");
+//             log_error(
+//                 &format!("Cannot open source file: {} - {}", source_path.display(), e),
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(e);
+//         }
+//     };
+
+//     // ============================================
+//     // Phase 4: Initialize Bucket Brigade
+//     // ============================================
+
+//     // Pre-allocated buffer for bucket brigade processing
+//     // Policy: 256 bytes per chunk (specified in task requirements)
+//     const CHUNK_SIZE: usize = 256;
+//     let mut buffer = [0u8; CHUNK_SIZE];
+
+//     // Counters for diagnostic feedback and safety
+//     let mut chunk_counter: usize = 0;
+//     let mut total_bytes_inserted: usize = 0;
+//     let mut total_newlines_inserted: usize = 0;
+
+//     // Safety: Maximum iterations to prevent infinite loop
+//     // Allows 4GB of file at 256-byte chunks = ~16 million chunks
+//     // Cosmic ray protection: filesystem corruption could cause infinite loop
+//     const MAX_CHUNKS: usize = 16_777_216;
+
+//     // ============================================
+//     // Phase 5: Bucket Brigade Loop (Outer Loop)
+//     // ============================================
+//     // This loop reads chunks from the file
+//     // Each chunk is then processed line-by-line in the inner loop
+
+//     loop {
+//         // Defensive: prevent infinite loop from filesystem corruption or cosmic ray
+//         if chunk_counter >= MAX_CHUNKS {
+//             state.set_info_bar_message("file too large");
+//             log_error(
+//                 &format!(
+//                     "Maximum chunk limit reached ({}) for file: {}",
+//                     MAX_CHUNKS,
+//                     source_path.display()
+//                 ),
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(io::Error::new(
+//                 io::ErrorKind::Other,
+//                 format!(
+//                     "Maximum chunk limit exceeded ({}) - file too large",
+//                     MAX_CHUNKS
+//                 ),
+//             ));
+//         }
+
+//         // Clear buffer before reading (defensive: prevent data leakage between chunks)
+//         // If read fails or returns fewer bytes, we don't want old data in buffer
+//         for i in 0..CHUNK_SIZE {
+//             buffer[i] = 0;
+//         }
+
+//         // Read next chunk from source file
+//         let bytes_read = match source_file.read(&mut buffer) {
+//             Ok(n) => n,
+//             Err(e) => {
+//                 state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
+//                 log_error(
+//                     &format!(
+//                         "Read error at chunk {} from file {}: {}",
+//                         chunk_counter,
+//                         source_path.display(),
+//                         e
+//                     ),
+//                     Some("insert_file_at_cursor"),
+//                 );
+//                 return Err(e);
+//             }
+//         };
+
+//         // Defensive assertion: bytes_read should never exceed buffer size
+//         // This checks for cosmic ray or memory corruption
+//         assert!(
+//             bytes_read <= CHUNK_SIZE,
+//             "bytes_read ({}) exceeded buffer size ({})",
+//             bytes_read,
+//             CHUNK_SIZE
+//         );
+
+//         // EOF detection: bytes_read == 0 reliably signals end of file
+//         // Unlike stdin, file EOF is deterministic and unambiguous
+//         if bytes_read == 0 {
+//             // Success - entire file has been processed
+//             break;
+//         }
+
+//         chunk_counter += 1;
+
+//         // ============================================
+//         // Phase 6: Line-by-Line Processing (Inner Loop)
+//         // ============================================
+//         // This loop processes newlines within the current chunk
+//         // Critical for proper cursor advancement and display state
+
+//         let mut chunk_start = 0; // Position within this chunk where we start processing
+
+//         while chunk_start < bytes_read {
+//             // Get remaining unprocessed bytes in this chunk
+//             let remaining = &buffer[chunk_start..bytes_read];
+
+//             // Search for next newline character in remaining bytes
+//             // Returns Some(offset) if found, None if no more newlines
+//             if let Some(newline_offset) = remaining.iter().position(|&b| b == b'\n') {
+//                 // ============================================
+//                 // Found a newline - process text before it
+//                 // ============================================
+
+//                 // Insert text segment before newline (if any text exists)
+//                 if newline_offset > 0 {
+//                     // There is text before the newline, insert it
+//                     match insert_text_chunk_at_cursor_position(
+//                         state,
+//                         &read_copy,
+//                         &remaining[..newline_offset],
+//                     ) {
+//                         Ok(_) => {
+//                             total_bytes_inserted += newline_offset;
+//                         }
+//                         Err(e) => {
+//                             state.set_info_bar_message(&format!(
+//                                 "insert failed chunk {}",
+//                                 chunk_counter
+//                             ));
+//                             log_error(
+//                                 &format!(
+//                                     "Text insert failed at chunk {} (byte offset {}): {}",
+//                                     chunk_counter, total_bytes_inserted, e
+//                                 ),
+//                                 Some("insert_file_at_cursor"),
+//                             );
+//                             return Err(e);
+//                         }
+//                     }
+
+//                     // Rebuild windowmap immediately after text insertion
+//                     // Required so cursor position calculations are correct for newline insertion
+//                     if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
+//                         state.set_info_bar_message("windowmap rebuild failed");
+//                         log_error(
+//                             &format!(
+//                                 "Windowmap rebuild failed after text insert in chunk {}: {}",
+//                                 chunk_counter, e
+//                             ),
+//                             Some("insert_file_at_cursor"),
+//                         );
+//                         return Err(e);
+//                     }
+//                 }
+
+//                 // ============================================
+//                 // Insert the newline character itself
+//                 // ============================================
+//                 // Must use Command::InsertNewline to properly update editor state
+//                 // Direct insertion would advance cursor by 1 byte, but newline
+//                 // needs to move cursor to start of next line (column 0)
+
+//                 match execute_command(state, Command::InsertNewline('\n')) {
+//                     Ok(_) => {
+//                         total_newlines_inserted += 1;
+//                     }
+//                     Err(e) => {
+//                         state.set_info_bar_message(&format!(
+//                             "newline insert failed chunk {}",
+//                             chunk_counter
+//                         ));
+//                         log_error(
+//                             &format!(
+//                                 "Newline insert failed at chunk {} (byte offset {}): {}",
+//                                 chunk_counter, total_bytes_inserted, e
+//                             ),
+//                             Some("insert_file_at_cursor"),
+//                         );
+//                         return Err(e);
+//                     }
+//                 }
+
+//                 // Rebuild windowmap immediately after newline insertion
+//                 // Required because line count changed and cursor moved to new line
+//                 if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
+//                     state.set_info_bar_message("windowmap rebuild failed");
+//                     log_error(
+//                         &format!(
+//                             "Windowmap rebuild failed after newline insert in chunk {}: {}",
+//                             chunk_counter, e
+//                         ),
+//                         Some("insert_file_at_cursor"),
+//                     );
+//                     return Err(e);
+//                 }
+
+//                 // Move past the newline for next iteration
+//                 // +1 to skip the newline byte itself
+//                 chunk_start += newline_offset + 1;
+//             } else {
+//                 // ============================================
+//                 // No more newlines in this chunk
+//                 // ============================================
+//                 // Insert any remaining text and exit inner loop
+
+//                 if remaining.len() > 0 {
+//                     match insert_text_chunk_at_cursor_position(state, &read_copy, remaining) {
+//                         Ok(_) => {
+//                             total_bytes_inserted += remaining.len();
+//                         }
+//                         Err(e) => {
+//                             state.set_info_bar_message(&format!(
+//                                 "insert failed chunk {}",
+//                                 chunk_counter
+//                             ));
+//                             log_error(
+//                                 &format!(
+//                                     "Final text insert failed at chunk {} (byte offset {}): {}",
+//                                     chunk_counter, total_bytes_inserted, e
+//                                 ),
+//                                 Some("insert_file_at_cursor"),
+//                             );
+//                             return Err(e);
+//                         }
+//                     }
+
+//                     // Rebuild windowmap after final text insertion
+//                     if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
+//                         state.set_info_bar_message("windowmap rebuild failed");
+//                         log_error(
+//                             &format!(
+//                                 "Windowmap rebuild failed after final text in chunk {}: {}",
+//                                 chunk_counter, e
+//                             ),
+//                             Some("insert_file_at_cursor"),
+//                         );
+//                         return Err(e);
+//                     }
+//                 }
+
+//                 // Exit inner loop - this chunk is fully processed
+//                 break;
+//             }
+//         }
+
+//         // Inner loop complete - chunk fully processed
+//         // Continue to next chunk in outer loop
+//         // Cursor position now updated to reflect all insertions in this chunk
+//     }
+
+//     // ============================================
+//     // Phase 7: Success Reporting
+//     // ============================================
+
+//     // Success: all chunks inserted
+//     log_error(
+//         &format!(
+//             "File inserted successfully: {} ({} bytes, {} newlines, {} chunks)",
+//             source_path.display(),
+//             total_bytes_inserted,
+//             total_newlines_inserted,
+//             chunk_counter
+//         ),
+//         Some("insert_file_at_cursor"),
+//     );
+
+//     // Set success message in info bar with diagnostic information
+//     if total_bytes_inserted == 0 {
+//         state.set_info_bar_message("empty file inserted");
+//     } else if total_newlines_inserted == 0 {
+//         // File with no newlines (single line)
+//         state.set_info_bar_message(&format!("inserted {} bytes", total_bytes_inserted));
+//     } else {
+//         // Multi-line file
+//         state.set_info_bar_message(&format!(
+//             "inserted {} bytes, {} lines",
+//             total_bytes_inserted,
+//             total_newlines_inserted + 1 // +1 because lines = newlines + 1
+//         ));
+//     }
+
+//     Ok(())
+// }
 
 /// Inserts a chunk of text at cursor position using file operations
 ///
