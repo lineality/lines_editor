@@ -2640,7 +2640,7 @@ impl EditorState {
 
         // 2. Explicit commands (take absolute priority)
 
-        if trimmed == "b" || trimmed == "q" || trimmed == "leave" {
+        if trimmed == "b" || trimmed == "q" {
             return Ok(PastyInputPathOrCommand::Back);
         }
 
@@ -7561,7 +7561,8 @@ fn format_pasty_info_bar(
     };
 
     Ok(format!(
-        "{}{}{} Pasties, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",
+        // "{}{}{} Pasties, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",
+        "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text > {}",
         RED,
         total_count,
         YELLOW,
