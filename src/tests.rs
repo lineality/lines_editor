@@ -544,8 +544,8 @@ mod editor_state_tests {
     fn test_editor_state_creation() {
         let state = EditorState::new();
         assert_eq!(state.mode, EditorMode::Normal);
-        assert_eq!(state.terminal_rows, DEFAULT_ROWS);
-        assert_eq!(state.terminal_cols, DEFAULT_COLS);
+        // assert_eq!(state.terminal_rows, DEFAULT_ROWS);
+        // assert_eq!(state.terminal_cols, DEFAULT_COLS);
         // assert_eq!(state.filetui_windowmap_buffer_used, 0);
         assert!(!state.is_modified);
     }
@@ -555,8 +555,8 @@ mod editor_state_tests {
         let mut state = EditorState::new();
         let result = state.resize_terminal(30, 100);
         assert!(result.is_ok());
-        assert_eq!(state.terminal_rows, 30);
-        assert_eq!(state.terminal_cols, 100);
+        // assert_eq!(state.terminal_rows, 30);
+        // assert_eq!(state.terminal_cols, 100);
         assert_eq!(state.effective_rows, 27); // 30 - 3
         assert_eq!(state.effective_cols, 97); // 100 - 3
     }
@@ -978,7 +978,7 @@ mod revised_boundary_tests {
         state.resize_terminal(24, 80)?;
 
         // ADD DIAGNOSTIC: Show state after resize
-        println!("Terminal cols: {}", state.terminal_cols);
+        // println!("Terminal cols: {}", state.terminal_cols);
         println!("Effective cols: {}", state.effective_cols);
         println!("WindowMap valid_cols: {}", state.window_map.valid_cols);
 

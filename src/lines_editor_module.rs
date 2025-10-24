@@ -2236,10 +2236,6 @@ pub struct EditorState {
     /// Absolute path to read-copy of file
     pub read_copy_path: Option<PathBuf>,
 
-    /// Terminal dimensions
-    pub terminal_rows: usize,
-    pub terminal_cols: usize,
-
     /// Effective editing area (minus headers/footers/line numbers)
     pub effective_rows: usize,
     pub effective_cols: usize,
@@ -2263,7 +2259,7 @@ pub struct EditorState {
     pub cursor: WindowPosition,
 
     /// File position of top-left corner of window
-    pub window_start: FilePosition,
+    // pub window_start: FilePosition,
 
     /// Visual mode selection start (if in visual mode)
     pub selection_start: Option<FilePosition>,
@@ -2333,19 +2329,18 @@ impl EditorState {
             wrap_mode: WrapMode::Wrap,
             original_file_path: None,
             read_copy_path: None,
-            terminal_rows: DEFAULT_ROWS,
-            terminal_cols: DEFAULT_COLS,
             effective_rows,
             effective_cols,
             security_mode: false, // default setting, purpose: to force-reset manually clear overwrite buffers
-            // filetui_windowmap_buffer_used: 0,
+
             window_map: WindowMap::new(),
             cursor: WindowPosition { row: 0, col: 0 },
-            window_start: FilePosition {
-                byte_offset: 0,
-                line_number: 0,
-                byte_in_line: 0,
-            },
+            // window_start: FilePosition {
+            //     // for Wrap mode, if that happens
+            //     byte_offset: 0,
+            //     line_number: 0,
+            //     byte_in_line: 0,
+            // },
             selection_start: None,
             changelog_path: None,
             is_modified: false,
@@ -2362,8 +2357,6 @@ impl EditorState {
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
 
-            // tofile_insert_input_chunk_buffer: [0u8; TOFILE_INSERTBUFFER_CHUNK_SIZE], // not used
-            // tofile_insertinput_chunkbuffer_used: 0, // not used
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
     }
@@ -4041,9 +4034,6 @@ impl EditorState {
             ));
         }
 
-        self.terminal_rows = rows;
-        self.terminal_cols = cols;
-
         // Recalculate effective area (reserve space for UI elements)
         self.effective_rows = rows.saturating_sub(3);
         self.effective_cols = cols.saturating_sub(3);
@@ -4054,26 +4044,6 @@ impl EditorState {
 
         Ok(())
     }
-
-    // // TODO What is this doing??? fix this
-    // /// Clears the window buffer and map
-    // pub fn clear_full_tui_map_window_buffer(&mut self) {
-    //     // Clear buffer
-    //     for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
-    //         self.state_file_tui_window_map_buffer[i] = 0;
-    //     }
-    //     self.filetui_windowmap_buffer_used = 0;
-
-    //     // Clear map
-    //     self.window_map.clear();
-    // }
-    // /// Clears the window buffer and map
-    // pub fn clear_general_256_buffer(&mut self) {
-    //     // Clear buffer
-    //     for i in 0..256 {
-    //         self.general_use_medium_buffer[i] = 0;
-    //     }
-    // }
 }
 
 /// Gets a timestamp string in yyyy_mm_dd format using only standard library
@@ -4146,282 +4116,6 @@ fn is_leap_year(year: u64) -> bool {
         true
     }
 }
-
-// /// TODO this is lagacy code
-// /// loads whole file -> let mut content = fs::read_to_string(file_path)?;
-// /// Must move by chunks...TODO
-// ///
-// /// Gets the header string for a new file
-// /// Combines timestamp with optional header.txt content
-// ///
-// /// # Returns
-// /// - `Ok(String)` - Header string containing timestamp and optional header.txt content
-// /// - `Err(io::Error)` - If there's an error reading header.txt (if it exists)
-// /// Gets the header string for a new file          // <-- Duplicated line
-// /// Combines timestamp with optional header.txt content  // <-- Duplicated line
-// fn memo_mode_get_header_text() -> io::Result<String> {
-//     /*
-//      * TODO: this maybe needs to be revised to not use heap dynamic memory
-//      */
-//     let timestamp = get_timestamp()?;
-//     let mut header = format!("# {}", timestamp);
-
-//     // Get the executable's directory
-//     let exe_path = env::current_exe()?;
-//     let exe_dir = exe_path.parent().ok_or_else(|| {
-//         io::Error::new(
-//             io::ErrorKind::NotFound,
-//             "Could not determine executable directory",
-//         )
-//     })?;
-
-//     // Check for header.txt in the executable's directory
-//     let header_path = exe_dir.join("header.txt");
-
-//     // Also check in the current working directory as fallback
-//     let current_dir_header = Path::new("header.txt");
-
-//     // Must move by chunks...TODO
-//     if header_path.exists() {
-//         let header_content = fs::read_to_string(header_path)?;
-//         header.push_str("  ");
-//         header.push_str(&header_content);
-//     } else if current_dir_header.exists() {
-//         let header_content = fs::read_to_string(current_dir_header)?;
-//         header.push_str("  ");
-//         header.push_str(&header_content);
-//     }
-
-//     Ok(header)
-// }
-
-// /// Main editing loop for the lines text editor
-// ///
-// /// # Arguments
-// /// * `original_file_path` - Path to the file being edited
-// ///
-// /// # Returns
-// /// * `io::Result<()>` - Success or error status of the editing session
-// ///
-// /// # Behavior
-// /// 1. Displays file path and basic commands
-// /// 2. If file doesn't exist, creates it with timestamp header
-// /// 3. Shows last 10 lines of current file content
-// /// 4. Enters input loop where user can:
-// ///    - Type text and press enter to append a line
-// ///    - Enter 'q', 'quit', or 'exit' to close editor
-// /// 5. After each append, displays updated last 10 lines
-// ///
-// /// # Errors
-// /// Returns error if:
-// /// - Cannot create/access the file
-// /// - Cannot read user input
-// /// - Cannot append to file
-// /// - Cannot display file contents
-// ///
-// /// # Example
-// /// ```no_run
-// /// let path = Path::new("notes.txt");
-// /// memo_mode_mini_editor_loop(&path)?;
-// /// ```
-// fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
-//     /*
-//      * TODO: this maybe needs to be revised to not use heap dynamic memory
-//      */
-//     print!("\x1B[2J\x1B[1;1H");
-//     println!("lines text editor: Type 'q' to (q)uit");
-//     println!("file path -> {}", original_file_path.display());
-
-//     let stdin = io::stdin();
-//     let mut input = String::new();
-
-//     // Create file with header if it doesn't exist
-//     if !original_file_path.exists() {
-//         let header = memo_mode_get_header_text()?;
-//         memo_mode_append_line(original_file_path, &header)?;
-//         memo_mode_append_line(original_file_path, "")?; // blank line after header
-//     }
-
-//     // Display initial tail of file
-//     println!("Current file (last 10 lines) ->\n");
-//     if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-//         eprintln!("Error displaying file: {}", e);
-//     }
-
-//     loop {
-//         input.clear();
-//         print!("\n> "); // Add a prompt
-//         io::stdout().flush()?; // Ensure prompt is displayed
-
-//         if let Err(e) = stdin.read_line(&mut input) {
-//             eprintln!("Error reading input: {}", e);
-//             continue;
-//         }
-
-//         let trimmed = input.trim();
-
-//         if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
-//             println!("Exiting editor...");
-//             break;
-//         }
-
-//         // Clear screen
-//         print!("\x1B[2J\x1B[1;1H");
-
-//         // Append the line with temporary backup protection
-//         if let Err(e) = memo_mode_append_line(original_file_path, trimmed) {
-//             eprintln!("Error writing to file: {}", e);
-//             continue;
-//         }
-
-//         // Display the tail of the file after append
-//         println!("\nLast 10 lines of file ->");
-//         if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-//             eprintln!("Error displaying file: {}", e);
-//         }
-//     }
-
-//     Ok(())
-// }
-
-// /// Main editing loop for the lines text editor (pre-allocated buffer version)
-// ///
-// /// # Arguments
-// /// * `original_file_path` - Path to the file being edited
-// ///
-// /// # Returns
-// /// * `io::Result<()>` - Success or error status of the editing session
-// ///
-// /// # Memory Safety
-// /// - Uses pre-allocated 256-byte buffer for stdin chunks
-// /// - Never loads entire file into memory
-// /// - Processes input chunk-by-chunk using bucket brigade pattern
-// ///
-// /// # Behavior
-// /// 1. Displays file path and basic commands
-// /// 2. If file doesn't exist, creates it with timestamp header
-// /// 3. Shows last 10 lines of current file content
-// /// 4. Enters input loop where user can:
-// ///    - Type text and press enter - appended immediately
-// ///    - Enter 'q', 'quit', 'exit', or 'exit()' to close editor
-// /// 5. After each chunk append, displays updated last 10 lines
-// ///
-// /// # Errors
-// /// Returns error if:
-// /// - Cannot create/access the file
-// /// - Cannot read user input
-// /// - Cannot append to file
-// /// - Cannot display file contents
-// ///
-// /// # Example
-// /// ```no_run
-// /// let path = Path::new("notes.txt");
-// /// memo_mode_mini_editor_loop(&path)?;
-// /// ```
-// fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
-//     // Clear screen and show header
-//     print!("\x1B[2J\x1B[1;1H");
-//     println!("lines text editor: Type 'q' to (q)uit");
-//     println!("file path -> {}", original_file_path.display());
-
-//     // TODO Move constants to main code
-//     // Pre-allocated buffer for bucket brigade stdin reading
-//     const STDIN_CHUNK_SIZE: usize = 128;
-//     const MAX_CHUNKS: usize = 1_000_000; // Safety limit
-
-//     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
-
-//     let stdin = io::stdin();
-//     let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
-
-//     // Create file with header if it doesn't exist
-//     if !original_file_path.exists() {
-//         let header = memo_mode_get_header_text()?;
-//         memo_mode_append_line(original_file_path, &header)?;
-//         memo_mode_append_line(original_file_path, "")?; // blank line after header
-//     }
-
-//     // Display initial tail of file
-//     println!("Current file (last 10 lines) ->\n");
-//     if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-//         eprintln!("Error displaying file: {}", e);
-//     }
-
-//     // Open file in append mode once (like POC)
-//     let mut file = OpenOptions::new()
-//         .create(true)
-//         .append(true)
-//         .open(original_file_path)?;
-
-//     let mut chunk_counter = 0;
-
-//     // Main editor loop
-//     loop {
-//         // Defensive: prevent infinite loop
-//         chunk_counter += 1;
-//         if chunk_counter > MAX_CHUNKS {
-//             return Err(io::Error::new(
-//                 io::ErrorKind::Other,
-//                 "Maximum iteration limit exceeded",
-//             ));
-//         }
-
-//         print!("\n> "); // Prompt
-//         io::stdout().flush()?;
-
-//         // Clear buffer before reading
-//         for i in 0..STDIN_CHUNK_SIZE {
-//             stdin_chunk_buffer[i] = 0;
-//         }
-
-//         // Read next chunk from stdin
-//         let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
-//             Ok(n) => n,
-//             Err(e) => {
-//                 eprintln!("Error reading input: {}", e);
-//                 continue;
-//             }
-//         };
-
-//         // Check for exit command before writing to file
-//         if let Ok(text_input_str) = std::str::from_utf8(&stdin_chunk_buffer[..bytes_read]) {
-//             let trimmed = text_input_str.trim();
-
-//             // Exit commands: q, quit, exit, exit()
-//             if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
-//                 println!("Exiting editor...");
-//                 break;
-//             }
-//         }
-
-//         // Clear screen
-//         print!("\x1B[2J\x1B[1;1H");
-
-//         // Write chunk directly to file (as bucket brigade POC)
-//         let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
-
-//         // Defensive assertion: all bytes should be written
-//         assert_eq!(
-//             bytes_written, bytes_read,
-//             "File write incomplete: wrote {} of {} bytes",
-//             bytes_written, bytes_read
-//         );
-
-//         // Flush to disk immediately
-//         file.flush()?;
-
-//         // Display the tail of the file after append
-//         println!("\nLast 10 lines of file ->");
-//         if let Err(e) = memo_mode_display_file_tail(original_file_path, 10) {
-//             eprintln!("Error displaying file: {}", e);
-//         }
-//     }
-
-//     // Final flush
-//     file.flush()?;
-
-//     Ok(())
-// }
 
 /// Main editing loop for the lines text editor (pre-allocated buffer version)
 ///
@@ -8458,25 +8152,26 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     Ok(())
 }
 
-// /// This is a template for calling the lines module
-// /// Main entry point - routes between memo mode and full editor mode
-// ///
-// /// # Purpose
-// /// Determines which mode to use based on current directory and arguments.
-// ///
-// /// # Command Line Usage
-// /// - `lines` - Memo mode (if in home) or error (if elsewhere)
-// /// - `lines file.txt` - Full editor mode with file
-// /// - `lines /path/to/dir/` - Full editor mode, prompts for filename
-// ///
-// /// # Mode Selection Logic
-// /// 1. If CWD is home directory -> memo mode available
-// /// 2. Otherwise -> full editor mode (requires file argument)
-// ///
-// /// # Exit Codes
-// /// - 0: Success
-// /// - 1: General error
-// /// - 2: Invalid arguments
+// Keep This
+//  /// This is a template for calling the lines module
+//  /// Main entry point - routes between memo mode and full editor mode
+//  ///
+//  /// # Purpose
+//  /// Determines which mode to use based on current directory and arguments.
+//  ///
+//  /// # Command Line Usage
+//  /// - `lines` - Memo mode (if in home) or error (if elsewhere)
+//  /// - `lines file.txt` - Full editor mode with file
+//  /// - `lines /path/to/dir/` - Full editor mode, prompts for filename
+//  ///
+//  /// # Mode Selection Logic
+//  /// 1. If CWD is home directory -> memo mode available
+//  /// 2. Otherwise -> full editor mode (requires file argument)
+//  ///
+//  /// # Exit Codes
+//  /// - 0: Success
+//  /// - 1: General error
+//  /// - 2: Invalid arguments
 // fn main() -> io::Result<()> {
 //     let args: Vec<String> = env::args().collect();
 
