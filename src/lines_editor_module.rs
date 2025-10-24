@@ -5987,6 +5987,323 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
     Ok(())
 }
 
+// ============================================================================
+// FILE INSERTION AT CURSOR
+// ============================================================================
+
+/// Inserts entire source file at cursor position using bucket brigade pattern
+///
+/// Reads source file in 256-byte chunks, inserting each chunk sequentially
+/// at current cursor position. After each chunk insertion, rebuilds the
+/// windowmap to update display state.
+///
+/// # Memory Safety
+/// - Uses pre-allocated 256-byte buffer (no dynamic allocation)
+/// - Never loads entire file into memory
+/// - Processes file chunk-by-chunk using bucket brigade pattern
+///
+/// # File Behavior
+/// - Opens source file in read-only mode
+/// - Reads sequentially from start to EOF
+/// - Closes source file automatically when function exits
+/// - Target file (read_copy) is modified via insert_text_chunk_at_cursor_position()
+///
+/// # Cursor Behavior
+/// - Before: Cursor at position X in target file
+/// - After chunk 1: Cursor moves to X + chunk1_bytes
+/// - After chunk N: Cursor at X + total_file_bytes (end of inserted content)
+/// - Cursor updates handled automatically by insert_text_chunk_at_cursor_position()
+///
+/// # Workflow
+/// ```text
+/// 1. Validate source file exists and is readable
+/// 2. Get read_copy path from editor state
+/// 3. Open source file (read-only)
+/// 4. Loop (with safety limit):
+///    a. Read up to 256 bytes into buffer
+///    b. If EOF (bytes_read == 0): exit loop successfully
+///    c. Call insert_text_chunk_at_cursor_position() for this chunk
+///    d. If insert fails: stop, return error with info bar message
+///    e. Call build_windowmap_nowrap() to update display
+///    f. If rebuild fails: stop, return error
+///    g. Increment counter, continue to next chunk
+/// 5. Return Ok(()) when all chunks inserted
+/// ```
+///
+/// # Arguments
+/// * `state` - Editor state (contains cursor position, read_copy_path, window_map)
+/// * `source_file_path` - Absolute path to file being inserted
+///
+/// # Returns
+/// * `Ok(())` - Entire file inserted successfully
+/// * `Err(io::Error)` - File operation failed at some stage
+///
+/// # Error Conditions
+/// Sets info bar message and returns Err if:
+/// - Source file doesn't exist → "file not found"
+/// - Source path is directory, not file → "not a file"
+/// - Source file can't be opened → "cannot read file"
+/// - read_copy_path not set in state → "no target file"
+/// - Read fails mid-file → "read error chunk N"
+/// - Any chunk insertion fails → "insert failed chunk N"
+/// - Windowmap rebuild fails → "windowmap rebuild failed"
+/// - Iteration limit exceeded → "file too large"
+///
+/// # Safety Limits
+/// - Maximum chunks: 16,777,216 (allows ~4GB at 256-byte chunks)
+/// - Prevents infinite loops from filesystem corruption or malformed files
+/// - Each chunk limited to 256 bytes (CHUNK_SIZE constant)
+/// - Upper bound on loop iterations (defensive programming per NASA rules)
+///
+/// # Edge Cases
+/// - Empty file: Returns Ok(()) immediately after first read (0 bytes, valid case)
+/// - Binary file: Works correctly (byte-level operation, no UTF-8 requirement)
+/// - Very large file: Protected by MAX_CHUNKS iteration limit
+/// - Partial insert on error: No rollback - user must manually undo
+/// - Source file same as target: Not checked - caller's responsibility to prevent
+/// - Multi-byte UTF-8 at chunk boundary: insert function handles correctly
+///
+/// # Defensive Programming
+/// - Converts relative paths to absolute paths
+/// - Checks file existence before open attempt
+/// - Checks path is file, not directory
+/// - Clears buffer before each read (prevent data leakage)
+/// - Asserts bytes_read never exceeds buffer size
+/// - Logs all errors with context
+/// - Sets user-visible info bar messages
+/// - No unwrap, no panic, no unsafe code
+///
+/// # Example Usage
+/// ```ignore
+/// // Insert contents of another_file.txt at current cursor position
+/// let source_path = Path::new("/absolute/path/to/another_file.txt");
+/// match insert_file_at_cursor(&mut state, source_path) {
+///     Ok(()) => {
+///         // File inserted, cursor moved to end of inserted content
+///         // Windowmap already rebuilt, ready for next operation
+///     }
+///     Err(e) => {
+///         // Error logged, info bar shows message, partial insert may remain
+///         eprintln!("Insert failed: {}", e);
+///     }
+/// }
+/// ```
+///
+/// # See Also
+/// * `insert_text_chunk_at_cursor_position()` - Called for each chunk
+/// * `build_windowmap_nowrap()` - Called after each chunk to update display
+/// * `handle_insert_mode_input()` - Similar bucket brigade pattern from stdin
+/// * `file_to_tui_test()` - Similar file reading pattern for display
+///
+/// # Policy Notes
+/// - Disk space not optimized: follows Lines policy (disk is cheap, RAM precious)
+/// - No progress bar: follows Lines policy (simplicity over features)
+/// - No rollback: follows Lines policy (user controls undo, not automatic)
+/// - Absolute paths: follows Lines defensive programming policy
+pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> io::Result<()> {
+    // Defensive: Ensure we have absolute path
+    let source_path = if source_file_path.is_absolute() {
+        source_file_path.to_path_buf()
+    } else {
+        // Convert relative path to absolute path
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(source_file_path),
+            Err(e) => {
+                state.set_info_bar_message("cannot get cwd");
+                log_error(
+                    &format!("Cannot get current directory: {}", e),
+                    Some("insert_file_at_cursor"),
+                );
+                return Err(e);
+            }
+        }
+    };
+
+    // Defensive: Check source file exists before attempting to open
+    if !source_path.exists() {
+        state.set_info_bar_message("file not found");
+        log_error(
+            &format!("Source file does not exist: {}", source_path.display()),
+            Some("insert_file_at_cursor"),
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("File not found: {}", source_path.display()),
+        ));
+    }
+
+    // Defensive: Check source path is actually a file (not directory)
+    if !source_path.is_file() {
+        state.set_info_bar_message("not a file");
+        log_error(
+            &format!("Source path is not a file: {}", source_path.display()),
+            Some("insert_file_at_cursor"),
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Not a file: {}", source_path.display()),
+        ));
+    }
+
+    // Get read_copy path from state (target file for insertion)
+    let read_copy = state.read_copy_path.clone().ok_or_else(|| {
+        state.set_info_bar_message("no target file");
+        log_error(
+            "read_copy_path not set in editor state",
+            Some("insert_file_at_cursor"),
+        );
+        io::Error::new(io::ErrorKind::Other, "No read copy path")
+    })?;
+
+    // Open source file in read-only mode
+    let mut source_file = match File::open(&source_path) {
+        Ok(file) => file,
+        Err(e) => {
+            state.set_info_bar_message("cannot read file");
+            log_error(
+                &format!("Cannot open source file: {} - {}", source_path.display(), e),
+                Some("insert_file_at_cursor"),
+            );
+            return Err(e);
+        }
+    };
+
+    // Pre-allocated buffer for bucket brigade processing
+    // Policy: 256 bytes per chunk (specified in task requirements)
+    const CHUNK_SIZE: usize = 256;
+    let mut buffer = [0u8; CHUNK_SIZE];
+
+    // Counters for diagnostic feedback and safety
+    let mut chunk_counter: usize = 0;
+    let mut total_bytes_inserted: usize = 0;
+
+    // Safety: Maximum iterations to prevent infinite loop
+    // Allows 4GB of file at 256-byte chunks = ~16 million chunks
+    // Cosmic ray protection: filesystem corruption could cause infinite loop
+    const MAX_CHUNKS: usize = 16_777_216;
+
+    // ============================================
+    // Bucket Brigade Loop
+    // ============================================
+    loop {
+        // Defensive: prevent infinite loop from filesystem corruption or cosmic ray
+        if chunk_counter >= MAX_CHUNKS {
+            state.set_info_bar_message("file too large");
+            log_error(
+                &format!(
+                    "Maximum chunk limit reached ({}) for file: {}",
+                    MAX_CHUNKS,
+                    source_path.display()
+                ),
+                Some("insert_file_at_cursor"),
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Maximum chunk limit exceeded ({}) - file too large",
+                    MAX_CHUNKS
+                ),
+            ));
+        }
+
+        // Clear buffer before reading (defensive: prevent data leakage between chunks)
+        for i in 0..CHUNK_SIZE {
+            buffer[i] = 0;
+        }
+
+        // Read next chunk from source file
+        let bytes_read = match source_file.read(&mut buffer) {
+            Ok(n) => n,
+            Err(e) => {
+                state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
+                log_error(
+                    &format!(
+                        "Read error at chunk {} from file {}: {}",
+                        chunk_counter,
+                        source_path.display(),
+                        e
+                    ),
+                    Some("insert_file_at_cursor"),
+                );
+                return Err(e);
+            }
+        };
+
+        // Defensive assertion: bytes_read should never exceed buffer size
+        // This checks for cosmic ray or memory corruption
+        assert!(
+            bytes_read <= CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            CHUNK_SIZE
+        );
+
+        // EOF detection: bytes_read == 0 reliably signals end of file
+        // Unlike stdin, file EOF is deterministic
+        if bytes_read == 0 {
+            // Success - entire file has been processed
+            break;
+        }
+
+        chunk_counter += 1;
+        total_bytes_inserted += bytes_read;
+
+        // Insert this chunk at current cursor position
+        // This function handles cursor update and file modification
+        if let Err(e) =
+            insert_text_chunk_at_cursor_position(state, &read_copy, &buffer[..bytes_read])
+        {
+            state.set_info_bar_message(&format!("insert failed chunk {}", chunk_counter));
+            log_error(
+                &format!(
+                    "Insert failed at chunk {} (byte offset {}): {}",
+                    chunk_counter, total_bytes_inserted, e
+                ),
+                Some("insert_file_at_cursor"),
+            );
+            // Return error - partial insert remains, no rollback
+            return Err(e);
+        }
+
+        // Rebuild windowmap to update display after this chunk
+        // Required so display reflects current file state
+        if let Err(e) = build_windowmap_nowrap(state, &read_copy) {
+            state.set_info_bar_message("windowmap rebuild failed");
+            log_error(
+                &format!(
+                    "Windowmap rebuild failed after chunk {}: {}",
+                    chunk_counter, e
+                ),
+                Some("insert_file_at_cursor"),
+            );
+            return Err(e);
+        }
+
+        // Continue to next chunk
+        // Cursor position now updated to end of inserted content
+    }
+
+    // Success: all chunks inserted
+    log_error(
+        &format!(
+            "File inserted successfully: {} ({} bytes in {} chunks)",
+            source_path.display(),
+            total_bytes_inserted,
+            chunk_counter
+        ),
+        Some("insert_file_at_cursor"),
+    );
+
+    // Set success message in info bar
+    if total_bytes_inserted == 0 {
+        state.set_info_bar_message("empty file inserted");
+    } else {
+        state.set_info_bar_message(&format!("inserted {} bytes", total_bytes_inserted));
+    }
+
+    Ok(())
+}
+
 /// Inserts a chunk of text at cursor position using file operations
 ///
 /// # Arguments

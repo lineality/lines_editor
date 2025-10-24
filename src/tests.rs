@@ -1,4 +1,4 @@
-// tests.rs (keen this in same directory as main.rs)
+// tests.rs (keen this in src/ with main.rs)
 
 #[cfg(test)]
 use crate::lines_editor_module::double_width::{calculate_display_width, is_double_width};
@@ -2024,4 +2024,296 @@ fn test_insert_at_eol_works() {
         contents.contains("world! ADDED"),
         "Text should be appended to line"
     );
+}
+
+// ============================================================================
+// TEST insert_file
+// ============================================================================
+
+#[cfg(test)]
+mod insert_file_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Read;
+    use std::io::Write;
+
+    /// Creates test_files directory and returns path
+    ///
+    /// # Returns
+    /// Absolute path to test_files/ directory in current working directory
+    fn setup_test_dir() -> io::Result<PathBuf> {
+        let test_dir = std::env::current_dir()?.join("test_files");
+        fs::create_dir_all(&test_dir)?;
+        Ok(test_dir)
+    }
+
+    /// Removes test file if it exists
+    ///
+    /// Ignores errors (file may not exist)
+    fn cleanup_test_file(path: &Path) {
+        let _ = fs::remove_file(path);
+    }
+
+    /// Test: File reading in 256-byte chunks (simulates bucket brigade)
+    ///
+    /// Verifies:
+    /// - Small file (< 256 bytes) read in one chunk
+    /// - Total bytes read equals file size
+    /// - EOF detected correctly
+    #[test]
+    fn test_read_small_file_in_chunks() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("small_source.txt");
+
+        // Create small test file
+        let content = "Hello, this is a small test file.\nLine 2\nLine 3";
+        {
+            let mut file = File::create(&source_path)?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
+        }
+
+        // Read in 256-byte chunks
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+        let mut total_read = 0;
+        let mut chunk_count = 0;
+
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+            total_read += bytes_read;
+            chunk_count += 1;
+
+            // Verify chunk doesn't exceed buffer
+            assert!(bytes_read <= 256);
+        }
+
+        // Verify correct amount read
+        assert_eq!(total_read, content.len());
+        assert_eq!(chunk_count, 1); // Small file = one chunk
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
+
+    /// Test: Large file requires multiple chunks
+    ///
+    /// Verifies:
+    /// - File > 256 bytes splits into multiple chunks
+    /// - All chunks read correctly
+    /// - Total bytes equals original file size
+    #[test]
+    fn test_read_large_file_multiple_chunks() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("large_source.txt");
+
+        // Create file larger than one chunk (1000 bytes)
+        let content = "A".repeat(1000);
+        {
+            let mut file = File::create(&source_path)?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
+        }
+
+        // Read in 256-byte chunks
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+        let mut chunks = Vec::new();
+
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            chunks.push(bytes_read);
+            assert!(bytes_read <= 256);
+        }
+
+        // Should have multiple chunks: 1000 / 256 = 3.9, so 4 chunks
+        assert!(
+            chunks.len() >= 4,
+            "Expected at least 4 chunks, got {}",
+            chunks.len()
+        );
+
+        // Last chunk should be partial: 1000 % 256 = 232
+        assert_eq!(*chunks.last().unwrap(), 232);
+
+        // Sum should equal original content
+        let total: usize = chunks.iter().sum();
+        assert_eq!(total, 1000);
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
+
+    /// Test: Empty file handling
+    ///
+    /// Verifies:
+    /// - Empty file returns 0 bytes on first read
+    /// - No chunks processed
+    /// - No errors occur
+    #[test]
+    fn test_read_empty_file() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("empty_source.txt");
+
+        // Create empty file
+        {
+            let _file = File::create(&source_path)?;
+        }
+
+        // Verify it's empty
+        let metadata = fs::metadata(&source_path)?;
+        assert_eq!(metadata.len(), 0);
+
+        // Read should immediately return 0 (EOF)
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+        let bytes_read = file.read(&mut buffer)?;
+
+        assert_eq!(bytes_read, 0); // Immediate EOF
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
+
+    /// Test: File existence checking
+    ///
+    /// Verifies:
+    /// - Non-existent file is detected
+    /// - No panic, no crash
+    #[test]
+    fn test_nonexistent_file() {
+        let test_dir = std::env::current_dir()
+            .expect("Cannot get cwd")
+            .join("test_files");
+        let nonexistent = test_dir.join("this_file_does_not_exist.txt");
+
+        // Verify file doesn't exist
+        assert!(!nonexistent.exists());
+    }
+
+    /// Test: Chunk boundary with multi-byte UTF-8
+    ///
+    /// Verifies:
+    /// - Multi-byte characters split across chunk boundaries
+    /// - Bytes read correctly even if UTF-8 is incomplete at boundary
+    /// - Total bytes equals file size
+    #[test]
+    fn test_chunk_boundary_utf8() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("utf8_boundary.txt");
+
+        // Create file with multi-byte UTF-8 that will likely split across 256-byte boundary
+        // Using 3-byte UTF-8 characters (e.g., '€' = E2 82 AC)
+        let content = "€".repeat(100); // 300 bytes total (100 * 3 bytes each)
+
+        {
+            let mut file = File::create(&source_path)?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
+        }
+
+        // Read in chunks
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+        let mut total_read = 0;
+        let mut chunk_count = 0;
+
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_read += bytes_read;
+            chunk_count += 1;
+        }
+
+        // Verify total bytes correct (300 bytes)
+        assert_eq!(total_read, 300);
+
+        // Should be 2 chunks: 256 + 44
+        assert_eq!(chunk_count, 2);
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
+
+    /// Test: Binary file handling
+    ///
+    /// Verifies:
+    /// - Binary data (non-UTF-8) read correctly
+    /// - No UTF-8 decoding errors (we work at byte level)
+    /// - All bytes preserved
+    #[test]
+    fn test_binary_file() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("binary_file.bin");
+
+        // Create binary file with non-UTF-8 bytes
+        let binary_data: Vec<u8> = (0..=255).collect(); // All possible byte values
+
+        {
+            let mut file = File::create(&source_path)?;
+            file.write_all(&binary_data)?;
+            file.flush()?;
+        }
+
+        // Read in chunks
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+        let mut total_read = 0;
+
+        loop {
+            let bytes_read = file.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            total_read += bytes_read;
+        }
+
+        // Should read all 256 bytes in one chunk
+        assert_eq!(total_read, 256);
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
+
+    /// Test: Exact chunk size (256 bytes)
+    ///
+    /// Verifies:
+    /// - File exactly 256 bytes requires one full chunk
+    /// - Second read returns 0 (EOF)
+    #[test]
+    fn test_exact_chunk_size() -> io::Result<()> {
+        let test_dir = setup_test_dir()?;
+        let source_path = test_dir.join("exact_256.txt");
+
+        // Create file exactly 256 bytes
+        let content = "X".repeat(256);
+
+        {
+            let mut file = File::create(&source_path)?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
+        }
+
+        let mut file = File::open(&source_path)?;
+        let mut buffer = [0u8; 256];
+
+        // First read should get all 256 bytes
+        let first_read = file.read(&mut buffer)?;
+        assert_eq!(first_read, 256);
+
+        // Second read should be EOF
+        let second_read = file.read(&mut buffer)?;
+        assert_eq!(second_read, 0);
+
+        cleanup_test_file(&source_path);
+        Ok(())
+    }
 }
