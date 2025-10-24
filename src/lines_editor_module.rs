@@ -940,6 +940,8 @@ const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 /// Towers of Hanoy
 const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256;
 
+const MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE: usize = 256;
+
 const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
@@ -2242,14 +2244,17 @@ pub struct EditorState {
     pub effective_rows: usize,
     pub effective_cols: usize,
 
+    // to force-reset manually clear overwrite buffers
+    pub security_mode: bool,
+
     /// Current window buffer containing visible text
     /// Pre-allocated to FILE_TUI_WINDOW_MAP_BUFFER_SIZE
-    pub state_file_tui_window_map_buffer: [u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
+    // pub state_file_tui_window_map_buffer: [u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
 
-    pub general_use_256_buffer: [u8; 256],
+    // pub general_use_medium_buffer: [u8; MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE],
 
     /// Number of valid bytes in state_file_tui_window_map_buffer
-    pub filetui_windowmap_buffer_used: usize,
+    // pub filetui_windowmap_buffer_used: usize,
 
     /// Window to file position mapping
     pub window_map: WindowMap,
@@ -2332,9 +2337,8 @@ impl EditorState {
             terminal_cols: DEFAULT_COLS,
             effective_rows,
             effective_cols,
-            state_file_tui_window_map_buffer: [0u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
-            general_use_256_buffer: [0u8; 256],
-            filetui_windowmap_buffer_used: 0,
+            security_mode: false, // default setting, purpose: to force-reset manually clear overwrite buffers
+            // filetui_windowmap_buffer_used: 0,
             window_map: WindowMap::new(),
             cursor: WindowPosition { row: 0, col: 0 },
             window_start: FilePosition {
@@ -2529,10 +2533,23 @@ impl EditorState {
         stdin_handle: &mut StdinLock,
         text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
     ) -> io::Result<PastyInputPathOrCommand> {
-        // Clear accumulation buffer before use
-        // (Defensive: ensure no stale data from previous operations)
-        for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
-            self.state_file_tui_window_map_buffer[i] = 0;
+        // // Clear accumulation buffer before use
+        // // (Defensive: ensure no stale data from previous operations)
+        // for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+        //     self.state_file_tui_window_map_buffer[i] = 0;
+        // }
+
+        // Create local accumulation buffer on stack
+        // Buffer name matches FILE_TUI_WINDOW_MAP_BUFFER_SIZE constant
+        // No clearing needed - accumulated_bytes bounds valid data
+        let mut file_tui_windowmap_buffer = [0u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE];
+
+        // to force-reset manually clear overwrite buffers
+        if self.security_mode {
+            // Clear buffer before reading
+            for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+                file_tui_windowmap_buffer[i] = 0;
+            }
         }
 
         let mut accumulated_bytes: usize = 0;
@@ -2588,7 +2605,7 @@ impl EditorState {
 
             // Copy chunk into accumulation buffer
             for i in 0..copy_len {
-                self.state_file_tui_window_map_buffer[accumulated_bytes + i] = text_buffer[i];
+                file_tui_windowmap_buffer[accumulated_bytes + i] = text_buffer[i];
             }
 
             accumulated_bytes += copy_len;
@@ -2618,10 +2635,9 @@ impl EditorState {
         //  ////////////////////////////
 
         // Convert bytes to UTF-8 string
-        let input_str =
-            std::str::from_utf8(&self.state_file_tui_window_map_buffer[..accumulated_bytes])
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
-
+        // Only process valid bytes [0..accumulated_bytes], rest is unused
+        let input_str = std::str::from_utf8(&file_tui_windowmap_buffer[..accumulated_bytes])
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
         // Trim whitespace and newline delimiter
         let trimmed = input_str.trim();
 
@@ -4039,25 +4055,25 @@ impl EditorState {
         Ok(())
     }
 
-    // TODO What is this doing??? fix this
-    /// Clears the window buffer and map
-    pub fn clear_full_tui_map_window_buffer(&mut self) {
-        // Clear buffer
-        for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
-            self.state_file_tui_window_map_buffer[i] = 0;
-        }
-        self.filetui_windowmap_buffer_used = 0;
+    // // TODO What is this doing??? fix this
+    // /// Clears the window buffer and map
+    // pub fn clear_full_tui_map_window_buffer(&mut self) {
+    //     // Clear buffer
+    //     for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+    //         self.state_file_tui_window_map_buffer[i] = 0;
+    //     }
+    //     self.filetui_windowmap_buffer_used = 0;
 
-        // Clear map
-        self.window_map.clear();
-    }
-    /// Clears the window buffer and map
-    pub fn clear_general_256_buffer(&mut self) {
-        // Clear buffer
-        for i in 0..256 {
-            self.general_use_256_buffer[i] = 0;
-        }
-    }
+    //     // Clear map
+    //     self.window_map.clear();
+    // }
+    // /// Clears the window buffer and map
+    // pub fn clear_general_256_buffer(&mut self) {
+    //     // Clear buffer
+    //     for i in 0..256 {
+    //         self.general_use_medium_buffer[i] = 0;
+    //     }
+    // }
 }
 
 /// Gets a timestamp string in yyyy_mm_dd format using only standard library
@@ -7013,9 +7029,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Phase 4: Initialize Bucket Brigade
     // ============================================
 
-    const CHUNK_SIZE: usize = 256;
-    let mut buffer = [0u8; CHUNK_SIZE];
-
     let mut chunk_counter: usize = 0;
     let mut total_bytes_inserted: usize = 0;
     let mut total_newlines_inserted: usize = 0;
@@ -7057,10 +7070,20 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 ),
             ));
         }
+        /*
+        Pre-Allocated Buffer
+        The best I can tell, this is the best sytem
+        for pre-allocating buffers
+         */
 
-        // Clear buffer before reading
-        for i in 0..CHUNK_SIZE {
-            buffer[i] = 0;
+        let mut buffer = [0u8; MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE];
+
+        // to force-reset manually clear overwrite buffers
+        if state.security_mode {
+            // Clear buffer before reading
+            for i in 0..MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE {
+                buffer[i] = 0;
+            }
         }
 
         // Read next chunk from source file
@@ -7083,10 +7106,10 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
 
         // Defensive assertion
         assert!(
-            bytes_read <= CHUNK_SIZE,
+            bytes_read <= MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
             bytes_read,
-            CHUNK_SIZE
+            MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE
         );
 
         // EOF detection: bytes_read == 0 signals end of file
@@ -7561,7 +7584,7 @@ fn format_pasty_info_bar(
     };
 
     Ok(format!(
-        // "{}{}{} Pasties, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",
+        // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
         "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text > {}",
         RED,
         total_count,
@@ -8373,6 +8396,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // set up pre-allocated input buffere, short for commands
     // and Bucket Brigade! for text input:
     let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
+
+    // TODO: use/reuse general 256 buffer
     let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
     let stdin = io::stdin();
     let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
