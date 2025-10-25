@@ -50,7 +50,7 @@ Never use unwrap.
 Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
 
 Always defensive best practice:
-Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
+Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are common), there must always be fail-safe error handling.
 
 Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
 
@@ -66,7 +66,7 @@ Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 
 
 3. Pre-allocate all memory (no dynamic memory allocation)
 
-4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
+4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
 5. Defensive programming: safely check, not 'assert!' panic
 For production-release code:
@@ -2175,6 +2175,11 @@ fn render_pasty_tui(
     // Draw legend (using existing helper)
     println!("{}", format_pasty_legend()?);
 
+    // Padding, print 3 lines
+    for _ in 0..3 {
+        println!();
+    }
+
     // Draw clipboard items with rank numbers
     let end = (offset + items_per_page).min(total_count);
 
@@ -2313,8 +2318,8 @@ pub struct EditorState {
     /// Each buffer holds one terminal row including line number and text
     pub utf8_txt_display_buffers: [[u8; 182]; 45],
 
-    /// Actual bytes used in each display buffer
-    /// Since lines can be shorter than 80 chars, we track actual usage
+    /// Bytes used in each display buffer
+    /// Since lines can be shorter than 80 chars, we track usage
     pub display_utf8txt_buffer_lengths: [usize; 45],
 
     /// Hex mode cursor (byte position in file)
@@ -3294,6 +3299,11 @@ impl EditorState {
                 keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
             }
 
+            "-p" => {
+                // Exit to visual mode
+                keep_editor_loop_running = execute_command(self, Command::EnterPastyClipboardMode)?;
+            }
+
             // === FILE COMMANDS ===
             "-s" | "-w" => {
                 // Save file
@@ -3329,68 +3339,65 @@ impl EditorState {
                 }
             }
 
-            // === NAVIGATION: UP/DOWN (row = 26 bytes) ===
+            // === NAVIGATION: UP/DOWN (by newlines ===
             "k" => {
-                // Move up one row (26 bytes backward)
-                let row_size = self.hex_cursor.bytes_per_row;
-                if self.hex_cursor.byte_offset >= row_size {
-                    self.hex_cursor.byte_offset -= row_size;
-                } else {
-                    // Already on first row - go to byte 0
-                    self.hex_cursor.byte_offset = 0;
-                    self.set_info_bar_message("At first row");
+                // Move up to previous newline (backward in file)
+                let file_path = self
+                    .read_copy_path
+                    .as_ref()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
+
+                match find_previous_newline(file_path, self.hex_cursor.byte_offset) {
+                    Ok(Some(newline_pos)) => {
+                        // Found a newline - move cursor to it
+                        self.hex_cursor.byte_offset = newline_pos;
+                        self.set_info_bar_message("Previous line");
+                    }
+                    Ok(None) => {
+                        // No newline found - go to start of file
+                        self.hex_cursor.byte_offset = 0;
+                        self.set_info_bar_message("At start of file");
+                    }
+                    Err(e) => {
+                        self.set_info_bar_message(&format!("Search error: {}", e));
+                    }
                 }
             }
 
             "j" => {
-                // Move down one row (26 bytes forward)
-                let row_size = self.hex_cursor.bytes_per_row;
-                let new_offset = self.hex_cursor.byte_offset + row_size;
+                // Move down to next newline (forward in file)
+                let file_path = self
+                    .read_copy_path
+                    .as_ref()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
 
-                if new_offset < file_size {
-                    self.hex_cursor.byte_offset = new_offset;
-                } else {
-                    // Would go past EOF - move to last byte
-                    if file_size > 0 {
-                        self.hex_cursor.byte_offset = file_size - 1;
+                match find_next_newline(file_path, self.hex_cursor.byte_offset, file_size) {
+                    Ok(Some(newline_pos)) => {
+                        // Found a newline - move cursor to it
+                        self.hex_cursor.byte_offset = newline_pos;
+                        self.set_info_bar_message("Next line");
                     }
-                    self.set_info_bar_message("At last row");
-                }
-            }
-
-            // === NAVIGATION: WORD BOUNDARIES (8 bytes) ===
-            "w" => {
-                // Word forward (8 bytes)
-                let new_offset = self.hex_cursor.byte_offset + 8;
-
-                if new_offset < file_size {
-                    self.hex_cursor.byte_offset = new_offset;
-                } else if file_size > 0 {
-                    // Clamp to last byte
-                    self.hex_cursor.byte_offset = file_size - 1;
-                    self.set_info_bar_message("End of file");
-                }
-            }
-
-            "b" => {
-                // Word backward (8 bytes)
-                if self.hex_cursor.byte_offset >= 8 {
-                    self.hex_cursor.byte_offset -= 8;
-                } else {
-                    // Clamp to start
-                    self.hex_cursor.byte_offset = 0;
-                    self.set_info_bar_message("Start of file");
+                    Ok(None) => {
+                        // No newline found - go to end of file
+                        if file_size > 0 {
+                            self.hex_cursor.byte_offset = file_size - 1;
+                        }
+                        self.set_info_bar_message("At end of file");
+                    }
+                    Err(e) => {
+                        self.set_info_bar_message(&format!("Search error: {}", e));
+                    }
                 }
             }
 
             // === NAVIGATION: LINE START/END ===
-            "0" => {
+            "0" | "gh" => {
                 // Go to start of current row
                 let row = self.hex_cursor.current_row();
                 self.hex_cursor.byte_offset = row * self.hex_cursor.bytes_per_row;
             }
 
-            "$" => {
+            "$" | "gl" => {
                 // Go to end of current row (or last byte if row incomplete)
                 let row = self.hex_cursor.current_row();
                 let row_end = (row + 1) * self.hex_cursor.bytes_per_row - 1;
@@ -3410,7 +3417,8 @@ impl EditorState {
                 self.set_info_bar_message("Start of file");
             }
 
-            "G" => {
+            "ge" | "G" => {
+                // TODO? ge is hexlic, what is G?
                 // Go to end of file
                 if file_size > 0 {
                     self.hex_cursor.byte_offset = file_size - 1;
@@ -3985,7 +3993,7 @@ impl EditorState {
                 "s" | "w" => Command::Save,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
-                "hex" => Command::EnterHexEditMode,
+                "hex" | "bytes" | "b" => Command::EnterHexEditMode,
                 // "wrap" => Command::ToggleWrap,
                 // "gg" => Command::MoveToTop,
                 "d" => Command::DeleteLine,
@@ -4003,7 +4011,7 @@ impl EditorState {
                 "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
 
                 "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
-                "hex" => Command::EnterHexEditMode,
+                "hex" | "bytes" | "b" => Command::EnterHexEditMode,
                 // Some('p') => Command::PastyClipboard(count),
                 // // TODO: Make These, Command::Select...
                 // Some('w') => Command::SelectNextWord,
@@ -5161,7 +5169,7 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 ///
 /// # State Modified
 /// - `state.utf8_txt_display_buffers` - Filled with line numbers and visible text
-/// - `state.display_utf8txt_buffer_lengths` - Set to actual bytes used per row
+/// - `state.display_utf8txt_buffer_lengths` - Set to bytes used per row
 /// - `state.window_map` - Updated with file position for each display cell
 ///
 /// # Defensive Programming
@@ -5788,7 +5796,7 @@ fn get_home_directory() -> io::Result<PathBuf> {
                 ));
             }
 
-            // Defensive: Verify it's actually a directory
+            // Defensive: Verify it's a directory
             if !home_path.is_dir() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -5966,7 +5974,7 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
         }
     };
 
-    // Defensive: Verify this is actually a session directory
+    // Defensive: Verify this is a session directory
     let path_str = session_dir.to_string_lossy();
     if !path_str.contains("lines_data") || !path_str.contains("sessions") {
         return Err(io::Error::new(
@@ -5984,7 +5992,7 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
         return Ok(());
     }
 
-    // Defensive: Verify it's actually a directory
+    // Defensive: Verify it's a directory
     if !session_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -7335,7 +7343,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         ));
     }
 
-    // Defensive: Check source path is actually a file (not directory)
+    // Defensive: Check source path is a file (not directory)
     // Attempting to read a directory would cause confusing errors later
     if !source_path.is_file() {
         state.set_info_bar_message("not a file");
@@ -7453,7 +7461,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         }
 
         // Read next chunk from source file
-        // Returns Ok(n) where n = bytes actually read (0 = EOF)
+        // Returns Ok(n) where n = bytes read (0 = EOF)
         let bytes_read = match source_file.read(&mut buffer) {
             Ok(n) => n,
             Err(e) => {
@@ -7678,7 +7686,7 @@ fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io
     // Write the shifted bytes (what was at position, now at position+insert_size)
     file.write_all(&after_buffer[..bytes_after])?;
 
-    // Flush to ensure data actually written to disk
+    // Flush to ensure data written to disk
     // Without flush, data might sit in OS buffer cache
     file.flush()?;
 
@@ -8524,9 +8532,19 @@ pub fn render_tui_hex(state: &EditorState) -> Result<()> {
     let legend = format_navigation_legend()?;
     println!("{}", legend);
 
+    // padding
+    for _ in 0..5 {
+        println!();
+    }
+
     // === MIDDLE: HEX + UTF-8 DISPLAY (2 lines) ===
     let hex_display = render_hex_row(state)?;
     print!("{}", hex_display);
+
+    // padding
+    for _ in 0..14 {
+        println!();
+    }
 
     // === BOTTOM LINE: INFO BAR ===
     let info_bar = format_hex_info_bar(state)?;
@@ -8559,6 +8577,16 @@ pub fn render_tui_hex(state: &EditorState) -> Result<()> {
 /// H  e  l  l  o     W  o  r  l  d  ␊  A  B
 /// ```
 ///
+/// # IMPORTANT: Display Logic
+/// The display shows the ENTIRE ROW containing the cursor, not starting from cursor.
+///
+/// Example: If cursor is at byte 28 (row 1, column 2):
+/// - Row 1 starts at byte 26 (row * bytes_per_row = 1 * 26 = 26)
+/// - Display bytes 26-51
+/// - Highlight byte 28 (column 2 within that row)
+///
+/// This keeps the row stable as cursor moves within it.
+///
 /// # Cursor Highlighting
 /// Current byte shown with: BOLD + RED + WHITE_BG
 /// Example: `48` becomes `[1m[31m[47m48[0m`
@@ -8569,7 +8597,7 @@ pub fn render_tui_hex(state: &EditorState) -> Result<()> {
 /// - Control chars shown with Unicode symbols:
 ///   - 0x0A (newline) → ␊
 ///   - 0x09 (tab) → ␉
-///   - 0x20 (space) → · (visible space)
+///   - 0x20 (space) → ⎕ (visible space)
 ///
 /// # Memory Safety
 /// - Pre-allocates 26-byte buffer
@@ -8597,11 +8625,23 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
         .as_ref()
         .ok_or_else(|| LinesError::StateError("No file path in hex mode".to_string()))?;
 
-    // Open file and seek to current position
+    // Open file
     let mut file = File::open(file_path).map_err(|e| LinesError::Io(e))?;
 
-    // Seek to hex cursor position
-    file.seek(io::SeekFrom::Start(state.hex_cursor.byte_offset as u64))
+    // ===================================================================
+    // KEY FIX: Calculate ROW START, not cursor position
+    // ===================================================================
+    // If cursor is at byte 28:
+    //   - current_row() = 28 / 26 = 1 (integer division)
+    //   - row_start_offset = 1 * 26 = 26
+    //   - We display bytes 26-51 (the entire second row)
+    //   - Cursor highlights byte 28 (column 2 of that row)
+    // ===================================================================
+    let current_row = state.hex_cursor.current_row();
+    let row_start_offset = current_row * state.hex_cursor.bytes_per_row;
+
+    // Seek to START OF ROW, not cursor position
+    file.seek(io::SeekFrom::Start(row_start_offset as u64))
         .map_err(|e| LinesError::Io(e))?;
 
     // Read up to 26 bytes (may be less at EOF)
@@ -8650,6 +8690,158 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
     let result = format!("{}\n{}\n", hex_line.trim_end(), utf8_line.trim_end());
 
     Ok(result)
+}
+
+/// Finds the next newline byte position after current cursor
+///
+/// # Purpose
+/// Searches forward from current position to find next 0x0A byte.
+/// Used for "next line" navigation in hex mode.
+///
+/// # Arguments
+/// * `file_path` - Path to file to search
+/// * `start_offset` - Byte position to start searching from (exclusive)
+/// * `file_size` - Total file size for bounds checking
+///
+/// # Returns
+/// * `Ok(Some(position))` - Found newline at this byte offset
+/// * `Ok(None)` - No newline found before EOF
+/// * `Err(e)` - File read error
+///
+/// # Search Strategy
+/// Reads file in 256-byte chunks to avoid loading entire file.
+/// Bounded by file size to prevent infinite loops.
+///
+/// # Memory Safety
+/// - Pre-allocated 256-byte buffer (no dynamic allocation)
+/// - Bounded iteration (stops at EOF)
+/// - Returns position, not reference (no lifetime issues)
+fn find_next_newline(
+    file_path: &PathBuf,
+    start_offset: usize,
+    file_size: usize,
+) -> io::Result<Option<usize>> {
+    const SEARCH_CHUNK_SIZE: usize = 256;
+    let mut buffer = [0u8; SEARCH_CHUNK_SIZE];
+
+    let mut file = File::open(file_path)?;
+
+    // Start search from byte AFTER current position
+    let mut current_offset = start_offset + 1;
+
+    // Defensive: don't start past EOF
+    if current_offset >= file_size {
+        return Ok(None);
+    }
+
+    // Bounded search: iterate through file in chunks
+    let max_iterations = (file_size / SEARCH_CHUNK_SIZE) + 2; // +2 for safety
+    let mut iteration = 0;
+
+    while current_offset < file_size && iteration < max_iterations {
+        iteration += 1;
+
+        // Seek to current position
+        file.seek(io::SeekFrom::Start(current_offset as u64))?;
+
+        // Read chunk
+        let bytes_read = file.read(&mut buffer)?;
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        // Search for newline in this chunk
+        for i in 0..bytes_read {
+            if buffer[i] == 0x0A {
+                return Ok(Some(current_offset + i));
+            }
+        }
+
+        // Move to next chunk
+        current_offset += bytes_read;
+    }
+
+    Ok(None) // No newline found
+}
+
+/// Finds the previous newline byte position before current cursor
+///
+/// # Purpose
+/// Searches backward from current position to find previous 0x0A byte.
+/// Used for "previous line" navigation in hex mode.
+///
+/// # Arguments
+/// * `file_path` - Path to file to search
+/// * `start_offset` - Byte position to start searching from (exclusive)
+///
+/// # Returns
+/// * `Ok(Some(position))` - Found newline at this byte offset
+/// * `Ok(None)` - No newline found before file start
+/// * `Err(e)` - File read error
+///
+/// # Search Strategy
+/// Reads file in 256-byte chunks backward from cursor position.
+/// Stops at byte 0 (file start).
+///
+/// # Memory Safety
+/// - Pre-allocated 256-byte buffer
+/// - Bounded iteration (stops at offset 0)
+/// - Underflow protection (checked subtraction)
+fn find_previous_newline(file_path: &PathBuf, start_offset: usize) -> io::Result<Option<usize>> {
+    const SEARCH_CHUNK_SIZE: usize = 256;
+    let mut buffer = [0u8; SEARCH_CHUNK_SIZE];
+
+    if start_offset == 0 {
+        return Ok(None); // Already at start
+    }
+
+    let mut file = File::open(file_path)?;
+
+    // Start search from byte BEFORE current position
+    let mut current_offset = start_offset.saturating_sub(1);
+
+    // Bounded search: maximum iterations
+    let max_iterations = (start_offset / SEARCH_CHUNK_SIZE) + 2;
+    let mut iteration = 0;
+
+    loop {
+        iteration += 1;
+
+        if iteration > max_iterations {
+            break; // Safety bound reached
+        }
+
+        // Calculate chunk start (search backward)
+        let chunk_start = current_offset.saturating_sub(SEARCH_CHUNK_SIZE - 1);
+        let chunk_size = current_offset - chunk_start + 1;
+
+        // Seek to chunk start
+        file.seek(io::SeekFrom::Start(chunk_start as u64))?;
+
+        // Read chunk
+        let bytes_read = file.read(&mut buffer[..chunk_size])?;
+
+        if bytes_read == 0 {
+            break; // Unexpected EOF
+        }
+
+        // Search backward through chunk
+        for i in (0..bytes_read).rev() {
+            if buffer[i] == 0x0A {
+                return Ok(Some(chunk_start + i));
+            }
+        }
+
+        // Move to previous chunk
+        if chunk_start == 0 {
+            break; // Reached file start
+        }
+
+        current_offset = chunk_start.saturating_sub(1);
+    }
+
+    Ok(None) // No newline found
 }
 
 /// Converts a byte to a displayable character for hex editor UTF-8 line
@@ -9165,27 +9357,27 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
         //  Iput
         //  ====
         if lines_editor_state.mode == EditorMode::Insert {
-            //  ///////////
+            //  ===========
             //  Insert Mode
-            //  ///////////
+            //  ===========
             keep_editor_loop_running = lines_editor_state
                 .handle_utf8txt_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
         } else if lines_editor_state.mode == EditorMode::PastyMode {
-            //  ///////////
+            //  ==========
             //  Pasty Mode
-            //  ///////////
+            //  ==========
             keep_editor_loop_running =
                 lines_editor_state.pasty_mode(&mut stdin_handle, &mut text_buffer)?;
-        // } else if lines_editor_state.mode = EditorMode::HexMode {
-        //     //  ///////////////
-        //     //  Hex Editor Mode
-        //     //  ///////////////
-        //     keep_editor_loop_running =
-        //         lines_editor_state.handle_hex_mode_input(&mut stdin_handle, &mut text_buffer)?;
+        } else if lines_editor_state.mode == EditorMode::HexMode {
+            //  ===============
+            //  Hex Editor Mode
+            //  ===============
+            keep_editor_loop_running =
+                lines_editor_state.handle_hex_mode_input(&mut stdin_handle, &mut command_buffer)?;
         } else {
-            //  ///////////////////////////////////////////
+            //  ==========================================
             //  IF in Normal/Visual mode: parse as command
-            //  ///////////////////////////////////////////
+            //  ==========================================
             keep_editor_loop_running = lines_editor_state
                 .handle_normalmode_and_visualmode_input(&mut stdin_handle, &mut command_buffer)?;
         }
