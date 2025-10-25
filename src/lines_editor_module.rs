@@ -2319,6 +2319,15 @@ pub struct EditorState {
     // /// Pre-allocated buffer for insert mode text input
     // /// Used to capture user input before inserting into file
     // pub tofile_insert_input_chunk_buffer: [u8; TOFILE_INSERTBUFFER_CHUNK_SIZE], // not used
+    /// EOF information for the currently displayed window
+    /// None = EOF not visible in current window
+    /// Some((file_line_of_eof, eof_tui_display_row)) = EOF position
+    eof_fileline_tuirow_tuple: Option<(usize, usize)>,
+
+    // /// Total lines in file (if known/calculated)
+    // /// None = not yet determined
+    // /// Some(count) = definitive line count
+    // total_file_lines: Option<usize>,
 
     // /// TODO is this needed?
     // /// Number of valid bytes in tofile_insert_input_chunk_buffer
@@ -2371,7 +2380,8 @@ impl EditorState {
             // Display buffers - initialized to zero
             display_buffers: [[0u8; 182]; 45],
             display_buffer_lengths: [0usize; 45],
-
+            eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
+            // total_file_lines: None,
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
     }
@@ -4919,6 +4929,10 @@ pub fn build_windowmap_nowrap(
     state.clear_display_buffers();
     state.window_map.clear();
 
+    // Clear EOF tracking - will be rediscovered if EOF appears in this window
+    // Note: file state changes with every edit, must refresh
+    state.eof_fileline_tuirow_tuple = None;
+
     // Open file for reading
     let mut file = File::open(readcopy_file_path)?;
 
@@ -4940,6 +4954,9 @@ pub fn build_windowmap_nowrap(
     // Defensive: Limit iterations to prevent infinite loops
     let mut iteration_count = 0;
 
+    // Clear EOF tracking at start of rebuild
+    state.eof_fileline_tuirow_tuple = None;
+
     // Process lines until display is full or file ends
     while current_display_row < state.effective_rows && iteration_count < limits::WINDOW_BUILD_LINES
     {
@@ -4952,8 +4969,34 @@ pub fn build_windowmap_nowrap(
         let (line_bytes, line_length, found_newline) =
             read_single_line(&mut file, &mut line_buffer)?;
 
+        // // Check for end of file
+        // if line_length == 0 && !found_newline {
+        //     break; // End of file reached
+        // }
+
         // Check for end of file
         if line_length == 0 && !found_newline {
+            // EOF detected - record position for cursor movement boundaries
+
+            if lines_processed > 0 {
+                // We processed at least one line before hitting EOF
+                // The last valid line is one before current position
+                let last_valid_file_line = current_line_number.saturating_sub(1);
+                let last_valid_display_row = current_display_row.saturating_sub(1);
+
+                state.eof_fileline_tuirow_tuple = Some((
+                    last_valid_file_line,   // File line number (0-indexed)
+                    last_valid_display_row, // TUI display row (0-indexed)
+                ));
+            } else {
+                // No lines processed - positioned at or past EOF from start
+                // This happens with empty files or seeking past end
+                state.eof_fileline_tuirow_tuple = Some((
+                    current_line_number, // Current file line position (0-indexed)
+                    current_display_row, // Current display row (0-indexed)
+                ));
+            }
+
             break; // End of file reached
         }
 
@@ -5824,8 +5867,109 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             Ok(true)
         }
 
+        // Command::MoveDown(count) => {
+        //     // Vim-like behavior: move cursor down, scroll window if at bottom edge
+        //     // Handle downward cursor movement with EOF boundary enforcement
+        //     //
+        //     // # Behavior
+        //     // - Moves cursor down within visible window when possible
+        //     // - Scrolls window down when cursor at bottom edge
+        //     // - Stops at EOF: cursor cannot move past last line
+        //     // - Gracefully handles all boundary conditions
+        //     //
+        //     // # EOF Handling
+        //     // - If EOF visible in window: cursor stops at EOF display row
+        //     // - If EOF visible and cursor at bottom: no scrolling occurs
+        //     // - If EOF not visible: normal movement and scrolling
+
+        //     let mut remaining_moves = count;
+        //     let mut needs_rebuild = false;
+
+        //     // Defensive: Limit iterations
+        //     let mut iterations = 0;
+
+        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+        //         iterations += 1;
+
+        //         // Calculate space available before bottom edge
+        //         let bottom_edge = state.effective_rows.saturating_sub(1);
+
+        //         if state.cursor.row < bottom_edge {
+        //             // Cursor can move down within visible window
+        //             let space_available = bottom_edge - state.cursor.row;
+        //             let cursor_moves = remaining_moves.min(space_available);
+        //             state.cursor.row += cursor_moves;
+        //             remaining_moves -= cursor_moves;
+        //         } else {
+        //             // Cursor at bottom edge, scroll window down
+        //             // Note: We should track total file lines to prevent scrolling past EOF
+        //             // For now, scroll unconditionally (will show empty lines at EOF)
+        //             state.line_count_at_top_of_window += remaining_moves;
+        //             remaining_moves = 0;
+        //             needs_rebuild = true;
+        //         }
+        //     }
+
+        //     // Defensive: Check iteration limit
+        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
+        //         return Err(io::Error::new(
+        //             io::ErrorKind::Other,
+        //             "Maximum iterations exceeded in MoveDown",
+        //         ));
+        //     }
+
+        //     // // Rebuild window if we scrolled
+        //     // if needs_rebuild {
+        //     //     // Rebuild window to show the change from read-copy file
+        //     //     build_windowmap_nowrap(state, &edit_file_path)?;
+        //     // }
+
+        //     // Rebuild window if we scrolled
+        //     if needs_rebuild {
+        //         // Rebuild window to show new content from file
+        //         build_windowmap_nowrap(state, &edit_file_path)?;
+
+        //         // Defensive: After scrolling, verify cursor position is valid
+        //         // If EOF is now visible, ensure cursor didn't scroll past it
+        //         match state.eof_fileline_tuirow_tuple {
+        //             Some((file_line_of_eof, eof_tui_display_row)) => {
+        //                 // EOF is visible in rebuilt window
+        //                 if state.cursor.row > eof_tui_display_row {
+        //                     // CRITICAL ERROR: Cursor is past EOF after rebuild
+        //                     // This indicates a logic error in scrolling or rebuild
+        //                     return Err(io::Error::new(
+        //                         io::ErrorKind::Other,
+        //                         format!(
+        //                             "Cursor position {} exceeds EOF at display row {} (file line {})",
+        //                             state.cursor.row, eof_tui_display_row, file_line_of_eof
+        //                         ),
+        //                     ));
+        //                 }
+        //                 // Cursor position is valid (at or before EOF)
+        //             }
+        //             None => {
+        //                 // EOF not visible in window, cursor position cannot be validated
+        //                 // against EOF. This is normal for large files.
+        //             }
+        //         }
+        //     }
+
+        //     Ok(true)
+        // }
         Command::MoveDown(count) => {
             // Vim-like behavior: move cursor down, scroll window if at bottom edge
+            // Handle downward cursor movement with EOF boundary enforcement
+            //
+            // # Behavior
+            // - Moves cursor down within visible window when possible
+            // - Scrolls window down when cursor at bottom edge
+            // - Stops at EOF: cursor cannot move past last line
+            // - Gracefully handles all boundary conditions
+            //
+            // # EOF Handling
+            // - If EOF visible in window: cursor stops at EOF display row
+            // - If EOF visible and cursor at bottom: no scrolling occurs
+            // - If EOF not visible: normal movement and scrolling
 
             let mut remaining_moves = count;
             let mut needs_rebuild = false;
@@ -5841,14 +5985,36 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
                 if state.cursor.row < bottom_edge {
                     // Cursor can move down within visible window
-                    let space_available = bottom_edge - state.cursor.row;
+                    // Check if EOF limits movement
+                    let space_available =
+                        if let Some((_eof_line, eof_row)) = state.eof_fileline_tuirow_tuple {
+                            if state.cursor.row < eof_row {
+                                // Can move toward EOF
+                                (eof_row - state.cursor.row).min(bottom_edge - state.cursor.row)
+                            } else {
+                                // At or past EOF, cannot move
+                                0
+                            }
+                        } else {
+                            // No EOF visible, normal movement
+                            bottom_edge - state.cursor.row
+                        };
+
+                    if space_available == 0 {
+                        break;
+                    }
+
                     let cursor_moves = remaining_moves.min(space_available);
                     state.cursor.row += cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else {
-                    // Cursor at bottom edge, scroll window down
-                    // Note: We should track total file lines to prevent scrolling past EOF
-                    // For now, scroll unconditionally (will show empty lines at EOF)
+                    // Cursor at bottom edge, try: scroll window down
+                    // Check if EOF is visible (prevents scrolling past end)
+                    if state.eof_fileline_tuirow_tuple.is_some() {
+                        // EOF visible, cannot scroll further
+                        break;
+                    }
+
                     state.line_count_at_top_of_window += remaining_moves;
                     remaining_moves = 0;
                     needs_rebuild = true;
@@ -5863,10 +6029,33 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
                 ));
             }
 
+            // // Rebuild window if we scrolled
+            // if needs_rebuild {
+            //     // Rebuild window to show the change from read-copy file
+            //     build_windowmap_nowrap(state, &edit_file_path)?;
+            // }
+
             // Rebuild window if we scrolled
             if needs_rebuild {
-                // Rebuild window to show the change from read-copy file
+                // Rebuild window to show new content from file
                 build_windowmap_nowrap(state, &edit_file_path)?;
+
+                // Defensive: After scrolling, verify cursor didn't scroll past EOF
+                match state.eof_fileline_tuirow_tuple {
+                    Some((_file_line_of_eof, eof_tui_display_row)) => {
+                        // EOF is visible in rebuilt window
+                        // file_line_of_eof = file line number where EOF occurs
+                        // eof_tui_display_row = display row showing EOF
+
+                        if state.cursor.row > eof_tui_display_row {
+                            // Cursor past EOF, clamp to EOF position
+                            state.cursor.row = eof_tui_display_row;
+                        }
+                    }
+                    None => {
+                        // EOF not visible in window, no clamping needed
+                    }
+                }
             }
 
             Ok(true)
