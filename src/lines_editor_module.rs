@@ -68,12 +68,26 @@ Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 
 
 4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
-5. Defensive programming:
-- use asserts: usually an average of a minimum of two assertions per function
+5. Defensive programming: safely check, not 'assert!' panic
+For production-release code:
+1. use "checks for bad stuff" that are always present in production
+2. use "checks for bad stuff" that return result (such as Result<T, E>) and smoothly handle errors (not halt-panic stopping the application): no assert!() outside of test-only code
+3. use #[cfg(test)] assert!() to test production binaries
+4. use debug_assert to test debug builds/runs.
+5. use defensive programming with recovery of all issues at all times
 - use cargo tests
-- use error handling
+- use debug_asserts
+- do not leave assertions in production code.
+- use no-panic error handling
 - use Option
 - use enums and structs
+- check bounds
+- check returns
+- note: a test-flagged assert can test a production release build (whereas debug_assert cannot); cargo test --release
+```
+#[cfg(test)]
+assert!(
+```
 
 6. ? Is this about ownership of variables?
 - maybe: manage rust ownership to avoid heap or memory-bloat
@@ -1522,7 +1536,8 @@ impl FixedSize32Timestamp {
     /// # Errors
     /// Returns error if internal data is not valid UTF-8
     pub fn as_str(&self) -> Result<&str> {
-        // Assertion: Internal invariant check
+        // Test-Only Assertion: Internal invariant check
+        #[cfg(test)]
         assert!(
             self.len <= 32,
             "Internal invariant violated: length exceeds buffer size"
@@ -4219,6 +4234,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
         };
 
         // Defensive assertion: bytes_read should never exceed buffer size
+        #[cfg(test)]
         assert!(
             bytes_read <= STDIN_CHUNK_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
@@ -7079,6 +7095,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // Defensive assertion: bytes_read should never exceed buffer size
         // If it does, indicates memory corruption or cosmic ray bit flip
         // This is the only panic point - for catastrophic failure only
+        #[cfg(test)]
         assert!(
             bytes_read <= CHUNK_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
