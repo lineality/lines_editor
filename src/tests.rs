@@ -46,8 +46,8 @@ use std::path::{Path, PathBuf};
 
 //     // Content rows
 //     for row in 0..state.effective_rows {
-//         if state.display_buffer_lengths[row] > 0 {
-//             let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+//         if state.display_utf8txt_buffer_lengths[row] > 0 {
+//             let row_content = &state.display_buffers[row][..state.display_utf8txt_buffer_lengths[row]];
 
 //             match std::str::from_utf8(row_content) {
 //                 Ok(row_str) => {
@@ -394,7 +394,7 @@ fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
 //     //     assert!(lines_processed > 0, "Should process at least one line");
@@ -421,7 +421,7 @@ fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
 //     //     assert!(lines_processed > 0, "Should process at least one line");
@@ -453,7 +453,7 @@ mod build_window_tests4 {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         let result = build_windowmap_nowrap(&mut state, basic_file);
         assert!(result.is_ok(), "Should build window successfully");
@@ -462,11 +462,11 @@ mod build_window_tests4 {
         assert!(lines_processed > 0, "Should process at least one line");
 
         assert!(
-            state.display_buffer_lengths[0] > 0,
+            state.display_utf8txt_buffer_lengths[0] > 0,
             "First row should have content"
         );
 
-        let first_row = &state.display_buffers[0];
+        let first_row = &state.utf8_txt_display_buffers[0];
         assert_eq!(first_row[0], b'1', "Should start with line number 1");
         assert_eq!(first_row[1], b' ', "Should have space after line number");
 
@@ -490,7 +490,7 @@ mod build_window_tests3 {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         // Debug: print file path
         println!("Test file path: {:?}", basic_file);
@@ -511,8 +511,9 @@ mod build_window_tests3 {
 
         // Debug: print buffer contents
         for i in 0..5 {
-            if state.display_buffer_lengths[i] > 0 {
-                let content = &state.display_buffers[i][..state.display_buffer_lengths[i]];
+            if state.display_utf8txt_buffer_lengths[i] > 0 {
+                let content =
+                    &state.utf8_txt_display_buffers[i][..state.display_utf8txt_buffer_lengths[i]];
                 println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
             }
         }
@@ -521,12 +522,12 @@ mod build_window_tests3 {
 
         // Verify first line has content
         assert!(
-            state.display_buffer_lengths[0] > 0,
+            state.display_utf8txt_buffer_lengths[0] > 0,
             "First row should have content"
         );
 
         // Verify line number "1 " appears at start
-        let first_row = &state.display_buffers[0];
+        let first_row = &state.utf8_txt_display_buffers[0];
         assert_eq!(first_row[0], b'1', "Should start with line number 1");
         assert_eq!(first_row[1], b' ', "Should have space after line number");
 
@@ -704,7 +705,7 @@ mod char_width_tests {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     // Build window map
 //     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
@@ -741,7 +742,7 @@ mod char_width_tests {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     // Build window map
 //     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
@@ -785,7 +786,7 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
     let mut state = EditorState::new();
     state.line_count_at_top_of_window = 0;
     state.file_position_of_topline_start = 0;
-    state.horizontal_line_char_offset = 0;
+    state.horizontal_utf8txt_line_char_offset = 0;
 
     // Debug: print file path and existence
     println!("Test file path: {:?}", basic_file);
@@ -812,8 +813,9 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
 
     // Debug: print buffer contents
     for i in 0..5 {
-        if state.display_buffer_lengths[i] > 0 {
-            let content = &state.display_buffers[i][..state.display_buffer_lengths[i]];
+        if state.display_utf8txt_buffer_lengths[i] > 0 {
+            let content =
+                &state.utf8_txt_display_buffers[i][..state.display_utf8txt_buffer_lengths[i]];
             println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
         }
     }
@@ -822,12 +824,12 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
 
     // Verify first line has content
     assert!(
-        state.display_buffer_lengths[0] > 0,
+        state.display_utf8txt_buffer_lengths[0] > 0,
         "First row should have content"
     );
 
     // Verify line number "1 " appears at start
-    let first_row = &state.display_buffers[0];
+    let first_row = &state.utf8_txt_display_buffers[0];
     assert_eq!(first_row[0], b'1', "Should start with line number 1");
     assert_eq!(first_row[1], b' ', "Should have space after line number");
 
@@ -868,17 +870,17 @@ mod revised_critical_distinction_tests {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         let result = build_windowmap_nowrap(&mut state, &test_path);
         assert!(result.is_ok(), "Build window should succeed");
 
         // The display buffer should contain the line with line number
-        let first_row_len = state.display_buffer_lengths[0];
+        let first_row_len = state.display_utf8txt_buffer_lengths[0];
         assert!(first_row_len > 0, "First row should have content");
 
         // Verify content is valid UTF-8
-        let first_row_content = &state.display_buffers[0][..first_row_len];
+        let first_row_content = &state.utf8_txt_display_buffers[0][..first_row_len];
         let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
 
         // Should contain the line number "1 " and the text
@@ -917,17 +919,17 @@ mod revised_critical_distinction_tests {
 
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         let result = build_windowmap_nowrap(&mut state, &test_path);
         assert!(result.is_ok(), "Should handle narrow terminal");
 
         // First row should be limited by display columns (40), not buffer size (182)
-        let first_row_len = state.display_buffer_lengths[0];
+        let first_row_len = state.display_utf8txt_buffer_lengths[0];
         assert!(first_row_len <= 182, "Should not exceed buffer size");
         assert!(first_row_len > 0, "Should have content");
 
-        let first_row_content = &state.display_buffers[0][..first_row_len];
+        let first_row_content = &state.utf8_txt_display_buffers[0][..first_row_len];
         let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
 
         let display_width =
@@ -984,7 +986,7 @@ mod revised_boundary_tests {
 
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         // Build window
         let result = build_windowmap_nowrap(&mut state, &test_path);
@@ -997,11 +999,12 @@ mod revised_boundary_tests {
             // ADD DIAGNOSTIC: Show where in the process we failed
             println!("\nState at failure:");
             println!(
-                "- display_buffer_lengths[0]: {}",
-                state.display_buffer_lengths[0]
+                "- display_utf8txt_buffer_lengths[0]: {}",
+                state.display_utf8txt_buffer_lengths[0]
             );
-            if state.display_buffer_lengths[0] > 0 {
-                let partial_content = &state.display_buffers[0][..state.display_buffer_lengths[0]];
+            if state.display_utf8txt_buffer_lengths[0] > 0 {
+                let partial_content =
+                    &state.utf8_txt_display_buffers[0][..state.display_utf8txt_buffer_lengths[0]];
                 if let Ok(s) = std::str::from_utf8(partial_content) {
                     println!("- Partial row content: {:?}", s);
                 }
@@ -1011,7 +1014,8 @@ mod revised_boundary_tests {
         assert!(result.is_ok(), "Should build window successfully");
 
         // Verify no invalid UTF-8 (which would indicate a split)
-        let row_content = &state.display_buffers[0][..state.display_buffer_lengths[0]];
+        let row_content =
+            &state.utf8_txt_display_buffers[0][..state.display_utf8txt_buffer_lengths[0]];
         let parse_result = std::str::from_utf8(row_content);
 
         assert!(
@@ -1059,7 +1063,7 @@ mod revised_terminal_width_tests {
         state.resize_terminal(24, 80)?;
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_line_char_offset = 0;
+        state.horizontal_utf8txt_line_char_offset = 0;
 
         // Build window
         let result = build_windowmap_nowrap(&mut state, &test_path);
@@ -1067,8 +1071,9 @@ mod revised_terminal_width_tests {
 
         // Verify no row exceeds terminal width
         for row in 0..state.effective_rows {
-            if state.display_buffer_lengths[row] > 0 {
-                let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+            if state.display_utf8txt_buffer_lengths[row] > 0 {
+                let row_content = &state.utf8_txt_display_buffers[row]
+                    [..state.display_utf8txt_buffer_lengths[row]];
 
                 // Verify valid UTF-8
                 let row_str = std::str::from_utf8(row_content)
@@ -1108,7 +1113,7 @@ mod revised_terminal_width_tests {
             state.resize_terminal(rows, cols)?;
             state.line_count_at_top_of_window = 0;
             state.file_position_of_topline_start = 0;
-            state.horizontal_line_char_offset = 0;
+            state.horizontal_utf8txt_line_char_offset = 0;
 
             let result = build_windowmap_nowrap(&mut state, &test_path);
             assert!(
@@ -1120,9 +1125,9 @@ mod revised_terminal_width_tests {
 
             // Verify all rows respect terminal width
             for row in 0..state.effective_rows {
-                if state.display_buffer_lengths[row] > 0 {
-                    let row_content =
-                        &state.display_buffers[row][..state.display_buffer_lengths[row]];
+                if state.display_utf8txt_buffer_lengths[row] > 0 {
+                    let row_content = &state.utf8_txt_display_buffers[row]
+                        [..state.display_utf8txt_buffer_lengths[row]];
                     let row_str = std::str::from_utf8(row_content)
                         .expect(&format!("Row {} should be valid UTF-8", row));
                     let display_width =
@@ -1164,7 +1169,7 @@ mod revised_terminal_width_tests {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     // Build window with the test file
 //     //     let result = build_windowmap_nowrap(&mut state, &test_path);
@@ -1190,7 +1195,7 @@ mod revised_terminal_width_tests {
 //     //     // Verify WindowMap was populated for double-width characters
 //     //     // Check that Chinese characters in first line are properly mapped
 //     //     for row in 0..3 {
-//     //         if state.display_buffer_lengths[row] > 0 {
+//     //         if state.display_utf8txt_buffer_lengths[row] > 0 {
 //     //             // Check that we can get file positions from the map
 //     //             let pos = state.window_map.get_file_position(row, 5)?;
 //     //             assert!(
@@ -1213,7 +1218,7 @@ mod revised_terminal_width_tests {
 //     //     let mut state = EditorState::new();
 //     //     state.line_count_at_top_of_window = 0;
 //     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_line_char_offset = 0;
+//     //     state.horizontal_utf8txt_line_char_offset = 0;
 
 //     //     let result = build_windowmap_nowrap(&mut state, &test_path);
 //     //     assert!(result.is_ok(), "Should handle empty lines");
@@ -2321,5 +2326,90 @@ mod insert_file_tests {
 
         cleanup_test_file(&source_path);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hex_display_tests {
+    use super::*;
+
+    /// Test byte_to_display_char covers all ranges
+    #[cfg(test)]
+    #[test]
+    fn test_byte_to_display_char_printable_ascii() {
+        // Printable ASCII
+        assert_eq!(byte_to_display_char(0x41), 'A');
+        assert_eq!(byte_to_display_char(0x61), 'a');
+        assert_eq!(byte_to_display_char(0x30), '0');
+        assert_eq!(byte_to_display_char(0x7E), '~'); // Last printable
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_byte_to_display_char_control_chars() {
+        // Control characters
+        assert_eq!(byte_to_display_char(0x09), '␉'); // Tab
+        assert_eq!(byte_to_display_char(0x0A), '␊'); // LF
+        assert_eq!(byte_to_display_char(0x0D), '␍'); // CR
+        assert_eq!(byte_to_display_char(0x20), '⎕'); // Space (visible)
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_byte_to_display_char_unprintable() {
+        // Unprintable bytes
+        assert_eq!(byte_to_display_char(0x00), '▚'); // NULL
+        assert_eq!(byte_to_display_char(0x1F), '▚'); // Unit separator
+        assert_eq!(byte_to_display_char(0x7F), '▚'); // DEL
+        assert_eq!(byte_to_display_char(0x80), '▚'); // High byte
+        assert_eq!(byte_to_display_char(0xFF), '▚'); // Max byte
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_hex_cursor_row_col_calculation() {
+        let mut cursor = HexCursor::new();
+
+        // First row, first column
+        assert_eq!(cursor.current_row(), 0);
+        assert_eq!(cursor.current_col(), 0);
+
+        // First row, middle
+        cursor.byte_offset = 13;
+        assert_eq!(cursor.current_row(), 0);
+        assert_eq!(cursor.current_col(), 13);
+
+        // First row, last column (25)
+        cursor.byte_offset = 25;
+        assert_eq!(cursor.current_row(), 0);
+        assert_eq!(cursor.current_col(), 25);
+
+        // Second row, first column
+        cursor.byte_offset = 26;
+        assert_eq!(cursor.current_row(), 1);
+        assert_eq!(cursor.current_col(), 0);
+
+        // Second row, middle
+        cursor.byte_offset = 39;
+        assert_eq!(cursor.current_row(), 1);
+        assert_eq!(cursor.current_col(), 13);
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn test_hex_cursor_boundaries() {
+        let cursor = HexCursor::new();
+
+        // Verify constants
+        assert_eq!(cursor.bytes_per_row, 26);
+        assert_eq!(cursor.byte_offset, 0);
+
+        // Column should never exceed bytes_per_row - 1
+        let test_offset = 1000;
+        let test_cursor = HexCursor {
+            byte_offset: test_offset,
+            bytes_per_row: 26,
+        };
+        assert!(test_cursor.current_col() < 26);
     }
 }

@@ -985,7 +985,7 @@ const YELLOW: &str = "\x1b[33m";
 // use crate::limits;
 
 // ============================================================================
-// ERROR HANDLING SYSTEM (start)
+// ERROR SECTION: ERROR HANDLING SYSTEM (start)
 // ============================================================================
 
 /// Error types for the Lines text editor
@@ -2094,6 +2094,8 @@ pub enum EditorMode {
     PastyMode,
     /// Multi-cursor mode (ctrl+d equivalent)
     MultiCursor,
+    /// Hex Edict!
+    HexMode,
 }
 
 /// Line wrap mode setting
@@ -2304,16 +2306,20 @@ pub struct EditorState {
 
     /// For NoWrap mode: horizontal character offset for all displayed lines
     /// Example: Showing characters 20-97 of each line
-    pub horizontal_line_char_offset: usize,
+    pub horizontal_utf8txt_line_char_offset: usize,
 
     // === DISPLAY BUFFERS ===
     /// Pre-allocated buffers for each display row (45 rows × 80 chars)
     /// Each buffer holds one terminal row including line number and text
-    pub display_buffers: [[u8; 182]; 45],
+    pub utf8_txt_display_buffers: [[u8; 182]; 45],
 
     /// Actual bytes used in each display buffer
     /// Since lines can be shorter than 80 chars, we track actual usage
-    pub display_buffer_lengths: [usize; 45],
+    pub display_utf8txt_buffer_lengths: [usize; 45],
+
+    /// Hex mode cursor (byte position in file)
+    /// Only used when mode == EditorMode::HexMode
+    pub hex_cursor: HexCursor,
 
     // /// TODO: Should there be a clear-buffer method?
     // /// Pre-allocated buffer for insert mode text input
@@ -2323,11 +2329,6 @@ pub struct EditorState {
     /// None = EOF not visible in current window
     /// Some((file_line_of_eof, eof_tui_display_row)) = EOF position
     eof_fileline_tuirow_tuple: Option<(usize, usize)>,
-
-    // /// Total lines in file (if known/calculated)
-    // /// None = not yet determined
-    // /// Some(count) = definitive line count
-    // total_file_lines: Option<usize>,
 
     // /// TODO is this needed?
     // /// Number of valid bytes in tofile_insert_input_chunk_buffer
@@ -2375,11 +2376,12 @@ impl EditorState {
             file_position_of_topline_start: 0,
             linewrap_window_topline_startbyte_position: 0,
             linewrap_window_topline_char_offset: 0,
-            horizontal_line_char_offset: 0,
+            horizontal_utf8txt_line_char_offset: 0,
 
             // Display buffers - initialized to zero
-            display_buffers: [[0u8; 182]; 45],
-            display_buffer_lengths: [0usize; 45],
+            utf8_txt_display_buffers: [[0u8; 182]; 45],
+            display_utf8txt_buffer_lengths: [0usize; 45],
+            hex_cursor: HexCursor::new(),
             eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
             // total_file_lines: None,
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
@@ -3158,6 +3160,273 @@ impl EditorState {
         // Ok(keep_editor_loop_running)
     }
 
+    /// Handles all input when the editor is in Hex mode.
+    ///
+    /// # Overview
+    ///
+    /// This method handles hex editor navigation and commands:
+    /// 1. **Navigation** - Moving through file by bytes (h,j,k,l)
+    /// 2. **Mode switching** - Return to normal/insert mode
+    /// 3. **Commands** - Save, quit, etc.
+    ///
+    /// # Design Philosophy
+    ///
+    /// Hex mode is SIMPLER than insert mode because:
+    /// - No text insertion (read-only for MVP)
+    /// - No bucket brigade (single command per input)
+    /// - No newline ambiguity (just byte navigation)
+    /// - Movement is always 1 byte at a time
+    ///
+    /// # Navigation Commands
+    ///
+    /// | Input | Command | Action |
+    /// |-------|---------|--------|
+    /// | `h` | Move left | Previous byte |
+    /// | `l` | Move right | Next byte |
+    /// | `j` | Move down | Next row (26 bytes forward) |
+    /// | `k` | Move up | Previous row (26 bytes backward) |
+    /// | `w` | Word forward | Next 8 bytes (word boundary) |
+    /// | `b` | Word backward | Previous 8 bytes |
+    /// | `0` | Line start | First byte of current row |
+    /// | `$` | Line end | Last byte of current row |
+    /// | `gg` | File start | Byte 0 |
+    /// | `G` | File end | Last byte |
+    ///
+    /// # Mode Commands
+    ///
+    /// | Input | Action | Loop Control |
+    /// |-------|--------|--------------|
+    /// | `-n` or `ESC` | Normal mode | Continue |
+    /// | `-i` | Insert mode | Continue |
+    /// | `-s` or `-w` | Save | Continue |
+    /// | `-q` | Quit | **Stop** |
+    /// | `-wq` | Save & Quit | **Stop** |
+    ///
+    /// # Return Value Semantics
+    ///
+    /// * `Ok(true)` → Keep editor loop running
+    /// * `Ok(false)` → Exit editor (quit command)
+    /// * `Err(e)` → IO error, propagate to main
+    ///
+    /// # Arguments
+    ///
+    /// * `stdin_handle` - Locked stdin for reading commands
+    /// * `command_buffer` - Pre-allocated buffer for command input
+    ///
+    /// # Future Enhancements
+    ///
+    /// For full hex editor (beyond MVP):
+    /// - Byte editing (type hex digits to change bytes)
+    /// - Search (find byte sequences)
+    /// - Copy/paste byte ranges
+    /// - Undo/redo for byte changes
+    ///
+    /// # Defensive Programming
+    ///
+    /// - All movements bounded by file size
+    /// - Cursor clamped to valid byte positions
+    /// - No movement command can cause overflow
+    /// - File size checked before each navigation
+    fn handle_hex_mode_input(
+        &mut self,
+        stdin_handle: &mut StdinLock,
+        command_buffer: &mut [u8; WHOLE_COMMAND_BUFFER_SIZE],
+    ) -> io::Result<bool> {
+        // Default: keep editor loop running
+        let mut keep_editor_loop_running: bool = true;
+
+        // Clear command buffer before reading
+        for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
+            command_buffer[i] = 0;
+        }
+
+        // Read single command (no chunking needed in hex mode)
+        let bytes_read = stdin_handle.read(command_buffer)?;
+
+        if bytes_read == 0 {
+            // Empty input - just continue
+            self.set_info_bar_message("*no input*");
+            return Ok(true);
+        }
+
+        // Parse command from bytes
+        let command_input = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or("");
+        let trimmed = command_input.trim();
+
+        // Get file size for boundary checking
+        let file_size = match &self.read_copy_path {
+            Some(path) => match fs::metadata(path) {
+                Ok(metadata) => metadata.len() as usize,
+                Err(_) => {
+                    self.set_info_bar_message("Error: Cannot read file size");
+                    return Ok(true);
+                }
+            },
+            None => {
+                self.set_info_bar_message("Error: No file open");
+                return Ok(true);
+            }
+        };
+
+        // Defensive: Ensure cursor doesn't exceed file bounds
+        if self.hex_cursor.byte_offset >= file_size && file_size > 0 {
+            self.hex_cursor.byte_offset = file_size - 1;
+        }
+
+        //  ////////////////////////
+        //  Parse Hex Mode Commands
+        //  ////////////////////////
+
+        match trimmed {
+            // === MODE SWITCHING ===
+            "-n" | "\x1b" => {
+                // Exit to normal mode
+                keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
+            }
+
+            "-i" => {
+                // Exit to insert mode
+                keep_editor_loop_running = execute_command(self, Command::EnterInsertMode)?;
+            }
+
+            "-v" => {
+                // Exit to visual mode
+                keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
+            }
+
+            // === FILE COMMANDS ===
+            "-s" | "-w" => {
+                // Save file
+                keep_editor_loop_running = execute_command(self, Command::Save)?;
+            }
+
+            "-wq" => {
+                // Save and quit
+                keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
+            }
+
+            "-q" => {
+                // Quit without saving
+                keep_editor_loop_running = execute_command(self, Command::Quit)?;
+            }
+
+            // === NAVIGATION: LEFT/RIGHT (single byte) ===
+            "h" => {
+                // Move left (previous byte)
+                if self.hex_cursor.byte_offset > 0 {
+                    self.hex_cursor.byte_offset -= 1;
+                } else {
+                    self.set_info_bar_message("Already at start of file");
+                }
+            }
+
+            "l" => {
+                // Move right (next byte)
+                if self.hex_cursor.byte_offset + 1 < file_size {
+                    self.hex_cursor.byte_offset += 1;
+                } else {
+                    self.set_info_bar_message("Already at end of file");
+                }
+            }
+
+            // === NAVIGATION: UP/DOWN (row = 26 bytes) ===
+            "k" => {
+                // Move up one row (26 bytes backward)
+                let row_size = self.hex_cursor.bytes_per_row;
+                if self.hex_cursor.byte_offset >= row_size {
+                    self.hex_cursor.byte_offset -= row_size;
+                } else {
+                    // Already on first row - go to byte 0
+                    self.hex_cursor.byte_offset = 0;
+                    self.set_info_bar_message("At first row");
+                }
+            }
+
+            "j" => {
+                // Move down one row (26 bytes forward)
+                let row_size = self.hex_cursor.bytes_per_row;
+                let new_offset = self.hex_cursor.byte_offset + row_size;
+
+                if new_offset < file_size {
+                    self.hex_cursor.byte_offset = new_offset;
+                } else {
+                    // Would go past EOF - move to last byte
+                    if file_size > 0 {
+                        self.hex_cursor.byte_offset = file_size - 1;
+                    }
+                    self.set_info_bar_message("At last row");
+                }
+            }
+
+            // === NAVIGATION: WORD BOUNDARIES (8 bytes) ===
+            "w" => {
+                // Word forward (8 bytes)
+                let new_offset = self.hex_cursor.byte_offset + 8;
+
+                if new_offset < file_size {
+                    self.hex_cursor.byte_offset = new_offset;
+                } else if file_size > 0 {
+                    // Clamp to last byte
+                    self.hex_cursor.byte_offset = file_size - 1;
+                    self.set_info_bar_message("End of file");
+                }
+            }
+
+            "b" => {
+                // Word backward (8 bytes)
+                if self.hex_cursor.byte_offset >= 8 {
+                    self.hex_cursor.byte_offset -= 8;
+                } else {
+                    // Clamp to start
+                    self.hex_cursor.byte_offset = 0;
+                    self.set_info_bar_message("Start of file");
+                }
+            }
+
+            // === NAVIGATION: LINE START/END ===
+            "0" => {
+                // Go to start of current row
+                let row = self.hex_cursor.current_row();
+                self.hex_cursor.byte_offset = row * self.hex_cursor.bytes_per_row;
+            }
+
+            "$" => {
+                // Go to end of current row (or last byte if row incomplete)
+                let row = self.hex_cursor.current_row();
+                let row_end = (row + 1) * self.hex_cursor.bytes_per_row - 1;
+
+                if row_end < file_size {
+                    self.hex_cursor.byte_offset = row_end;
+                } else if file_size > 0 {
+                    // Row is incomplete - go to last byte
+                    self.hex_cursor.byte_offset = file_size - 1;
+                }
+            }
+
+            // === NAVIGATION: FILE START/END ===
+            "gg" => {
+                // Go to start of file
+                self.hex_cursor.byte_offset = 0;
+                self.set_info_bar_message("Start of file");
+            }
+
+            "G" => {
+                // Go to end of file
+                if file_size > 0 {
+                    self.hex_cursor.byte_offset = file_size - 1;
+                    self.set_info_bar_message("End of file");
+                }
+            }
+
+            // === UNKNOWN COMMAND ===
+            _ => {
+                self.set_info_bar_message(&format!("Unknown hex command: {}", trimmed));
+            }
+        }
+
+        Ok(keep_editor_loop_running)
+    }
+
     /// Handles all input when the editor is in Insert mode.
     ///
     /// # Overview
@@ -3323,7 +3592,7 @@ impl EditorState {
     ///
     /// ```ignore
     /// if state.mode == EditorMode::Insert {
-    ///     keep_editor_loop_running = state.handle_insert_mode_input(
+    ///     keep_editor_loop_running = state.handle_utf8txt_insert_mode_input(
     ///         &mut stdin_handle,
     ///         &mut text_buffer
     ///     )?;
@@ -3344,7 +3613,7 @@ impl EditorState {
     /// * Takes `&mut text_buffer` to reuse pre-allocated buffer
     /// * All three borrows are independent - no ownership conflicts
     /// * `read_copy` is cloned from `self.read_copy_path` to avoid borrow conflicts
-    fn handle_insert_mode_input(
+    fn handle_utf8txt_insert_mode_input(
         &mut self,
         stdin_handle: &mut StdinLock,
         text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
@@ -3442,6 +3711,7 @@ impl EditorState {
 
         // Check for exit insert mode commands
         if trimmed == "-n" || trimmed == "\x1b" {
+            // \x1b is Esc key
             // Exit insert mode
             keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
 
@@ -3634,7 +3904,7 @@ impl EditorState {
         // In insert mode, most keys are text, not commands
         if current_mode == EditorMode::Insert {
             // Check for escape sequences to exit insert mode
-            if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "n" {
+            if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "-n" {
                 return Command::EnterNormalMode;
             }
 
@@ -3696,9 +3966,10 @@ impl EditorState {
         ```
          */
 
-        if current_mode == EditorMode::Normal {
+        if current_mode == EditorMode::Normal || current_mode == EditorMode::HexMode {
             match command_str {
                 // Single character commands
+                "n" | "\x1b" => Command::EnterNormalMode, // if only for hex mode to use...
                 "h" => Command::MoveLeft(count),
                 "\x1b[D" => Command::MoveLeft(count), // left over arrow
                 "j" => Command::MoveDown(count),
@@ -3714,6 +3985,7 @@ impl EditorState {
                 "s" | "w" => Command::Save,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
+                "hex" => Command::EnterHexEditMode,
                 // "wrap" => Command::ToggleWrap,
                 // "gg" => Command::MoveToTop,
                 "d" => Command::DeleteLine,
@@ -3731,6 +4003,7 @@ impl EditorState {
                 "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
 
                 "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
+                "hex" => Command::EnterHexEditMode,
                 // Some('p') => Command::PastyClipboard(count),
                 // // TODO: Make These, Command::Select...
                 // Some('w') => Command::SelectNextWord,
@@ -3977,13 +4250,13 @@ impl EditorState {
     /// # Purpose
     /// Called before rebuilding window content to ensure clean slate
     /// Defensive programming: explicitly zeros all buffers
-    pub fn clear_display_buffers(&mut self) {
+    pub fn clear_utf8_displaybuffers(&mut self) {
         // Defensive: Clear each buffer completely
         for row_idx in 0..45 {
             for col_idx in 0..80 {
-                self.display_buffers[row_idx][col_idx] = 0;
+                self.utf8_txt_display_buffers[row_idx][col_idx] = 0;
             }
-            self.display_buffer_lengths[row_idx] = 0;
+            self.display_utf8txt_buffer_lengths[row_idx] = 0;
         }
     }
 
@@ -4029,7 +4302,7 @@ impl EditorState {
 
         // Copy to buffer
         let bytes_to_write = line_bytes.len().min(182); // Safety check against buffer size
-        self.display_buffers[row_idx][..bytes_to_write]
+        self.utf8_txt_display_buffers[row_idx][..bytes_to_write]
             .copy_from_slice(&line_bytes[..bytes_to_write]);
 
         Ok(bytes_to_write)
@@ -4875,7 +5148,7 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 /// # NoWrap Mode Behavior
 /// - Each file line maps to exactly one display row (no wrapping)
 /// - Lines longer than terminal width are truncated at display edge
-/// - Horizontal scrolling is controlled by state.horizontal_line_char_offset
+/// - Horizontal scrolling is controlled by state.horizontal_utf8txt_line_char_offset
 /// - Empty file lines still consume a display row
 ///
 /// # Arguments
@@ -4887,8 +5160,8 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 /// * `Err(io::Error)` - If file operations fail or invalid UTF-8 encountered
 ///
 /// # State Modified
-/// - `state.display_buffers` - Filled with line numbers and visible text
-/// - `state.display_buffer_lengths` - Set to actual bytes used per row
+/// - `state.utf8_txt_display_buffers` - Filled with line numbers and visible text
+/// - `state.display_utf8txt_buffer_lengths` - Set to actual bytes used per row
 /// - `state.window_map` - Updated with file position for each display cell
 ///
 /// # Defensive Programming
@@ -4926,7 +5199,7 @@ pub fn build_windowmap_nowrap(
     debug_assert!(state.effective_cols > 0, "Effective cols must be positive");
 
     // Clear existing buffers and map before building
-    state.clear_display_buffers();
+    state.clear_utf8_displaybuffers();
     state.window_map.clear();
 
     // Clear EOF tracking - will be rediscovered if EOF appears in this window
@@ -5014,13 +5287,13 @@ pub fn build_windowmap_nowrap(
             current_display_row,
             line_num_bytes_written, // Column position after line number
             &line_bytes[..line_length],
-            state.horizontal_line_char_offset,
+            state.horizontal_utf8txt_line_char_offset,
             remaining_cols,
             file_byte_position,
         )?;
 
         // Update total buffer length for this row
-        state.display_buffer_lengths[current_display_row] =
+        state.display_utf8txt_buffer_lengths[current_display_row] =
             line_num_bytes_written + text_bytes_written;
 
         // Advance to next line
@@ -5376,7 +5649,7 @@ fn process_line_with_offset(
         if col_start + bytes_written + char_len <= 182 {
             // Copy bytes to display buffer
             for i in 0..char_len {
-                state.display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
+                state.utf8_txt_display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
             }
 
             // Update WindowMap for this character position
@@ -5638,6 +5911,7 @@ pub enum Command {
     EnterNormalMode, // n or Esc or ??? -> Ctrl-[
 
     EnterPastyClipboardMode, // pasty: clipboard et al
+    EnterHexEditMode,        // Hex Edith
 
     // Text editing
     InsertNewline(char), // Insert single \n at cursor's file-position
@@ -5777,10 +6051,11 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
                     let cursor_moves = remaining_moves.min(state.cursor.col);
                     state.cursor.col -= cursor_moves;
                     remaining_moves -= cursor_moves;
-                } else if state.horizontal_line_char_offset > 0 {
+                } else if state.horizontal_utf8txt_line_char_offset > 0 {
                     // Cursor at left edge, scroll window left
-                    let scroll_amount = remaining_moves.min(state.horizontal_line_char_offset);
-                    state.horizontal_line_char_offset -= scroll_amount;
+                    let scroll_amount =
+                        remaining_moves.min(state.horizontal_utf8txt_line_char_offset);
+                    state.horizontal_utf8txt_line_char_offset -= scroll_amount;
                     remaining_moves -= scroll_amount;
                     needs_rebuild = true;
                 } else {
@@ -5836,11 +6111,11 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
                     // Cursor at right edge, scroll window right
                     // Cap scroll to prevent excessive horizontal offset
 
-                    if state.horizontal_line_char_offset < limits::CURSOR_MOVEMENT_STEPS {
-                        let max_scroll =
-                            limits::CURSOR_MOVEMENT_STEPS - state.horizontal_line_char_offset;
+                    if state.horizontal_utf8txt_line_char_offset < limits::CURSOR_MOVEMENT_STEPS {
+                        let max_scroll = limits::CURSOR_MOVEMENT_STEPS
+                            - state.horizontal_utf8txt_line_char_offset;
                         let scroll_amount = remaining_moves.min(max_scroll);
-                        state.horizontal_line_char_offset += scroll_amount;
+                        state.horizontal_utf8txt_line_char_offset += scroll_amount;
                         remaining_moves -= scroll_amount;
                         needs_rebuild = true;
                     } else {
@@ -5867,95 +6142,6 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
             Ok(true)
         }
 
-        // Command::MoveDown(count) => {
-        //     // Vim-like behavior: move cursor down, scroll window if at bottom edge
-        //     // Handle downward cursor movement with EOF boundary enforcement
-        //     //
-        //     // # Behavior
-        //     // - Moves cursor down within visible window when possible
-        //     // - Scrolls window down when cursor at bottom edge
-        //     // - Stops at EOF: cursor cannot move past last line
-        //     // - Gracefully handles all boundary conditions
-        //     //
-        //     // # EOF Handling
-        //     // - If EOF visible in window: cursor stops at EOF display row
-        //     // - If EOF visible and cursor at bottom: no scrolling occurs
-        //     // - If EOF not visible: normal movement and scrolling
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-
-        //     // Defensive: Limit iterations
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // Calculate space available before bottom edge
-        //         let bottom_edge = state.effective_rows.saturating_sub(1);
-
-        //         if state.cursor.row < bottom_edge {
-        //             // Cursor can move down within visible window
-        //             let space_available = bottom_edge - state.cursor.row;
-        //             let cursor_moves = remaining_moves.min(space_available);
-        //             state.cursor.row += cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else {
-        //             // Cursor at bottom edge, scroll window down
-        //             // Note: We should track total file lines to prevent scrolling past EOF
-        //             // For now, scroll unconditionally (will show empty lines at EOF)
-        //             state.line_count_at_top_of_window += remaining_moves;
-        //             remaining_moves = 0;
-        //             needs_rebuild = true;
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveDown",
-        //         ));
-        //     }
-
-        //     // // Rebuild window if we scrolled
-        //     // if needs_rebuild {
-        //     //     // Rebuild window to show the change from read-copy file
-        //     //     build_windowmap_nowrap(state, &edit_file_path)?;
-        //     // }
-
-        //     // Rebuild window if we scrolled
-        //     if needs_rebuild {
-        //         // Rebuild window to show new content from file
-        //         build_windowmap_nowrap(state, &edit_file_path)?;
-
-        //         // Defensive: After scrolling, verify cursor position is valid
-        //         // If EOF is now visible, ensure cursor didn't scroll past it
-        //         match state.eof_fileline_tuirow_tuple {
-        //             Some((file_line_of_eof, eof_tui_display_row)) => {
-        //                 // EOF is visible in rebuilt window
-        //                 if state.cursor.row > eof_tui_display_row {
-        //                     // CRITICAL ERROR: Cursor is past EOF after rebuild
-        //                     // This indicates a logic error in scrolling or rebuild
-        //                     return Err(io::Error::new(
-        //                         io::ErrorKind::Other,
-        //                         format!(
-        //                             "Cursor position {} exceeds EOF at display row {} (file line {})",
-        //                             state.cursor.row, eof_tui_display_row, file_line_of_eof
-        //                         ),
-        //                     ));
-        //                 }
-        //                 // Cursor position is valid (at or before EOF)
-        //             }
-        //             None => {
-        //                 // EOF not visible in window, cursor position cannot be validated
-        //                 // against EOF. This is normal for large files.
-        //             }
-        //         }
-        //     }
-
-        //     Ok(true)
-        // }
         Command::MoveDown(count) => {
             // Vim-like behavior: move cursor down, scroll window if at bottom edge
             // Handle downward cursor movement with EOF boundary enforcement
@@ -6028,12 +6214,6 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
                     "Maximum iterations exceeded in MoveDown",
                 ));
             }
-
-            // // Rebuild window if we scrolled
-            // if needs_rebuild {
-            //     // Rebuild window to show the change from read-copy file
-            //     build_windowmap_nowrap(state, &edit_file_path)?;
-            // }
 
             // Rebuild window if we scrolled
             if needs_rebuild {
@@ -6159,6 +6339,11 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
         Command::EnterPastyClipboardMode => {
             state.mode = EditorMode::PastyMode;
+            Ok(true)
+        }
+
+        Command::EnterHexEditMode => {
+            state.mode = EditorMode::HexMode;
             Ok(true)
         }
 
@@ -7085,7 +7270,7 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 /// - This function bypasses cursor entirely
 /// - That function for single chunks, this for entire files
 ///
-/// **vs. handle_insert_mode_input():**
+/// **vs. handle_utf8txt_insert_mode_input():**
 /// - That function processes stdin with delimiter detection
 /// - This function reads files with no delimiter ambiguity
 /// - That function has complex newline handling logic
@@ -7096,7 +7281,7 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 /// * `insert_bytes_at_position()` - Helper function for chunk insertion
 /// * `delete_byte_at_position()` - Helper function for final byte removal
 /// * `build_windowmap_nowrap()` - Called once at end to update display
-/// * `handle_insert_mode_input()` - Parallel implementation for stdin (more complex)
+/// * `handle_utf8txt_insert_mode_input()` - Parallel implementation for stdin (more complex)
 ///
 /// # Testing Considerations
 ///
@@ -7721,7 +7906,7 @@ pub fn insert_text_chunk_at_cursor_position(
         let overflow = state.cursor.col - right_edge;
 
         // Scroll window right to accommodate
-        state.horizontal_line_char_offset += overflow;
+        state.horizontal_utf8txt_line_char_offset += overflow;
 
         // Move cursor back to right edge
         state.cursor.col = right_edge;
@@ -8192,6 +8377,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         EditorMode::Visual => "VISUAL",
         EditorMode::PastyMode => "PASTY",
         EditorMode::MultiCursor => "MULTI",
+        EditorMode::HexMode => "HEX",
     };
 
     // Get current line and column
@@ -8205,7 +8391,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         .as_ref()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
-        .unwrap_or("unnamed");
+        .unwrap_or("unmanned file");
 
     // TODO
     // let message_for_infobar = state.info_bar_message_buffer...
@@ -8246,7 +8432,322 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
     Ok(info)
 }
 
-/// Renders the complete TUI to terminal: legend + content + info bar
+/// Hex editor display state
+///
+/// # Purpose
+/// Tracks position within file for hex viewing/editing.
+/// Separate from UTF-8 cursor position to avoid conflating byte-offset
+/// with character-offset semantics.
+///
+/// # Fields
+/// * `byte_offset` - Absolute position in file (0-indexed)
+/// * `bytes_per_row` - Display width constant (26 for 80-char TUI)
+pub struct HexCursor {
+    /// Absolute byte position in file (0-indexed)
+    /// Range: 0 to file_size
+    pub byte_offset: usize,
+
+    /// Number of bytes shown per display row
+    /// Constant: 26 (fits in 80-char terminal width)
+    pub bytes_per_row: usize,
+}
+
+impl HexCursor {
+    /// Creates new hex cursor at file start
+    ///
+    /// # Returns
+    /// Cursor positioned at byte 0, displaying 26 bytes per row
+    pub fn new() -> Self {
+        HexCursor {
+            byte_offset: 0,
+            bytes_per_row: 26,
+        }
+    }
+
+    /// Calculates which display row this byte offset is on
+    ///
+    /// # Returns
+    /// Row number (0-indexed)
+    pub fn current_row(&self) -> usize {
+        self.byte_offset / self.bytes_per_row
+    }
+
+    /// Calculates column within current row
+    ///
+    /// # Returns
+    /// Column position (0-25 for 26 bytes per row)
+    pub fn current_col(&self) -> usize {
+        self.byte_offset % self.bytes_per_row
+    }
+}
+
+/// Renders the complete TUI in hex mode
+///
+/// # Purpose
+/// Displays hex editor view with:
+/// 1. Top: Command legend (1 line, same as UTF-8 mode)
+/// 2. Middle: Hex bytes + UTF-8 interpretation (2 lines)
+/// 3. Bottom: Info bar (1 line, shows byte offset)
+///
+/// # Layout
+/// ```text
+/// quit ins vis save undo hjkl wb /search       <- Legend
+/// 48 65 6C 6C 6F 20 57 6F 72 6C 64 0A 41 42   <- Hex bytes
+/// H  e  l  l  o     W  o  r  l  d  ␊  A  B    <- UTF-8 chars
+/// HEX byte 156 of 1024 doc.txt > cmd_         <- Info bar
+/// ```
+///
+/// # Arguments
+/// * `state` - Current editor state with hex_cursor position
+///
+/// # Returns
+/// * `Ok(())` - Successfully rendered
+/// * `Err(LinesError)` - Display or file read failed
+///
+/// # Design
+/// - Shows exactly ONE row of file data (26 bytes)
+/// - Cursor highlights current byte position
+/// - Unprintable bytes shown as · in UTF-8 line
+/// - Control characters shown with symbols (␊ for newline)
+///
+/// # File Reading
+/// Reads only 26 bytes starting at `hex_cursor.byte_offset`
+/// Does NOT load entire file into memory
+pub fn render_tui_hex(state: &EditorState) -> Result<()> {
+    // Clear screen
+    print!("\x1B[2J\x1B[H");
+    io::stdout()
+        .flush()
+        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+
+    // === TOP LINE: LEGEND (same as UTF-8 mode) ===
+    let legend = format_navigation_legend()?;
+    println!("{}", legend);
+
+    // === MIDDLE: HEX + UTF-8 DISPLAY (2 lines) ===
+    let hex_display = render_hex_row(state)?;
+    print!("{}", hex_display);
+
+    // === BOTTOM LINE: INFO BAR ===
+    let info_bar = format_hex_info_bar(state)?;
+    print!("{}", info_bar);
+
+    io::stdout()
+        .flush()
+        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+
+    Ok(())
+}
+
+/// Renders one row of hex data with UTF-8 interpretation
+///
+/// # Purpose
+/// Displays 26 bytes in two formats:
+/// 1. Hex representation (with cursor highlighting)
+/// 2. UTF-8 character representation
+///
+/// # Arguments
+/// * `state` - Editor state with file path and hex cursor
+///
+/// # Returns
+/// * `Ok(String)` - Two-line display string
+/// * `Err(LinesError)` - File read failed
+///
+/// # Format
+/// ```text
+/// 48 65 6C 6C 6F 20 57 6F 72 6C 64 0A 41 42
+/// H  e  l  l  o     W  o  r  l  d  ␊  A  B
+/// ```
+///
+/// # Cursor Highlighting
+/// Current byte shown with: BOLD + RED + WHITE_BG
+/// Example: `48` becomes `[1m[31m[47m48[0m`
+///
+/// # UTF-8 Handling
+/// - Valid UTF-8 bytes shown as characters
+/// - Invalid/unprintable shown as ·
+/// - Control chars shown with Unicode symbols:
+///   - 0x0A (newline) → ␊
+///   - 0x09 (tab) → ␉
+///   - 0x20 (space) → · (visible space)
+///
+/// # Memory Safety
+/// - Pre-allocates 26-byte buffer
+/// - Reads exactly 26 bytes (or less at EOF)
+/// - No heap allocation during render
+fn render_hex_row(state: &EditorState) -> Result<String> {
+    const BYTES_TO_DISPLAY: usize = 26;
+    const BOLD: &str = "\x1b[1m";
+    const RED: &str = "\x1b[31m";
+    const BG_WHITE: &str = "\x1b[47m";
+    const RESET: &str = "\x1b[0m";
+
+    // Pre-allocate display buffers
+    // 26 bytes × 3 chars per byte ("48 ") = 78 chars + safety margin
+    let mut hex_line = String::with_capacity(80);
+    // 26 bytes × 3 chars per UTF-8 display ("H  ") = 78 chars + safety margin
+    let mut utf8_line = String::with_capacity(80);
+
+    // Pre-allocate byte buffer for file reading
+    let mut byte_buffer = [0u8; BYTES_TO_DISPLAY];
+
+    // Get file path from state
+    let file_path = state
+        .read_copy_path
+        .as_ref()
+        .ok_or_else(|| LinesError::StateError("No file path in hex mode".to_string()))?;
+
+    // Open file and seek to current position
+    let mut file = File::open(file_path).map_err(|e| LinesError::Io(e))?;
+
+    // Seek to hex cursor position
+    file.seek(io::SeekFrom::Start(state.hex_cursor.byte_offset as u64))
+        .map_err(|e| LinesError::Io(e))?;
+
+    // Read up to 26 bytes (may be less at EOF)
+    let bytes_read = file.read(&mut byte_buffer).map_err(|e| LinesError::Io(e))?;
+
+    // Calculate which byte position in this row is under cursor
+    let cursor_col = state.hex_cursor.current_col();
+
+    // Build hex line and UTF-8 line simultaneously
+    for i in 0..BYTES_TO_DISPLAY {
+        if i < bytes_read {
+            let byte = byte_buffer[i];
+
+            // === HEX LINE ===
+            // Highlight if this is cursor position
+            if i == cursor_col {
+                hex_line.push_str(&format!(
+                    "{}{}{}{:02X}{} ",
+                    BOLD, RED, BG_WHITE, byte, RESET
+                ));
+            } else {
+                hex_line.push_str(&format!("{:02X} ", byte));
+            }
+
+            // === UTF-8 LINE ===
+            // Convert byte to displayable character
+            let display_char = byte_to_display_char(byte);
+
+            // Highlight if this is cursor position
+            if i == cursor_col {
+                utf8_line.push_str(&format!(
+                    "{}{}{}{}{}  ",
+                    BOLD, RED, BG_WHITE, display_char, RESET
+                ));
+            } else {
+                utf8_line.push_str(&format!("{}  ", display_char));
+            }
+        } else {
+            // Past EOF - show empty space
+            hex_line.push_str("   "); // 3 spaces (matches "48 " width)
+            utf8_line.push_str("   "); // 3 spaces (matches "H  " width)
+        }
+    }
+
+    // Combine into two-line output
+    let result = format!("{}\n{}\n", hex_line.trim_end(), utf8_line.trim_end());
+
+    Ok(result)
+}
+
+/// Converts a byte to a displayable character for hex editor UTF-8 line
+///
+/// # Purpose
+/// Maps bytes to visible characters for the UTF-8 interpretation line.
+/// Makes control characters and unprintable bytes visible.
+///
+/// # Arguments
+/// * `byte` - The byte value to convert (0x00 - 0xFF)
+///
+/// # Returns
+/// A single character representing the byte
+///
+/// # Mapping Rules
+/// 1. **Printable ASCII (0x20-0x7E)**: Display as-is
+/// 2. **Space (0x20)**: Show as '·' (middle dot) for visibility
+/// 3. **Common control characters**: Show with Unicode symbols
+///    - 0x09 (tab) → '␉'
+///    - 0x0A (line feed) → '␊'
+///    - 0x0D (carriage return) → '␍'
+/// 4. **Other control/unprintable**: Show as '·'
+///
+/// # Design Notes
+/// - Always returns exactly one char (important for alignment)
+/// - Non-panicking: all 256 byte values handled
+/// - Unicode symbols from "Control Pictures" block (U+2400-U+2426)
+pub fn byte_to_display_char(byte: u8) -> char {
+    match byte {
+        // Tab
+        0x09 => '␉',
+        // Line feed (newline)
+        0x0A => '␊',
+        // Carriage return
+        0x0D => '␍',
+        // Space - show as visible character
+        0x20 => '⎕',
+        // Printable ASCII range (excluding space, already handled)
+        0x21..=0x7E => byte as char,
+        // Everything else (control chars, high bytes)
+        _ => '▚',
+    }
+}
+
+/// Formats the info bar for hex mode
+///
+/// # Purpose
+/// Shows hex-specific status information at bottom of TUI
+///
+/// # Arguments
+/// * `state` - Editor state with hex cursor and file info
+///
+/// # Returns
+/// * `Ok(String)` - Formatted info bar
+/// * `Err(LinesError)` - Failed to get file size
+///
+/// # Format
+/// ```text
+/// HEX byte 156 of 1024 doc.txt > cmd_
+/// ```
+///
+/// # Information Displayed
+/// - Mode indicator: "HEX"
+/// - Current byte offset (0-indexed, shown as 1-indexed for users)
+/// - Total file size in bytes
+/// - Filename (basename only, not full path)
+/// - Command input indicator
+fn format_hex_info_bar(state: &EditorState) -> Result<String> {
+    // Get file size
+    let file_size = match &state.read_copy_path {
+        Some(path) => match fs::metadata(path) {
+            Ok(metadata) => metadata.len() as usize,
+            Err(_) => 0,
+        },
+        None => 0,
+    };
+
+    // Get filename (or "unnamed" if none)
+    let filename = state
+        .original_file_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unmanned phile");
+
+    // Build info bar
+    // Show byte position as 1-indexed for human readability
+    let info_bar = format!(
+        "HEX byte {} of {} {} > ",
+        state.hex_cursor.byte_offset + 1, // Human-friendly: 1-indexed
+        file_size,
+        filename,
+    );
+
+    Ok(info_bar)
+}
+
+/// Renders the complete UTF8-text TUI to terminal: legend + content + info bar
 ///
 /// # Purpose
 /// Displays the minimal 3-section TUI:
@@ -8276,7 +8777,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
 /// - No wasted space, no filler lines
 /// - All essential info visible
 /// - Clean, minimal aesthetic
-pub fn render_tui(state: &EditorState) -> Result<()> {
+pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[H");
     io::stdout()
@@ -8287,31 +8788,17 @@ pub fn render_tui(state: &EditorState) -> Result<()> {
     let legend = format_navigation_legend()?;
     println!("{}", legend);
 
-    // // === MIDDLE: FILE CONTENT ===
-    // // Render each content row
-    // for row in 0..state.effective_rows {
-    //     if state.display_buffer_lengths[row] > 0 {
-    //         let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
-
-    //         match std::str::from_utf8(row_content) {
-    //             Ok(row_str) => println!("{}", row_str),
-    //             Err(_) => println!("�"), // Invalid UTF-8 fallback
-    //         }
-    //     } else {
-    //         // Empty row - print newline to maintain spacing
-    //         println!();
-    //     }
-    // }
-
     // === MIDDLE: FILE CONTENT WITH CURSOR ===
+    // // Render each content row
     for row in 0..state.effective_rows {
-        if state.display_buffer_lengths[row] > 0 {
-            let row_content = &state.display_buffers[row][..state.display_buffer_lengths[row]];
+        if state.display_utf8txt_buffer_lengths[row] > 0 {
+            let row_content =
+                &state.utf8_txt_display_buffers[row][..state.display_utf8txt_buffer_lengths[row]];
 
             match std::str::from_utf8(row_content) {
                 Ok(row_str) => {
                     // ADD CURSOR HIGHLIGHTING HERE (was missing!)
-                    let display_str = render_row_with_cursor(state, row, row_str);
+                    let display_str = render_utf8txt_row_with_cursor(state, row, row_str);
                     println!("{}", display_str);
                 }
                 Err(_) => println!("�"),
@@ -8350,7 +8837,11 @@ pub fn render_tui(state: &EditorState) -> Result<()> {
 ///
 /// # Returns
 /// * `String` - The row with cursor highlighting applied
-fn render_row_with_cursor(state: &EditorState, row_index: usize, row_content: &str) -> String {
+fn render_utf8txt_row_with_cursor(
+    state: &EditorState,
+    row_index: usize,
+    row_content: &str,
+) -> String {
     // Not on cursor row - return as-is
     if row_index != state.cursor.row {
         return row_content.to_string();
@@ -8606,7 +9097,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     // Initialize window position
     lines_editor_state.line_count_at_top_of_window = 0;
     lines_editor_state.file_position_of_topline_start = 0;
-    lines_editor_state.horizontal_line_char_offset = 0;
+    lines_editor_state.horizontal_utf8txt_line_char_offset = 0;
 
     // Build initial window content
     // Get the read_copy path BEFORE the mutable borrow
@@ -8647,7 +9138,7 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     let mut iteration_count = 0;
 
     // // boot strap Render TUI (convert LinesError to io::Error)
-    // render_tui(&lines_editor_state)
+    // render_tui_utf8txt(&lines_editor_state)
     //     .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
     //  ///////////////////////////////
@@ -8656,22 +9147,41 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> 
     while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
-        // Render TUI (convert LinesError to io::Error)
-        render_tui(&lines_editor_state)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
+        //  ==================
+        //  Render a Flesh TUI
+        //  ==================
+        if lines_editor_state.mode == EditorMode::HexMode {
+            render_tui_hex(&lines_editor_state).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+            })?;
+        } else {
+            // Render TUI (convert LinesError to io::Error)
+            render_tui_utf8txt(&lines_editor_state).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+            })?;
+        }
 
+        //  ====
+        //  Iput
+        //  ====
         if lines_editor_state.mode == EditorMode::Insert {
             //  ///////////
             //  Insert Mode
             //  ///////////
-            keep_editor_loop_running =
-                lines_editor_state.handle_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
+            keep_editor_loop_running = lines_editor_state
+                .handle_utf8txt_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
         } else if lines_editor_state.mode == EditorMode::PastyMode {
             //  ///////////
             //  Pasty Mode
             //  ///////////
             keep_editor_loop_running =
                 lines_editor_state.pasty_mode(&mut stdin_handle, &mut text_buffer)?;
+        // } else if lines_editor_state.mode = EditorMode::HexMode {
+        //     //  ///////////////
+        //     //  Hex Editor Mode
+        //     //  ///////////////
+        //     keep_editor_loop_running =
+        //         lines_editor_state.handle_hex_mode_input(&mut stdin_handle, &mut text_buffer)?;
         } else {
             //  ///////////////////////////////////////////
             //  IF in Normal/Visual mode: parse as command
