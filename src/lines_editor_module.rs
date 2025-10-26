@@ -1023,7 +1023,6 @@ let file = File::open(path)?;
 ->
 let file = File::open(path).map_err(|e| LinesError::Io(e))?;
 
-
  */
 
 /// Error types for the Lines text editor
@@ -1597,6 +1596,7 @@ impl FixedSize32Timestamp {
             "Internal invariant violated: length exceeds buffer size"
         );
         // Catch & Handle without panic in production
+        // This IS included in production to safe-catch
         if !self.len <= 32 {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
@@ -2236,10 +2236,10 @@ fn render_pasty_tui(
     // Draw legend (using existing helper)
     println!("{}", format_pasty_legend()?);
 
-    // Padding, print 3 lines
-    for _ in 0..3 {
-        println!();
-    }
+    // // Padding, print 3 lines // under construction...
+    // for _ in 0..3 {
+    //     println!();
+    // }
 
     // Draw clipboard items with rank numbers
     let end = (offset + items_per_page).min(total_count);
@@ -4326,7 +4326,8 @@ impl EditorState {
         //
         //    =================================================
         // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        //    =================================================        // This is not included in production builds
+        //    =================================================
+        // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
             INFOBAR_MESSAGE_BUFFER_SIZE > 0,
@@ -4340,6 +4341,7 @@ impl EditorState {
             "Info bar buffer must have non-zero capacity"
         );
         // Catch & Handle without panic in production
+        // This IS included in production to safe-catch
         if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
@@ -4677,6 +4679,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
             STDIN_CHUNK_SIZE
         );
         // Catch & Handle without panic in production
+        // This IS included in production to safe-catch
         if !bytes_read <= STDIN_CHUNK_SIZE {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
@@ -5860,6 +5863,7 @@ fn process_line_with_offset(
         bytes_written
     );
     // Catch & Handle without panic in production
+    // This IS included in production to safe-catch
     if !bytes_written <= 182 {
         // state.set_info_bar_message("Config error");
         return Err(LinesError::GeneralAssertionCatchViolation(
@@ -5890,6 +5894,7 @@ fn process_line_with_offset(
         col_start + max_cols
     );
     // Catch & Handle without panic in production
+    // This IS included in production to safe-catch
     if !display_col <= col_start + max_cols {
         // state.set_info_bar_message("Config error");
         return Err(LinesError::GeneralAssertionCatchViolation(
@@ -7692,6 +7697,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             CHUNK_SIZE
         );
         // Catch & Handle without panic in production
+        // This IS included in production to safe-catch
         if !bytes_read <= CHUNK_SIZE {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
@@ -8311,7 +8317,7 @@ fn format_pasty_info_bar(
 
     Ok(format!(
         // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
-        "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text > {}",
+        "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
         RED,
         total_count,
         YELLOW,
@@ -8667,7 +8673,7 @@ pub fn print_help() {
 /// - Line/col for cursor tracking
 /// - Filename for context
 /// - Input buffer shows what user is typing
-fn format_info_bar(state: &EditorState) -> Result<String> {
+fn format_standard_info_bar(state: &EditorState) -> Result<String> {
     // Get mode string
     let mode_str = match state.mode {
         EditorMode::Normal => "NORMAL",
@@ -8711,7 +8717,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
     // Build the info bar
     let info = format!(
         // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
-        "{}{} {}{}{}:{}{}{} {}{} {}>{} ",
+        "{}{} {}{}{}:{}{}{} {}{} {}{}> ",
         YELLOW,
         mode_str,
         // YELLOW,
@@ -8724,7 +8730,7 @@ fn format_info_bar(state: &EditorState) -> Result<String> {
         YELLOW,
         filename,
         message_for_infobar,
-        RESET
+        RESET,
     );
 
     Ok(info)
@@ -9220,10 +9226,16 @@ fn format_hex_info_bar(state: &EditorState) -> Result<String> {
     // Build info bar
     // Show byte position as 1-indexed for human readability
     let info_bar = format!(
-        "HEX byte {} of {} {} > ",
+        "{}HEX byte {}{}{} of {}{}{} {} (use dashes for commands -n) {}> ",
+        YELLOW,
+        RED,
         state.hex_cursor.byte_offset + 1, // Human-friendly: 1-indexed
+        YELLOW,
+        RED,
         file_size,
+        YELLOW,
         filename,
+        RESET,
     );
 
     Ok(info_bar)
@@ -9296,7 +9308,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     }
 
     // === BOTTOM LINE: INFO BAR ===
-    let info_bar = format_info_bar(state)?;
+    let info_bar = format_standard_info_bar(state)?;
     print!("{}", info_bar);
 
     io::stdout()
