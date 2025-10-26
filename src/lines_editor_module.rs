@@ -1715,7 +1715,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is|{}wrap{} {}raw{} {}r{}lativ {}b{}yte|{}w{}rd,{}b{},{}e{}nd {}/{}cmmnt {}[]{}rpt {}hjkl{}{}",
+        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}|{}{}{}r{}lativ {}p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}cmmnt {}[]{}rpt {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -7627,79 +7627,6 @@ fn parse_hex_digit(byte: u8) -> io::Result<u8> {
             "Invalid hex digit",
         )),
     }
-}
-
-/// Handles hex digit input in hex mode (0-9, A-F, a-f)
-///
-/// # Purpose
-/// Replaces byte at cursor position with new hex value.
-/// In-place edit: file size unchanged, no byte shifting.
-///
-/// # Arguments
-/// * `state` - Editor state with hex_cursor position
-/// * `hex_char` - Single hex digit character
-///
-/// # Returns
-/// * `Ok(true)` - Byte replaced, continue editing
-/// * `Err(e)` - File write failed
-///
-/// # Behavior
-/// Single-digit mode (MVP):
-/// - User types '4' → byte becomes 0x04
-/// - User types 'F' → byte becomes 0x0F
-/// - User types 'a' → byte becomes 0x0A (case insensitive)
-///
-/// Cursor advances by 1 after successful edit.
-fn handle_hex_digit_input(state: &mut EditorState, hex_char: char) -> io::Result<bool> {
-    // Parse hex digit
-    let new_byte = match hex_char.to_ascii_uppercase() {
-        '0' => 0x00,
-        '1' => 0x01,
-        '2' => 0x02,
-        '3' => 0x03,
-        '4' => 0x04,
-        '5' => 0x05,
-        '6' => 0x06,
-        '7' => 0x07,
-        '8' => 0x08,
-        '9' => 0x09,
-        'A' => 0x0A,
-        'B' => 0x0B,
-        'C' => 0x0C,
-        'D' => 0x0D,
-        'E' => 0x0E,
-        'F' => 0x0F,
-        _ => {
-            state.set_info_bar_message("Invalid hex digit");
-            return Ok(true); // Not an error, just ignore
-        }
-    };
-
-    // Get file path
-    let file_path = state
-        .read_copy_path
-        .as_ref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
-
-    // Get current byte position
-    let byte_position = state.hex_cursor.byte_offset;
-
-    // Replace byte in-place
-    replace_byte_in_place(file_path, byte_position, new_byte)?;
-
-    // Mark as modified
-    state.is_modified = true;
-
-    // Advance cursor by 1 (optional - you decide)
-    state.hex_cursor.byte_offset += 1;
-
-    // Update info bar
-    state.set_info_bar_message(&format!(
-        "Wrote 0x{:02X} at byte {}",
-        new_byte, byte_position
-    ));
-
-    Ok(true)
 }
 
 /// Replaces a single byte at specified position (in-place, no shifting)
