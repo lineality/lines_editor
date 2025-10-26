@@ -2234,7 +2234,7 @@ fn render_pasty_tui(
     print!("\x1b[2J\x1b[H");
 
     // Draw legend (using existing helper)
-    println!("{}", format_pasty_legend()?);
+    println!("{}", format_pasty_tui_legend()?);
 
     // // Padding, print 3 lines // under construction...
     // for _ in 0..3 {
@@ -2358,10 +2358,14 @@ pub struct EditorState {
     /// Example: If window shows from line 500, this is 500
     pub line_count_at_top_of_window: usize,
 
+    // TODO is u64 enough?
+    // TODO: Should file-position use Ribbon-external-values?
     /// Byte position in file where the top display line starts
     /// Example: Line 500 starts at byte 12048 in the file
     pub file_position_of_topline_start: u64,
-
+    // start end for visual-mode selection
+    pub file_position_of_vis_select_start: u64,
+    pub file_position_of_vis_select_end: u64,
     /// For LineWrap mode: byte offset within the line where window starts
     /// Example: If line 500 has 300 chars and we're showing the 3rd wrap, this might be 211
     pub linewrap_window_topline_startbyte_position: u64,
@@ -2440,6 +2444,11 @@ impl EditorState {
             // Window position tracking - start at beginning of file
             line_count_at_top_of_window: 0,
             file_position_of_topline_start: 0,
+
+            // Clipboard/Pasty
+            file_position_of_vis_select_start: 0,
+            file_position_of_vis_select_end: 0,
+
             linewrap_window_topline_startbyte_position: 0,
             linewrap_window_topline_char_offset: 0,
             horizontal_utf8txt_line_char_offset: 0,
@@ -2742,7 +2751,7 @@ impl EditorState {
 
         // 2. Explicit commands (take absolute priority)
 
-        if trimmed == "b" || trimmed == "q" {
+        if trimmed == "b" || trimmed == "q" || trimmed == "n" || trimmed == "\x1b" {
             return Ok(PastyInputPathOrCommand::Back);
         }
 
@@ -2947,9 +2956,9 @@ impl EditorState {
     /// **Calls:**
     /// - `render_pasty_tui()` - Display clipboard items and legend
     /// - `handle_pasty_mode_input()` - Get and parse user input
-    /// - `read_and_sort_clipboard()` - Fresh scan of clipboard directory
+    /// - `read_and_sort_pasty_clipboard()` - Fresh scan of clipboard directory
     /// - `insert_file_at_cursor()` - Insert selected file into document
-    /// - `clear_clipboard()` - Delete all clipboard files
+    /// - `clear_pasty_file_clipboard()` - Delete all clipboard files
     ///
     /// **Modifies:**
     /// - `self.info_bar_message` - Error/status messages
@@ -3032,7 +3041,7 @@ impl EditorState {
             //  ///////////////////
 
             // Fresh scan each iteration (defensive: no stale cached list)
-            let sorted_files = match read_and_sort_clipboard(&clipboard_dir) {
+            let sorted_files = match read_and_sort_pasty_clipboard(&clipboard_dir) {
                 Ok(files) => files,
                 Err(_) => {
                     let _ = self.set_info_bar_message("clipboard read failed");
@@ -3176,7 +3185,7 @@ impl EditorState {
                 //  Clear All Clipboard
                 //  ////////
                 Ok(PastyInputPathOrCommand::ClearAll) => {
-                    if let Err(_) = clear_clipboard(&clipboard_dir) {
+                    if let Err(_) = clear_pasty_file_clipboard(&clipboard_dir) {
                         let _ = self.set_info_bar_message("*clear failed*");
                         continue; // Stay in loop
                     }
@@ -3396,38 +3405,38 @@ impl EditorState {
             //     }
             // }
             // === MODE SWITCHING ===
-            "-n" | "\x1b" => {
+            "n" | "\x1b" => {
                 // Exit to normal mode
                 keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
             }
 
-            "-i" => {
+            "i" => {
                 // Exit to insert mode
                 keep_editor_loop_running = execute_command(self, Command::EnterInsertMode)?;
             }
 
-            "-v" => {
+            "v" => {
                 // Exit to visual mode
                 keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
             }
 
-            "-p" => {
+            "p" => {
                 // Exit to visual mode
                 keep_editor_loop_running = execute_command(self, Command::EnterPastyClipboardMode)?;
             }
 
             // === FILE COMMANDS ===
-            "-s" | "-w" => {
+            "s" | "w" => {
                 // Save file
                 keep_editor_loop_running = execute_command(self, Command::Save)?;
             }
 
-            "-wq" => {
+            "wq" => {
                 // Save and quit
                 keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
             }
 
-            "-q" => {
+            "q" => {
                 // Quit without saving
                 keep_editor_loop_running = execute_command(self, Command::Quit)?;
             }
@@ -4086,10 +4095,9 @@ impl EditorState {
         ```
          */
 
-        if current_mode == EditorMode::Normal || current_mode == EditorMode::HexMode {
+        if current_mode == EditorMode::Normal {
             match command_str {
                 // Single character commands
-                "n" | "\x1b" => Command::EnterNormalMode, // if only for hex mode to use...
                 "h" => Command::MoveLeft(count),
                 "\x1b[D" => Command::MoveLeft(count), // left over arrow
                 "j" => Command::MoveDown(count),
@@ -4105,7 +4113,7 @@ impl EditorState {
                 "s" | "w" => Command::Save,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
-                "hex" | "bytes" | "b" => Command::EnterHexEditMode,
+                "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
                 // "wrap" => Command::ToggleWrap,
                 // "gg" => Command::MoveToTop,
                 "d" => Command::DeleteLine,
@@ -4123,7 +4131,7 @@ impl EditorState {
                 "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
 
                 "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
-                "hex" | "bytes" | "b" => Command::EnterHexEditMode,
+                "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
                 // Some('p') => Command::PastyClipboard(count),
                 // // TODO: Make These, Command::Select...
                 // Some('w') => Command::SelectNextWord,
@@ -6532,11 +6540,15 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::EnterInsertMode => {
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
             state.mode = EditorMode::Insert;
             Ok(true)
         }
 
         Command::EnterNormalMode => {
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
             state.mode = EditorMode::Normal;
             Ok(true)
         }
@@ -6547,11 +6559,28 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::EnterHexEditMode => {
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
             state.mode = EditorMode::HexMode;
+
+            // Convert current window position to file byte offset
+            if let Ok(Some(file_pos)) = state
+                .window_map
+                .get_file_position(state.cursor.row, state.cursor.col)
+            {
+                // Start hex cursor at same file position
+                state.hex_cursor.byte_offset = file_pos.byte_offset as usize;
+            } else {
+                // Fallback to file start if cursor position invalid
+                state.hex_cursor.byte_offset = 0;
+            }
+
             Ok(true)
         }
 
         Command::EnterVisualMode => {
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(state, &edit_file_path)?;
             state.mode = EditorMode::Visual;
             // Set selection start at current cursor position
             if let Ok(Some(file_pos)) = state
@@ -8226,8 +8255,332 @@ pub fn insert_text_chunk_at_cursor_position(
 //  Have a Pasty!!
 // ===============
 
+/// Appends a range of bytes from one file to another, one byte at a time
+///
+/// # Purpose
+/// Copies bytes from a specific byte range in a source file and appends them
+/// to the end of a target file. This operation is performed ONE BYTE AT A TIME
+/// to minimize memory usage and avoid loading entire files or sections into memory.
+///
+/// # Policy and Scope
+/// This function has a deliberately minimal scope:
+/// - Reads exactly 1 byte from source
+/// - Writes exactly 1 byte to target
+/// - Repeats for each byte in range
+/// - No buffering beyond a single byte
+/// - No file loading or pre-scanning
+/// - No file size checks or metadata queries
+/// - Creates target file if it doesn't exist
+/// - Stops gracefully when bytes are unavailable
+///
+/// # Arguments
+/// * `source_file_path` - Absolute path to the file to read bytes from
+/// * `start_byte_position` - Zero-indexed position of first byte to copy (inclusive)
+/// * `end_byte_position` - Zero-indexed position of last byte to copy (inclusive)
+/// * `append_to_this_file_path` - Absolute path to the file to append bytes to
+///
+/// # Returns
+/// * `Ok(())` - Operation completed successfully (or gracefully stopped)
+/// * `Err(LinesError)` - Operation failed due to file system error
+///
+/// # Behavior Details
+/// - **Memory usage:** Exactly 1 byte (`u8`) at a time - no buffer
+/// - **Target file:** Created if doesn't exist, appended if exists
+/// - **Source file missing:** Returns `Ok(())` with no action
+/// - **Byte not found:** Stops immediately and returns `Ok(())`
+/// - **Write failure:** Returns `Err()` immediately
+/// - **Byte positions:** Both start and end are inclusive (0-indexed)
+/// - **Loop bound:** `(end - start + 1)` iterations maximum
+///
+/// # Graceful Stop Conditions (returns Ok with no error)
+/// - Source file does not exist
+/// - Start position has no byte available
+/// - Any position in range has no byte available (stops at that point)
+/// - End of file reached before end_byte_position
+///
+/// # Error Conditions (returns Err)
+/// - Invalid byte range: start position > end position
+/// - Cannot create target file (permissions, disk space)
+/// - Cannot open source file (permissions, hardware failure)
+/// - Cannot open target file (permissions, hardware failure)
+/// - Cannot seek to position (hardware failure)
+/// - Cannot read byte (hardware failure, cosmic ray bit flip)
+/// - Cannot write byte (disk full, hardware failure, cosmic ray bit flip)
+/// - Cannot flush target file (hardware failure)
+///
+/// # Safety and Reliability
+/// - No unsafe code
+/// - No recursion
+/// - Loop has strict upper bound
+/// - All errors handled without panic in production
+/// - Uses debug_assert for debug builds
+/// - Uses #[cfg(test)] assert for testing release builds
+/// - Production code catches violations and returns error
+/// - Never unwrap() - all Results handled explicitly
+///
+/// # Edge Cases
+/// - `start_byte_position == end_byte_position`: Copies exactly 1 byte
+/// - Empty source file: Returns Ok() immediately when first byte not found
+/// - Start position at EOF: Returns Ok() immediately
+/// - End position beyond EOF: Copies until last available byte, then returns Ok()
+/// - Target file doesn't exist: Created automatically
+/// - Large byte ranges: Handled safely with loop upper bound
+///
+/// # Example
+/// ```no_run
+/// # use std::path::Path;
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Copy bytes 10 through 20 (inclusive) from source.txt
+/// // and append them to the end of target.txt
+/// append_bytes_from_file_to_file(
+///     Path::new("/absolute/path/to/source.txt"),
+///     10,
+///     20,
+///     Path::new("/absolute/path/to/target.txt"),
+/// )?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Use Case Example
+/// When building a file from fragments without loading entire files:
+/// ```no_run
+/// # use std::path::Path;
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let source = Path::new("/data/large_file.dat");
+/// let output = Path::new("/data/output.dat");
+///
+/// // Append header (first 512 bytes)
+/// append_bytes_from_file_to_file(source, 0, 511, output)?;
+///
+/// // Append specific data section (bytes 1024-2047)
+/// append_bytes_from_file_to_file(source, 1024, 2047, output)?;
+///
+/// // Append footer (last 256 bytes, assuming we know the positions)
+/// append_bytes_from_file_to_file(source, 999744, 999999, output)?;
+/// # Ok(())
+/// # }
+/// ```
+pub fn append_bytes_from_file_to_file(
+    source_file_path: &Path,
+    start_byte_position: u64,
+    end_byte_position: u64,
+    append_to_this_file_path: &Path,
+) -> Result<()> {
+    // ========================================================================
+    // INPUT VALIDATION
+    // ========================================================================
+
+    // Validate byte positions: start must not be greater than end
+    // This is a logic error in the caller's arguments
+    if start_byte_position > end_byte_position {
+        let error_msg = format!(
+            "Invalid byte range: start position ({}) is greater than end position ({})",
+            start_byte_position, end_byte_position
+        );
+        log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+        return Err(LinesError::InvalidInput(error_msg));
+    }
+
+    // ========================================================================
+    // SOURCE FILE EXISTENCE CHECK
+    // ========================================================================
+
+    // Check if source file exists
+    // If source doesn't exist, there's nothing to copy - return gracefully
+    // This is not an error - it's a no-op situation
+    if !source_file_path.exists() {
+        return Ok(());
+    }
+
+    // ========================================================================
+    // OPEN SOURCE FILE FOR READING
+    // ========================================================================
+
+    // Open source file for reading
+    // If we can't open it (permissions, hardware failure), this is an error
+    let mut source_file = match File::open(source_file_path) {
+        Ok(file) => file,
+        Err(e) => {
+            let error_msg = format!("Cannot open source file: {}", e);
+            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ========================================================================
+    // OPEN OR CREATE TARGET FILE FOR APPENDING
+    // ========================================================================
+
+    // Open (or create) target file for appending
+    // OpenOptions::create(true) - create file if it doesn't exist
+    // OpenOptions::append(true) - append to end of file (don't overwrite)
+    let mut target_file = match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(append_to_this_file_path)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            let error_msg = format!("Cannot open or create target file: {}", e);
+            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ========================================================================
+    // CALCULATE LOOP UPPER BOUND
+    // ========================================================================
+
+    // Calculate total number of bytes to copy (for loop upper bound)
+    // Formula: (end - start + 1) because both positions are inclusive
+    // Example: bytes 5 to 7 inclusive = positions [5,6,7] = 3 bytes = (7-5+1)
+    // Use saturating arithmetic to prevent overflow (cosmic ray protection)
+    let total_bytes_to_copy = end_byte_position
+        .saturating_sub(start_byte_position)
+        .saturating_add(1);
+
+    // =================================================
+    // Debug-Assert, Test-Asset, Production-Catch-Handle
+    // =================================================
+    // Defensive assertion: total_bytes_to_copy should never be zero
+    // Given our validation above (start <= end), result should always be >= 1
+    // If this triggers, indicates memory corruption or cosmic ray bit flip
+
+    // Debug builds only: will panic to help catch bugs during development
+    debug_assert!(
+        total_bytes_to_copy > 0,
+        "total_bytes_to_copy should be at least 1, got: {}",
+        total_bytes_to_copy
+    );
+
+    // Test builds (including release testing): will panic during cargo test
+    #[cfg(test)]
+    assert!(
+        total_bytes_to_copy > 0,
+        "total_bytes_to_copy should be at least 1, got: {}",
+        total_bytes_to_copy
+    );
+
+    // Production builds: catch and handle without panic
+    if total_bytes_to_copy == 0 {
+        let error_msg = "Invalid byte range calculation resulted in zero bytes to copy";
+        log_error(error_msg, Some("append_bytes_from_file_to_file"));
+        return Err(LinesError::GeneralAssertionCatchViolation(error_msg.into()));
+    }
+
+    // ========================================================================
+    // ALLOCATE SINGLE BYTE BUFFER
+    // ========================================================================
+
+    // Single byte buffer - we read exactly one byte at a time
+    // This is our only memory allocation - exactly 1 byte
+    // No buffering, no loading files or sections into memory
+    let mut single_byte_buffer: [u8; 1] = [0];
+
+    // ========================================================================
+    // SEEK TO START POSITION
+    // ========================================================================
+
+    // Seek to start position in source file
+    // SeekFrom::Start is absolute positioning from beginning of file
+    // If we can't seek (hardware failure, invalid position), return error
+    if let Err(e) = source_file.seek(SeekFrom::Start(start_byte_position)) {
+        let error_msg = format!(
+            "Cannot seek to start position {} in source file: {}",
+            start_byte_position, e
+        );
+        log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+        return Err(LinesError::Io(e));
+    }
+
+    // ========================================================================
+    // MAIN LOOP: COPY BYTES ONE AT A TIME
+    // ========================================================================
+
+    // Loop through each byte position from start to end (inclusive)
+    // Upper bound: total_bytes_to_copy ensures loop terminates
+    // No recursion - simple for-loop with known upper bound
+    for byte_index in 0..total_bytes_to_copy {
+        // Calculate current absolute position for error messages
+        // Using saturating_add to protect against overflow
+        let current_position = start_byte_position.saturating_add(byte_index);
+
+        // ====================================================================
+        // READ ONE BYTE FROM SOURCE
+        // ====================================================================
+
+        // Try to read exactly 1 byte from source file at current position
+        // read_exact() will:
+        // - Read exactly 1 byte if available
+        // - Return UnexpectedEof if no byte at this position
+        // - Return other errors for hardware failures
+        match source_file.read_exact(&mut single_byte_buffer) {
+            Ok(()) => {
+                // Successfully read 1 byte into single_byte_buffer
+                // Continue to write it to target
+            }
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                // Reached end of file - no more bytes available at this position
+                // This is a GRACEFUL STOP condition, not an error
+                // We copied all available bytes up to EOF
+                return Ok(());
+            }
+            Err(e) => {
+                // Other read error (hardware failure, permissions, cosmic ray bit flip)
+                // This IS an error - log it and return
+                let error_msg = format!(
+                    "Cannot read byte at position {} in source file: {}",
+                    current_position, e
+                );
+                log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+                return Err(LinesError::Io(e));
+            }
+        }
+
+        // ====================================================================
+        // WRITE ONE BYTE TO TARGET
+        // ====================================================================
+
+        // Try to write the single byte to target file
+        // write_all() ensures the entire buffer (1 byte) is written
+        // If write fails: disk full, hardware failure, permissions, cosmic ray bit flip
+        if let Err(e) = target_file.write_all(&single_byte_buffer) {
+            let error_msg = format!(
+                "Cannot write byte from position {} to target file: {}",
+                current_position, e
+            );
+            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            return Err(LinesError::Io(e));
+        }
+
+        // Successfully copied one byte from source to target
+        // Continue to next byte in loop
+    }
+
+    // ========================================================================
+    // FLUSH TARGET FILE
+    // ========================================================================
+
+    // All bytes copied successfully
+    // Flush target file to ensure data is written to physical disk
+    // This protects against data loss from power failure or system crash
+    if let Err(e) = target_file.flush() {
+        let error_msg = format!("Cannot flush target file to disk: {}", e);
+        log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+        return Err(LinesError::Io(e));
+    }
+
+    // ========================================================================
+    // SUCCESS
+    // ========================================================================
+
+    // All bytes successfully copied and flushed
+    Ok(())
+}
+
 /// Reads clipboard directory and returns files sorted by modified time (newest first)
-fn read_and_sort_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> {
+pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> {
     if !clipboard_dir.exists() {
         return Ok(Vec::new());
     }
@@ -8257,7 +8610,11 @@ fn read_and_sort_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> 
 }
 
 /// Draws clipboard items with rank numbers, returns count of visible items drawn
-fn draw_clipboard_items(sorted_files: &[PathBuf], offset: usize, items_per_page: usize) -> usize {
+fn draw_pasty_clipboard_items(
+    sorted_files: &[PathBuf],
+    offset: usize,
+    items_per_page: usize,
+) -> usize {
     let _ = (offset + items_per_page).min(sorted_files.len()); // 'end'
     let mut visible_count = 0;
 
@@ -8281,7 +8638,7 @@ fn draw_clipboard_items(sorted_files: &[PathBuf], offset: usize, items_per_page:
 }
 
 /// Formats the Pasty legend with color-coded commands
-fn format_pasty_legend() -> io::Result<String> {
+fn format_pasty_tui_legend() -> io::Result<String> {
     Ok(format!(
         "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
         YELLOW,
@@ -8335,7 +8692,7 @@ fn format_pasty_info_bar(
 }
 
 /// Clears all files from clipboard directory
-fn clear_clipboard(clipboard_dir: &PathBuf) -> io::Result<()> {
+fn clear_pasty_file_clipboard(clipboard_dir: &PathBuf) -> io::Result<()> {
     if !clipboard_dir.exists() {
         return Ok(());
     }

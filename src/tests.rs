@@ -2413,3 +2413,448 @@ mod hex_display_tests {
         assert!(test_cursor.current_col() < 26);
     }
 }
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod pasty_file_append_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    /// Helper function to create a test file with specific content
+    ///
+    /// # Arguments
+    /// * `path` - Path where test file should be created
+    /// * `content` - Byte content to write to file
+    ///
+    /// # Returns
+    /// * `Ok(())` if file created successfully
+    /// * `Err(io::Error)` if creation failed
+    fn create_test_file(path: &Path, content: &[u8]) -> io::Result<()> {
+        let mut file = File::create(path)?;
+        file.write_all(content)?;
+        file.flush()?;
+        Ok(())
+    }
+
+    /// Helper function to read entire file content into Vec<u8>
+    ///
+    /// # Arguments
+    /// * `path` - Path to file to read
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` containing file content
+    /// * `Err(io::Error)` if read failed
+    fn read_file_content(path: &Path) -> io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    /// Test: Copy a simple range of bytes from middle of source file
+    #[test]
+    fn test_append_bytes_simple_range() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_simple.txt");
+        let target_path = temp_dir.join("test_target_simple.txt");
+
+        // Create source file with content "ABCDEFGHIJ" (10 bytes)
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create empty target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Copy bytes 2-5 (zero-indexed, inclusive): should copy "CDEF"
+        // Position 2='C', 3='D', 4='E', 5='F'
+        let result = append_bytes_from_file_to_file(&source_path, 2, 5, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target file contains exactly "CDEF"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"CDEF", "Target should contain copied bytes");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Append bytes to target file that already has existing content
+    #[test]
+    fn test_append_to_existing_content() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_append.txt");
+        let target_path = temp_dir.join("test_target_append.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create target file with existing content
+        create_test_file(&target_path, b"EXISTING").expect("Failed to create target");
+
+        // Append bytes 0-2: "ABC"
+        let result = append_bytes_from_file_to_file(&source_path, 0, 2, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target file contains "EXISTING" + "ABC" = "EXISTINGABC"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(
+            content, b"EXISTINGABC",
+            "Target should contain original content plus appended bytes"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Source file doesn't exist - should return Ok gracefully (no-op)
+    #[test]
+    fn test_source_file_not_exists() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_nonexistent_source.txt");
+        let target_path = temp_dir.join("test_target_nonesource.txt");
+
+        // Ensure source doesn't exist
+        let _ = fs::remove_file(&source_path);
+
+        // Try to copy - should return Ok with no action (graceful no-op)
+        let result = append_bytes_from_file_to_file(&source_path, 0, 10, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Should return Ok when source doesn't exist");
+
+        // Cleanup
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Target file doesn't exist - should be created automatically
+    #[test]
+    fn test_target_file_created() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_create.txt");
+        let target_path = temp_dir.join("test_target_create_new.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Ensure target doesn't exist
+        let _ = fs::remove_file(&target_path);
+
+        // Copy bytes - should create target file automatically
+        let result = append_bytes_from_file_to_file(&source_path, 0, 4, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target was created and contains correct data
+        #[cfg(test)]
+        assert!(target_path.exists(), "Target file should be created");
+
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"ABCDE", "Target should contain copied bytes");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Start position beyond file size - should return Ok gracefully
+    #[test]
+    fn test_start_position_beyond_file() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_beyond.txt");
+        let target_path = temp_dir.join("test_target_beyond.txt");
+
+        // Create small source file (3 bytes)
+        create_test_file(&source_path, b"ABC").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Try to copy from position 100 (way beyond file size of 3 bytes)
+        // Should seek successfully but immediately hit EOF when trying to read
+        let result = append_bytes_from_file_to_file(&source_path, 100, 110, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Should return Ok when start is beyond EOF");
+
+        // Verify target is still empty (no bytes were copied)
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content.len(), 0, "Target should remain empty");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: End position beyond file size - should copy until EOF then stop
+    #[test]
+    fn test_end_position_beyond_file() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_eof.txt");
+        let target_path = temp_dir.join("test_target_eof.txt");
+
+        // Create source file with 5 bytes: "ABCDE"
+        create_test_file(&source_path, b"ABCDE").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Try to copy bytes 2-100 (end is way beyond EOF at position 4)
+        // Should copy position 2='C', 3='D', 4='E', then hit EOF and stop gracefully
+        let result = append_bytes_from_file_to_file(&source_path, 2, 100, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Should return Ok and stop at EOF");
+
+        // Verify target contains only available bytes: "CDE"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"CDE", "Target should contain bytes until EOF");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Copy single byte (start == end)
+    #[test]
+    fn test_copy_single_byte() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_single.txt");
+        let target_path = temp_dir.join("test_target_single.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Copy single byte at position 3: should copy "D" (0=A,1=B,2=C,3=D)
+        let result = append_bytes_from_file_to_file(&source_path, 3, 3, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target contains exactly single byte "D"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"D", "Target should contain single byte");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Invalid range (start > end) - should return error
+    #[test]
+    fn test_invalid_range_start_greater_than_end() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_invalid.txt");
+        let target_path = temp_dir.join("test_target_invalid.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Try to copy with start > end (invalid range)
+        let result = append_bytes_from_file_to_file(&source_path, 10, 5, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_err(), "Should return error when start > end");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Copy entire file from beginning to end
+    #[test]
+    fn test_copy_entire_file() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_full.txt");
+        let target_path = temp_dir.join("test_target_full.txt");
+
+        let test_content = b"The quick brown fox jumps over the lazy dog";
+
+        // Create source file
+        create_test_file(&source_path, test_content).expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Copy entire file (position 0 to position length-1)
+        let result = append_bytes_from_file_to_file(
+            &source_path,
+            0,
+            (test_content.len() - 1) as u64,
+            &target_path,
+        );
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target contains entire source content
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(
+            content, test_content,
+            "Target should contain entire source file"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Multiple sequential appends to same target file
+    #[test]
+    fn test_multiple_appends() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_multi.txt");
+        let target_path = temp_dir.join("test_target_multi.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create target file with initial content
+        create_test_file(&target_path, b"START_").expect("Failed to create target");
+
+        // First append: bytes 0-2 ("ABC")
+        let result1 = append_bytes_from_file_to_file(&source_path, 0, 2, &target_path);
+
+        #[cfg(test)]
+        assert!(result1.is_ok(), "First append should succeed");
+
+        // Second append: bytes 5-7 ("FGH")
+        let result2 = append_bytes_from_file_to_file(&source_path, 5, 7, &target_path);
+
+        #[cfg(test)]
+        assert!(result2.is_ok(), "Second append should succeed");
+
+        // Third append: bytes 9-9 ("J")
+        let result3 = append_bytes_from_file_to_file(&source_path, 9, 9, &target_path);
+
+        #[cfg(test)]
+        assert!(result3.is_ok(), "Third append should succeed");
+
+        // Verify target contains: "START_" + "ABC" + "FGH" + "J" = "START_ABCFGHJ"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(
+            content, b"START_ABCFGHJ",
+            "Target should contain all appended bytes"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Copy first byte of file (position 0)
+    #[test]
+    fn test_copy_first_byte() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_first.txt");
+        let target_path = temp_dir.join("test_target_first.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Copy first byte (position 0): should copy "A"
+        let result = append_bytes_from_file_to_file(&source_path, 0, 0, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target contains exactly "A"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"A", "Target should contain first byte");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Copy last byte of file
+    #[test]
+    fn test_copy_last_byte() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_last.txt");
+        let target_path = temp_dir.join("test_target_last.txt");
+
+        // Create source file with 10 bytes
+        create_test_file(&source_path, b"ABCDEFGHIJ").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"").expect("Failed to create target");
+
+        // Copy last byte (position 9): should copy "J"
+        let result = append_bytes_from_file_to_file(&source_path, 9, 9, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Function should succeed");
+
+        // Verify target contains exactly "J"
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"J", "Target should contain last byte");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+
+    /// Test: Empty source file - should return Ok gracefully
+    #[test]
+    fn test_empty_source_file() {
+        let temp_dir = std::env::temp_dir();
+        let source_path = temp_dir.join("test_source_empty.txt");
+        let target_path = temp_dir.join("test_target_empty.txt");
+
+        // Create empty source file (0 bytes)
+        create_test_file(&source_path, b"").expect("Failed to create source");
+
+        // Create target file
+        create_test_file(&target_path, b"PREFIX_").expect("Failed to create target");
+
+        // Try to copy bytes 0-10 from empty file
+        // Should immediately hit EOF when trying to read first byte
+        let result = append_bytes_from_file_to_file(&source_path, 0, 10, &target_path);
+
+        #[cfg(test)]
+        assert!(result.is_ok(), "Should return Ok when source is empty");
+
+        // Verify target still contains only original content
+        let content = read_file_content(&target_path).expect("Failed to read target");
+
+        #[cfg(test)]
+        assert_eq!(content, b"PREFIX_", "Target should remain unchanged");
+
+        // Cleanup
+        let _ = fs::remove_file(&source_path);
+        let _ = fs::remove_file(&target_path);
+    }
+}
