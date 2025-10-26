@@ -3240,6 +3240,15 @@ impl EditorState {
         // Default: keep editor loop running
         let mut keep_editor_loop_running: bool = true;
 
+        /*
+        // === HEX DIGIT INPUT (0-9, A-F) ===
+                input if input.len() == 1 && input.chars().next().unwrap().is_ascii_hexdigit() => {
+                    // Single hex digit - edit byte at cursor
+                    let hex_char = input.chars().next().unwrap();
+                    handle_hex_digit_input(self, hex_char)?;
+                }
+         */
+
         // Clear command buffer before reading
         for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
             command_buffer[i] = 0;
@@ -3283,6 +3292,48 @@ impl EditorState {
         //  ////////////////////////
 
         match trimmed {
+            // === HEX BYTE REPLACEMENT: Two hex digits ===
+            trimmed
+                if trimmed.len() == 2
+                    && trimmed.as_bytes()[0].is_ascii_hexdigit()
+                    && trimmed.as_bytes()[1].is_ascii_hexdigit() =>
+            {
+                let bytes = trimmed.as_bytes();
+                let high = parse_hex_digit(bytes[0])?;
+                let low = parse_hex_digit(bytes[1])?;
+                let byte_value = (high << 4) | low;
+
+                let file_path = self
+                    .read_copy_path
+                    .as_ref()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
+
+                if self.hex_cursor.byte_offset >= file_size {
+                    self.set_info_bar_message("Cannot edit past EOF");
+                    return Ok(true);
+                }
+
+                replace_byte_in_place(file_path, self.hex_cursor.byte_offset, byte_value)?;
+
+                self.is_modified = true;
+                if self.hex_cursor.byte_offset + 1 < file_size {
+                    self.hex_cursor.byte_offset += 1;
+                }
+
+                self.set_info_bar_message("Byte written");
+            }
+
+            // "" => {
+            //     // Empty enter: repeat last command
+            //     match self.the_last_command.clone() {
+            //         Some(cmd) => {
+            //             keep_editor_loop_running = execute_command(self, cmd)?;
+            //         }
+            //         None => {
+            //             self.set_info_bar_message("No previous command");
+            //         }
+            //     }
+            // }
             // === MODE SWITCHING ===
             "-n" | "\x1b" => {
                 // Exit to normal mode
@@ -7563,6 +7614,142 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     ));
 
     Ok(())
+}
+
+/// Parse single hex digit (0-9, A-F, a-f) into nibble value (0-15)
+fn parse_hex_digit(byte: u8) -> io::Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid hex digit",
+        )),
+    }
+}
+
+/// Handles hex digit input in hex mode (0-9, A-F, a-f)
+///
+/// # Purpose
+/// Replaces byte at cursor position with new hex value.
+/// In-place edit: file size unchanged, no byte shifting.
+///
+/// # Arguments
+/// * `state` - Editor state with hex_cursor position
+/// * `hex_char` - Single hex digit character
+///
+/// # Returns
+/// * `Ok(true)` - Byte replaced, continue editing
+/// * `Err(e)` - File write failed
+///
+/// # Behavior
+/// Single-digit mode (MVP):
+/// - User types '4' → byte becomes 0x04
+/// - User types 'F' → byte becomes 0x0F
+/// - User types 'a' → byte becomes 0x0A (case insensitive)
+///
+/// Cursor advances by 1 after successful edit.
+fn handle_hex_digit_input(state: &mut EditorState, hex_char: char) -> io::Result<bool> {
+    // Parse hex digit
+    let new_byte = match hex_char.to_ascii_uppercase() {
+        '0' => 0x00,
+        '1' => 0x01,
+        '2' => 0x02,
+        '3' => 0x03,
+        '4' => 0x04,
+        '5' => 0x05,
+        '6' => 0x06,
+        '7' => 0x07,
+        '8' => 0x08,
+        '9' => 0x09,
+        'A' => 0x0A,
+        'B' => 0x0B,
+        'C' => 0x0C,
+        'D' => 0x0D,
+        'E' => 0x0E,
+        'F' => 0x0F,
+        _ => {
+            state.set_info_bar_message("Invalid hex digit");
+            return Ok(true); // Not an error, just ignore
+        }
+    };
+
+    // Get file path
+    let file_path = state
+        .read_copy_path
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
+
+    // Get current byte position
+    let byte_position = state.hex_cursor.byte_offset;
+
+    // Replace byte in-place
+    replace_byte_in_place(file_path, byte_position, new_byte)?;
+
+    // Mark as modified
+    state.is_modified = true;
+
+    // Advance cursor by 1 (optional - you decide)
+    state.hex_cursor.byte_offset += 1;
+
+    // Update info bar
+    state.set_info_bar_message(&format!(
+        "Wrote 0x{:02X} at byte {}",
+        new_byte, byte_position
+    ));
+
+    Ok(true)
+}
+
+/// Replaces a single byte at specified position (in-place, no shifting)
+///
+/// # Purpose
+/// Overwrites one byte in file without changing file size.
+/// Simplest possible file edit operation.
+///
+/// # Arguments
+/// * `file_path` - Path to file to edit
+/// * `position` - Byte offset to replace (0-indexed)
+/// * `new_byte` - New byte value to write
+///
+/// # Returns
+/// * `Ok(())` - Byte successfully replaced
+/// * `Err(e)` - File operation failed
+///
+/// # File Operations
+/// 1. Open file in write mode (preserves existing content)
+/// 2. Seek to position
+/// 3. Write 1 byte
+/// 4. Flush to disk
+/// 5. Close (automatic via RAII)
+///
+/// # Safety
+/// - Bounded operation: writes exactly 1 byte
+/// - No buffer allocation
+/// - No read-modify-write
+/// - Atomic at OS level (single-byte write)
+///
+/// # Edge Cases
+/// - Position past EOF: write will extend file (OS behavior)
+/// - Position at EOF: write will append 1 byte
+/// - Read-only file: returns permission error
+fn replace_byte_in_place(file_path: &Path, position: usize, new_byte: u8) -> io::Result<()> {
+    // Open file for writing (preserves existing content)
+    let mut file = OpenOptions::new().write(true).open(file_path)?;
+
+    // Seek to target position
+    file.seek(SeekFrom::Start(position as u64))?;
+
+    // Write single byte (stack-allocated array)
+    let byte_buffer = [new_byte];
+    file.write_all(&byte_buffer)?;
+
+    // Ensure write completes before function returns
+    file.flush()?;
+
+    Ok(())
+    // File automatically closed here (RAII)
 }
 
 /// Inserts bytes at specific file position without cursor tracking
