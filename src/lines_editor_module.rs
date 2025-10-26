@@ -36,26 +36,29 @@ full IDE competing with Zed, Helix, vsCode, etc.
 
 
 # Rust rules:
-Always best practice.
-Always extensive doc strings.
-Always comments.
-Always cargo tests (where possible).
-Never remove documentation.
-Always clear, meaningful, unique names (e.g. variables, functions).
-Always absolute file paths.
-Always error handling.
-Never unsafe code.
-Never use unwrap.
+-Always best practice.
+-Always extensive doc strings.
+-Always comments.
+- Always cargo tests (where possible).
+- Never remove documentation.
+- Always clear, meaningful, unique names (e.g. variables, functions).
+- Always absolute file paths.
+- Always error handling.
+- Never unsafe code.
+- Never use unwrap.
 
-Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
+- Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
 
-Always defensive best practice:
-Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are common), there must always be fail-safe error handling.
+- Always defensive best practice:
+- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
 
 Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
 
-No third party libraries (or strictly avoid third party libraries where possible).
-Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 and Rust):
+## No third party libraries (or very strictly avoid third party libraries where possible).
+
+## Every part of code will eventually fail if only due to hardware failure, power supply failures, hard radiation bit flips, security attacks, etc. Every failure must be handled smoothly: let it fail and move on.
+
+## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 and Rust):
 1. no unsafe stuff:
 - no recursion
 - no goto
@@ -66,14 +69,14 @@ Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 
 
 3. Pre-allocate all memory (no dynamic memory allocation)
 
-4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
+4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
-5. Defensive programming: safely check, not 'assert!' panic
+5. Defensive programming: debug-assert, test-assert, prod safely check & handle, not 'assert!' panic
 For production-release code:
-1. use "checks for bad stuff" that are always present in production
-2. use "checks for bad stuff" that return result (such as Result<T, E>) and smoothly handle errors (not halt-panic stopping the application): no assert!() outside of test-only code
-3. use #[cfg(test)] assert!() to test production binaries
-4. use debug_assert to test debug builds/runs.
+1. check and handle without panic/halt in production
+2. return result (such as Result<T, E>) and smoothly handle errors (not halt-panic stopping the application): no assert!() outside of test-only code
+3. test assert: use #[cfg(test)] assert!() to test production binaries (not in prod)
+4. debug assert: use debug_assert to test debug builds/runs (not in prod)
 5. use defensive programming with recovery of all issues at all times
 - use cargo tests
 - use debug_asserts
@@ -89,6 +92,7 @@ For production-release code:
 assert!(
 ```
 
+
 6. ? Is this about ownership of variables?
 - maybe: manage rust ownership to avoid heap or memory-bloat
 
@@ -96,12 +100,14 @@ assert!(
 - use null-void return values
 - check non-void-null returns
 
-8. ?
+8. Navigate debugging and testing on the one hand and not-dangerous conditional compilation on the other hand
 
 9. Communicate:
 - use doc strings, use comments,
 - Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
 
+
+## code requires communication
 
 
 */
@@ -729,15 +735,27 @@ fn main() {
 // import file fantstic module w/ these 2 lines
 mod lines_editor_module;
 use lines_editor_module::{
-    full_lines_editor, get_default_filepath, is_in_home_directory, memo_mode_mini_editor_loop,
-    print_help, prompt_for_filename,
+    LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
+    memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 use std::env;
-use std::io;
 use std::path::PathBuf;
 
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
+
+// Re-export things that tests need (if they're private)
+// #[cfg(test)]
+// pub(crate) use lines_editor_module::*; // Makes module contents available to tests
+
+#[cfg(test)]
+mod tests;
+
+// import file fantstic module w/ these 2 lines
+// #[cfg(test)]
+// mod lines_editor_module;
+// #[cfg(test)]
+// pub(crate) use lines_editor_module::*;
 
 // Developer explicitly lists files to embed
 const SOURCE_FILES: &[SourcedFile] = &[
@@ -776,7 +794,7 @@ const SOURCE_FILES: &[SourcedFile] = &[
 /// - 0: Success
 /// - 1: General error
 /// - 2: Invalid arguments
-fn main() -> io::Result<()> {
+fn main() -> Result<(), LinesError> {
     let args: Vec<String> = std::env::args().collect();
     // Check if we're in home directory
     let in_home = is_in_home_directory()?;
@@ -987,6 +1005,26 @@ const YELLOW: &str = "\x1b[33m";
 // ============================================================================
 // ERROR SECTION: ERROR HANDLING SYSTEM (start)
 // ============================================================================
+
+/*
+Converting to LinesError
+
+return Err(e);
+->
+return Err(LinesError::Io(e));
+
+
+return Err(io::Error::new(
+->
+return Err(LinesError::Io(io::Error::new(
+
+
+let file = File::open(path)?;
+->
+let file = File::open(path).map_err(|e| LinesError::Io(e))?;
+
+
+ */
 
 /// Error types for the Lines text editor
 ///
@@ -1541,12 +1579,10 @@ impl FixedSize32Timestamp {
     /// # Errors
     /// Returns error if internal data is not valid UTF-8
     pub fn as_str(&self) -> Result<&str> {
-        // // Test, Check, "Assert":
-        // // This does NOT including handling
-        // // the same case with an error in production
-        //
-        // Test-Only Assertion: Internal invariant check
-        //
+        // Internal invariant check
+        //    =================================================
+        // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        //    =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -1560,6 +1596,13 @@ impl FixedSize32Timestamp {
             self.len <= 32,
             "Internal invariant violated: length exceeds buffer size"
         );
+        // Catch & Handle without panic in production
+        if !self.len <= 32 {
+            // state.set_info_bar_message("Config error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "NOTlen<=32buf".into(),
+            ));
+        }
 
         std::str::from_utf8(&self.data[..self.len]).map_err(|e| {
             LinesError::Io(io::Error::new(
@@ -3254,7 +3297,7 @@ impl EditorState {
         &mut self,
         stdin_handle: &mut StdinLock,
         command_buffer: &mut [u8; WHOLE_COMMAND_BUFFER_SIZE],
-    ) -> io::Result<bool> {
+    ) -> Result<bool> {
         // Default: keep editor loop running
         let mut keep_editor_loop_running: bool = true;
 
@@ -3694,7 +3737,7 @@ impl EditorState {
         &mut self,
         stdin_handle: &mut StdinLock,
         text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
-    ) -> io::Result<bool> {
+    ) -> Result<bool> {
         //  ///////////
         //  Insert Mode
         //  ///////////
@@ -4169,7 +4212,7 @@ impl EditorState {
         &mut self,
         stdin_handle: &mut StdinLock,
         command_buffer: &mut [u8; WHOLE_COMMAND_BUFFER_SIZE],
-    ) -> io::Result<bool> {
+    ) -> Result<bool> {
         // Clear command-buffer before reading
         for i in 0..WHOLE_COMMAND_BUFFER_SIZE {
             command_buffer[i] = 0;
@@ -4281,8 +4324,9 @@ impl EditorState {
     fn set_info_bar_message(&mut self, message: &str) -> Result<()> {
         // ensure buffer exists and has known capacity
         //
+        //    =================================================
         // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        // This is not included in production builds
+        //    =================================================        // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
             INFOBAR_MESSAGE_BUFFER_SIZE > 0,
@@ -4296,8 +4340,7 @@ impl EditorState {
             "Info bar buffer must have non-zero capacity"
         );
         // Catch & Handle without panic in production
-        //
-        if INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
+        if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
                 "zero buffer size error".into(),
@@ -4613,7 +4656,9 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
             }
         };
 
+        //    =================================================
         // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        //    =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -4632,8 +4677,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
             STDIN_CHUNK_SIZE
         );
         // Catch & Handle without panic in production
-        //
-        if bytes_read <= STDIN_CHUNK_SIZE {
+        if !bytes_read <= STDIN_CHUNK_SIZE {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
                 "bytes_read <= STDIN_CHUNK_SIZE".into(),
@@ -5290,23 +5334,20 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 /// - Row 0: "1 Hello"
 /// - Row 1: "2 World"
 /// WindowMap will map each character to its file byte position.
-pub fn build_windowmap_nowrap(
-    state: &mut EditorState,
-    readcopy_file_path: &Path,
-) -> io::Result<usize> {
+pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path) -> Result<usize> {
     // Defensive: Validate inputs
     if !readcopy_file_path.is_absolute() {
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             "File path must be absolute",
-        ));
+        )));
     }
 
     if !readcopy_file_path.exists() {
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::NotFound,
             format!("File not found: {:?}", readcopy_file_path),
-        ));
+        )));
     }
 
     // Assertion: State should have valid dimensions
@@ -5425,10 +5466,10 @@ pub fn build_windowmap_nowrap(
 
     // Defensive: Check we didn't hit iteration limit
     if iteration_count >= limits::WINDOW_BUILD_LINES {
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::Other,
             "Maximum iterations exceeded in build_windowmap_nowrap",
-        ));
+        )));
     }
 
     // Assertion: Verify our line count makes sense
@@ -5623,13 +5664,13 @@ fn process_line_with_offset(
     horizontal_offset: usize,
     max_cols: usize,
     file_line_start: u64,
-) -> io::Result<usize> {
+) -> Result<usize> {
     // Defensive: Validate row index
     if row >= 45 {
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Row {} exceeds maximum display rows", row),
-        ));
+        )));
     }
 
     // First pass: Skip horizontal_offset characters (not bytes!)
@@ -5792,26 +5833,69 @@ fn process_line_with_offset(
 
     // Defensive: Check iteration limit
     if iterations >= limits::HORIZONTAL_SCROLL_CHARS {
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::Other,
             "Maximum iterations exceeded in line processing",
-        ));
+        )));
     }
 
     // Assertion 9: Verify we stayed within display buffer bounds
+    //
+    //    =================================================
+    // // Debug-Assert, Test-Asset, Production-Catch-Handle
+    //    =================================================
+    // // This is not included in production builds
+    // assert: only when running in a debug-build: will panic
     debug_assert!(
         bytes_written <= 182,
         "Wrote {} bytes but buffer is only 182 bytes",
         bytes_written
     );
+    // This is not included in production builds
+    // assert: only when running cargo test: will panic
+    #[cfg(test)]
+    assert!(
+        bytes_written <= 182,
+        "Wrote {} bytes but buffer is only 182 bytes",
+        bytes_written
+    );
+    // Catch & Handle without panic in production
+    if !bytes_written <= 182 {
+        // state.set_info_bar_message("Config error");
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "!bytes_written <= 182".into(),
+        ));
+    }
 
     // Assertion 10: Verify display column stayed within bounds
+    //
+    //    =================================================
+    // // Debug-Assert, Test-Asset, Production-Catch-Handle
+    //    =================================================
+    // // This is not included in production builds
+    // assert: only when running in a debug-build: will panic
     debug_assert!(
         display_col <= col_start + max_cols,
         "Display column {} exceeds limit {}",
         display_col,
         col_start + max_cols
     );
+    // This is not included in production builds
+    // assert: only when running cargo test: will panic
+    #[cfg(test)]
+    assert!(
+        display_col <= col_start + max_cols,
+        "Display column {} exceeds limit {}",
+        display_col,
+        col_start + max_cols
+    );
+    // Catch & Handle without panic in production
+    if !display_col <= col_start + max_cols {
+        // state.set_info_bar_message("Config error");
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "!dsplycol<=colstrt+mxcol".into(),
+        ));
+    }
 
     // Map one additional "virtual" position after the last character
     // This allows cursor to be positioned at "end of line"
@@ -6134,7 +6218,7 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
 /// * `Ok(true)` - Continue editor loop
 /// * `Ok(false)` - Exit editor loop
 /// * `Err(io::Error)` - Command execution failed
-pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<bool> {
+pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool> {
     // Get read-copy path
     let base_edit_filepath: PathBuf = state
         .read_copy_path
@@ -6181,10 +6265,10 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
             // Defensive: Check iteration limit
             if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-                return Err(io::Error::new(
+                return Err(LinesError::Io(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveLeft",
-                ));
+                )));
             }
 
             // Only rebuild if we scrolled the window
@@ -6242,10 +6326,10 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
             // Defensive: Check iteration limit
             if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-                return Err(io::Error::new(
+                return Err(LinesError::Io(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveRight",
-                ));
+                )));
             }
 
             // Only rebuild if we scrolled the window
@@ -6324,10 +6408,10 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
             // Defensive: Check iteration limit
             if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-                return Err(io::Error::new(
+                return Err(LinesError::Io(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveDown",
-                ));
+                )));
             }
 
             // Rebuild window if we scrolled
@@ -6399,10 +6483,10 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> io::Result<
 
             // Defensive: Check iteration limit
             if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-                return Err(io::Error::new(
+                return Err(LinesError::Io(io::Error::new(
                     io::ErrorKind::Other,
                     "Maximum iterations exceeded in MoveUp",
-                ));
+                )));
             }
 
             // Rebuild window if we scrolled
@@ -7412,7 +7496,7 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 /// - File size 257 bytes (two chunks, second has 1 byte)
 /// - Large file (multiple chunks, test performance)
 /// - Very large file (trigger MAX_CHUNKS limit)
-pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> io::Result<()> {
+pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> Result<()> {
     // ============================================
     // Phase 1: Path Validation and Normalization
     // ============================================
@@ -7431,7 +7515,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                     &format!("Cannot get current directory: {}", e),
                     Some("insert_file_at_cursor"),
                 );
-                return Err(e);
+                return Err(LinesError::Io(e));
             }
         }
     };
@@ -7444,10 +7528,10 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             &format!("Source file does not exist: {}", source_path.display()),
             Some("insert_file_at_cursor"),
         );
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::NotFound,
             format!("File not found: {}", source_path.display()),
-        ));
+        )));
     }
 
     // Defensive: Check source path is a file (not directory)
@@ -7458,10 +7542,10 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             &format!("Source path is not a file: {}", source_path.display()),
             Some("insert_file_at_cursor"),
         );
-        return Err(io::Error::new(
+        return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("Not a file: {}", source_path.display()),
-        ));
+        )));
     }
 
     // ============================================
@@ -7493,10 +7577,10 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 "Cannot get byte position from cursor",
                 Some("insert_file_at_cursor"),
             );
-            return Err(io::Error::new(
+            return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::Other,
                 "Invalid cursor position",
-            ));
+            )));
         }
         Err(e) => {
             let _ = state.set_info_bar_message("cursor position error");
@@ -7504,7 +7588,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 &format!("Error getting cursor position: {}", e),
                 Some("insert_file_at_cursor"),
             );
-            return Err(e);
+            return Err(LinesError::Io(e));
         }
     };
 
@@ -7522,7 +7606,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 &format!("Cannot open source file: {} - {}", source_path.display(), e),
                 Some("insert_file_at_cursor"),
             );
-            return Err(e);
+            return Err(LinesError::Io(e));
         }
     };
 
@@ -7552,7 +7636,10 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                 &format!("Maximum chunk limit reached: {}", MAX_CHUNKS),
                 Some("insert_file_at_cursor"),
             );
-            return Err(io::Error::new(io::ErrorKind::Other, "File too large"));
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::Other,
+                "File too large",
+            )));
         }
 
         // Pre-allocated buffer on stack (NASA Rule 3: no dynamic allocation)
@@ -7577,10 +7664,23 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                     &format!("Read error at chunk {}: {}", chunk_counter, e),
                     Some("insert_file_at_cursor"),
                 );
-                return Err(e);
+                return Err(LinesError::Io(e));
             }
         };
 
+        // Defensive assertion: bytes_read should never exceed buffer size
+        //
+        //    =================================================
+        // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        //    =================================================
+        // This is not included in production builds
+        // assert: only when running in a debug-build: will panic
+        debug_assert!(
+            bytes_read <= CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            CHUNK_SIZE
+        );
         // Defensive assertion: bytes_read should never exceed buffer size
         // If it does, indicates memory corruption or cosmic ray bit flip
         // This is the only panic point - for catastrophic failure only
@@ -7591,6 +7691,13 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             bytes_read,
             CHUNK_SIZE
         );
+        // Catch & Handle without panic in production
+        if !bytes_read <= CHUNK_SIZE {
+            // state.set_info_bar_message("Config error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "zero buffer size error".into(),
+            ));
+        }
 
         // EOF detection: bytes_read == 0 reliably signals end of file
         // Unlike stdin, file EOF is deterministic and unambiguous
@@ -8029,7 +8136,7 @@ pub fn insert_text_chunk_at_cursor_position(
     state: &mut EditorState,
     file_path: &Path,
     text_bytes: &[u8],
-) -> io::Result<()> {
+) -> Result<()> {
     let file_pos = match state
         .window_map
         .get_file_position(state.cursor.row, state.cursor.col)
@@ -8145,7 +8252,7 @@ fn read_and_sort_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> 
 
 /// Draws clipboard items with rank numbers, returns count of visible items drawn
 fn draw_clipboard_items(sorted_files: &[PathBuf], offset: usize, items_per_page: usize) -> usize {
-    let end = (offset + items_per_page).min(sorted_files.len());
+    let _ = (offset + items_per_page).min(sorted_files.len()); // 'end'
     let mut visible_count = 0;
 
     for (idx, file_path) in sorted_files
