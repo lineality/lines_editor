@@ -3,11 +3,10 @@
 // import file fantstic module w/ these 2 lines
 mod lines_editor_module;
 use lines_editor_module::{
-    full_lines_editor, get_default_filepath, is_in_home_directory, memo_mode_mini_editor_loop,
-    print_help, prompt_for_filename,
+    LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
+    memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 use std::env;
-use std::io;
 use std::path::PathBuf;
 
 mod source_it_module;
@@ -63,7 +62,7 @@ const SOURCE_FILES: &[SourcedFile] = &[
 /// - 0: Success
 /// - 1: General error
 /// - 2: Invalid arguments
-fn main() -> io::Result<()> {
+fn main() -> Result<(), LinesError> {
     let args: Vec<String> = std::env::args().collect();
     // Check if we're in home directory
     let in_home = is_in_home_directory()?;

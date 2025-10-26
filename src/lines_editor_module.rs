@@ -1014,6 +1014,10 @@ pub enum LinesError {
 
     /// Configuration or state error
     StateError(String),
+
+    /// For use with suite of
+    /// Debug-Assert, Test-Asset, Production-Catch-Handle
+    GeneralAssertionCatchViolation(String),
 }
 
 impl std::fmt::Display for LinesError {
@@ -1025,6 +1029,7 @@ impl std::fmt::Display for LinesError {
             LinesError::Utf8Error(msg) => write!(f, "UTF-8 error: {}", msg),
             LinesError::DisplayError(msg) => write!(f, "Display error: {}", msg),
             LinesError::StateError(msg) => write!(f, "State error: {}", msg),
+            LinesError::GeneralAssertionCatchViolation(msg) => write!(f, "State error: {}", msg),
         }
     }
 }
@@ -1536,7 +1541,20 @@ impl FixedSize32Timestamp {
     /// # Errors
     /// Returns error if internal data is not valid UTF-8
     pub fn as_str(&self) -> Result<&str> {
+        // // Test, Check, "Assert":
+        // // This does NOT including handling
+        // // the same case with an error in production
+        //
         // Test-Only Assertion: Internal invariant check
+        //
+        // This is not included in production builds
+        // assert: only when running in a debug-build: will panic
+        debug_assert!(
+            self.len <= 32,
+            "Internal invariant violated: length exceeds buffer size"
+        );
+        // This is not included in production builds
+        // assert: only when running cargo test: will panic
         #[cfg(test)]
         assert!(
             self.len <= 32,
@@ -1715,7 +1733,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}|{}{}{}r{}lativ {}p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}cmmnt {}[]{}rpt {}hjkl{}{}",
+        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}|{}{}{}r{}aw {}p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}//cmmnt {}[]{}rpt {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -2961,7 +2979,7 @@ impl EditorState {
 
             // Safety bound: prevent infinite loops
             if pasty_iteration > limits::MAIN_EDITOR_LOOP_COMMANDS {
-                self.set_info_bar_message("pasty mode iteration limit");
+                let _ = self.set_info_bar_message("pasty mode iteration limit");
 
                 return Ok(true); // Exit gracefully, return to normal mode
             }
@@ -2974,7 +2992,7 @@ impl EditorState {
             let sorted_files = match read_and_sort_clipboard(&clipboard_dir) {
                 Ok(files) => files,
                 Err(_) => {
-                    self.set_info_bar_message("clipboard read failed");
+                    let _ = self.set_info_bar_message("clipboard read failed");
                     // Try to continue anyway with empty list
                     Vec::new()
                 }
@@ -2993,7 +3011,7 @@ impl EditorState {
             //  //////////////////
 
             if let Err(_) = render_pasty_tui(self, &sorted_files, offset, items_per_page) {
-                self.set_info_bar_message("display error");
+                let _ = self.set_info_bar_message("display error");
                 // Try to continue anyway
             }
 
@@ -3012,7 +3030,7 @@ impl EditorState {
                 //  Back Command - Exit Pasty Mode
                 //  ////////
                 Ok(PastyInputPathOrCommand::Back) => {
-                    self.set_info_bar_message(""); // Clear any error messages
+                    let _ = self.set_info_bar_message(""); // Clear any error messages
                     return Ok(true); // Exit Pasty mode, back to editor
                 }
 
@@ -3021,7 +3039,7 @@ impl EditorState {
                 //  ////////
                 Ok(PastyInputPathOrCommand::EmptyEnterFirstItem) => {
                     if sorted_files.is_empty() {
-                        self.set_info_bar_message("*clipboard empty*");
+                        let _ = self.set_info_bar_message("*clipboard empty*");
                         continue; // Stay in loop
                     }
 
@@ -3030,11 +3048,11 @@ impl EditorState {
 
                     // Insert file at cursor
                     if let Err(_) = insert_file_at_cursor(self, selected_path) {
-                        self.set_info_bar_message("*insert fail*");
+                        let _ = self.set_info_bar_message("*insert fail*");
                         continue; // Stay in loop
                     }
 
-                    self.set_info_bar_message(""); // Clear messages
+                    let _ = self.set_info_bar_message(""); // Clear messages
                     return Ok(true); // Exit Pasty mode
                 }
 
@@ -3044,7 +3062,7 @@ impl EditorState {
                 Ok(PastyInputPathOrCommand::SelectRank(rank)) => {
                     // Validate rank is in range (1-indexed display, 0-indexed array)
                     if rank == 0 || rank > total_count {
-                        self.set_info_bar_message("invalid rank");
+                        let _ = self.set_info_bar_message("invalid rank");
                         continue; // Stay in loop
                     }
 
@@ -3053,11 +3071,11 @@ impl EditorState {
 
                     // Insert file at cursor
                     if let Err(_) = insert_file_at_cursor(self, selected_path) {
-                        self.set_info_bar_message("*insert fail*");
+                        let _ = self.set_info_bar_message("*insert fail*");
                         continue; // Stay in loop
                     }
 
-                    self.set_info_bar_message(""); // Clear messages
+                    let _ = self.set_info_bar_message(""); // Clear messages
                     return Ok(true); // Exit Pasty mode
                 }
 
@@ -3073,7 +3091,7 @@ impl EditorState {
                         match std::env::current_dir() {
                             Ok(cwd) => cwd.join(&path),
                             Err(_) => {
-                                self.set_info_bar_message("*path resolution failed*");
+                                let _ = self.set_info_bar_message("*path resolution failed*");
                                 continue; // Stay in loop
                             }
                         }
@@ -3081,11 +3099,11 @@ impl EditorState {
 
                     // Insert file at cursor
                     if let Err(_) = insert_file_at_cursor(self, &absolute_path) {
-                        self.set_info_bar_message("*insert failed*");
+                        let _ = self.set_info_bar_message("*insert failed*");
                         continue; // Stay in loop
                     }
 
-                    self.set_info_bar_message(""); // Clear messages
+                    let _ = self.set_info_bar_message(""); // Clear messages
                     return Ok(true); // Exit Pasty mode
                 }
 
@@ -3094,7 +3112,7 @@ impl EditorState {
                 //  ////////
                 Ok(PastyInputPathOrCommand::PageUp) => {
                     offset = offset.saturating_sub(items_per_page);
-                    self.set_info_bar_message(""); // Clear any previous messages
+                    let _ = self.set_info_bar_message(""); // Clear any previous messages
                     continue; // Stay in loop, refresh display
                 }
 
@@ -3107,7 +3125,7 @@ impl EditorState {
                     if new_offset < total_count {
                         offset = new_offset;
                     }
-                    self.set_info_bar_message(""); // Clear any previous messages
+                    let _ = self.set_info_bar_message(""); // Clear any previous messages
                     continue; // Stay in loop, refresh display
                 }
 
@@ -3116,12 +3134,12 @@ impl EditorState {
                 //  ////////
                 Ok(PastyInputPathOrCommand::ClearAll) => {
                     if let Err(_) = clear_clipboard(&clipboard_dir) {
-                        self.set_info_bar_message("*clear failed*");
+                        let _ = self.set_info_bar_message("*clear failed*");
                         continue; // Stay in loop
                     }
 
                     offset = 0; // Reset pagination
-                    self.set_info_bar_message("^clipboard cleared^");
+                    let _ = self.set_info_bar_message("^clipboard cleared^");
                     continue; // Stay in loop, refresh display
                 }
 
@@ -3131,7 +3149,7 @@ impl EditorState {
                 Ok(PastyInputPathOrCommand::ClearRank(rank)) => {
                     // Validate rank is in range
                     if rank == 0 || rank > total_count {
-                        self.set_info_bar_message("invalid rank");
+                        let _ = self.set_info_bar_message("invalid rank");
                         continue; // Stay in loop
                     }
 
@@ -3140,7 +3158,7 @@ impl EditorState {
 
                     // Delete the file
                     if let Err(_) = fs::remove_file(file_to_delete) {
-                        self.set_info_bar_message("delete failed");
+                        let _ = self.set_info_bar_message("delete failed");
                         continue; // Stay in loop
                     }
 
@@ -3149,7 +3167,7 @@ impl EditorState {
                         offset = offset.saturating_sub(items_per_page);
                     }
 
-                    self.set_info_bar_message("item cleared");
+                    let _ = self.set_info_bar_message("item cleared");
                     continue; // Stay in loop, refresh display
                 }
 
@@ -3157,7 +3175,7 @@ impl EditorState {
                 //  Input Error (invalid, too long, parse failure)
                 //  ////////
                 Err(_) => {
-                    self.set_info_bar_message("invalid input");
+                    let _ = self.set_info_bar_message("invalid input");
                     continue; // Stay in loop, re-prompt user
                 }
             }
@@ -3259,7 +3277,7 @@ impl EditorState {
 
         if bytes_read == 0 {
             // Empty input - just continue
-            self.set_info_bar_message("*no input*");
+            let _ = self.set_info_bar_message("*no input*");
             return Ok(true);
         }
 
@@ -3272,12 +3290,12 @@ impl EditorState {
             Some(path) => match fs::metadata(path) {
                 Ok(metadata) => metadata.len() as usize,
                 Err(_) => {
-                    self.set_info_bar_message("Error: Cannot read file size");
+                    let _ = self.set_info_bar_message("Error: Cannot read file size");
                     return Ok(true);
                 }
             },
             None => {
-                self.set_info_bar_message("Error: No file open");
+                let _ = self.set_info_bar_message("Error: No file open");
                 return Ok(true);
             }
         };
@@ -3309,7 +3327,7 @@ impl EditorState {
                     .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
 
                 if self.hex_cursor.byte_offset >= file_size {
-                    self.set_info_bar_message("Cannot edit past EOF");
+                    let _ = self.set_info_bar_message("Cannot edit past EOF");
                     return Ok(true);
                 }
 
@@ -3320,7 +3338,7 @@ impl EditorState {
                     self.hex_cursor.byte_offset += 1;
                 }
 
-                self.set_info_bar_message("Byte written");
+                let _ = self.set_info_bar_message("Byte written");
             }
 
             // "" => {
@@ -3377,7 +3395,7 @@ impl EditorState {
                 if self.hex_cursor.byte_offset > 0 {
                     self.hex_cursor.byte_offset -= 1;
                 } else {
-                    self.set_info_bar_message("Already at start of file");
+                    let _ = self.set_info_bar_message("Already at start of file");
                 }
             }
 
@@ -3386,7 +3404,7 @@ impl EditorState {
                 if self.hex_cursor.byte_offset + 1 < file_size {
                     self.hex_cursor.byte_offset += 1;
                 } else {
-                    self.set_info_bar_message("Already at end of file");
+                    let _ = self.set_info_bar_message("Already at end of file");
                 }
             }
 
@@ -3402,15 +3420,15 @@ impl EditorState {
                     Ok(Some(newline_pos)) => {
                         // Found a newline - move cursor to it
                         self.hex_cursor.byte_offset = newline_pos;
-                        self.set_info_bar_message("Previous line");
+                        let _ = self.set_info_bar_message("Previous line");
                     }
                     Ok(None) => {
                         // No newline found - go to start of file
                         self.hex_cursor.byte_offset = 0;
-                        self.set_info_bar_message("At start of file");
+                        let _ = self.set_info_bar_message("At start of file");
                     }
                     Err(e) => {
-                        self.set_info_bar_message(&format!("Search error: {}", e));
+                        let _ = self.set_info_bar_message(&format!("Search error: {}", e));
                     }
                 }
             }
@@ -3426,17 +3444,17 @@ impl EditorState {
                     Ok(Some(newline_pos)) => {
                         // Found a newline - move cursor to it
                         self.hex_cursor.byte_offset = newline_pos;
-                        self.set_info_bar_message("Next line");
+                        let _ = self.set_info_bar_message("Next line");
                     }
                     Ok(None) => {
                         // No newline found - go to end of file
                         if file_size > 0 {
                             self.hex_cursor.byte_offset = file_size - 1;
                         }
-                        self.set_info_bar_message("At end of file");
+                        let _ = self.set_info_bar_message("At end of file");
                     }
                     Err(e) => {
-                        self.set_info_bar_message(&format!("Search error: {}", e));
+                        let _ = self.set_info_bar_message(&format!("Search error: {}", e));
                     }
                 }
             }
@@ -3465,7 +3483,7 @@ impl EditorState {
             "gg" => {
                 // Go to start of file
                 self.hex_cursor.byte_offset = 0;
-                self.set_info_bar_message("Start of file");
+                let _ = self.set_info_bar_message("Start of file");
             }
 
             "ge" | "G" => {
@@ -3473,13 +3491,13 @@ impl EditorState {
                 // Go to end of file
                 if file_size > 0 {
                     self.hex_cursor.byte_offset = file_size - 1;
-                    self.set_info_bar_message("End of file");
+                    let _ = self.set_info_bar_message("End of file");
                 }
             }
 
             // === UNKNOWN COMMAND ===
             _ => {
-                self.set_info_bar_message(&format!("Unknown hex command: {}", trimmed));
+                let _ = self.set_info_bar_message(&format!("Unknown hex command: {}", trimmed));
             }
         }
 
@@ -3752,7 +3770,7 @@ impl EditorState {
 
         if bytes_read == 0 {
             // tell user: too long
-            self.set_info_bar_message("*no input*");
+            let _ = self.set_info_bar_message("*no input*");
 
             // continue; // as this would appear in a nested loop
             return Ok(true); // Skip/ignore oversized input, continue editing
@@ -4161,7 +4179,7 @@ impl EditorState {
         let bytes_read = stdin_handle.read(command_buffer)?;
 
         // clear info-bar blurbiness
-        self.set_info_bar_message("");
+        let _ = self.set_info_bar_message("");
 
         // If overflow, ignore and continue/skip
         // this is equivalent to loop{if X {continue};}
@@ -4186,7 +4204,7 @@ impl EditorState {
             }
 
             // eprintln!("DRAINED total {} bytes", total_drained);
-            self.set_info_bar_message("*input too long*");
+            let _ = self.set_info_bar_message("*input too long*");
             return Ok(true);
         }
 
@@ -4260,12 +4278,31 @@ impl EditorState {
     /// - Empty string: clears the message
     /// - Message too long: truncates to fit buffer
     /// - Non-ASCII: UTF-8 bytes copied directly
-    fn set_info_bar_message(&mut self, message: &str) {
-        // Defensive: ensure buffer exists and has known capacity
+    fn set_info_bar_message(&mut self, message: &str) -> Result<()> {
+        // ensure buffer exists and has known capacity
+        //
+        // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        // This is not included in production builds
+        // assert: only when running in a debug-build: will panic
         debug_assert!(
             INFOBAR_MESSAGE_BUFFER_SIZE > 0,
             "Info bar buffer must have non-zero capacity"
         );
+        // This is not included in production builds
+        // assert: only when running cargo test: will panic
+        #[cfg(test)]
+        assert!(
+            INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+            "Info bar buffer must have non-zero capacity"
+        );
+        // Catch & Handle without panic in production
+        //
+        if INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
+            // state.set_info_bar_message("Config error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "zero buffer size error".into(),
+            ));
+        }
 
         // Clear entire buffer (ensures null termination)
         self.info_bar_message_buffer = [0u8; INFOBAR_MESSAGE_BUFFER_SIZE];
@@ -4291,6 +4328,7 @@ impl EditorState {
 
         // Buffer is already null-terminated from the clear operation
         // Byte at index copy_len and beyond are guaranteed to be 0
+        Ok(())
     }
 
     /*
@@ -4507,7 +4545,7 @@ fn is_leap_year(year: u64) -> bool {
 /// let path = Path::new("notes.txt");
 /// memo_mode_mini_editor_loop(&path)?;
 /// ```
-pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
+pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
     const STDIN_CHUNK_SIZE: usize = 256;
     const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
@@ -4555,10 +4593,10 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
         // Defensive: prevent infinite loop
         chunk_counter += 1;
         if chunk_counter > MAX_CHUNKS {
-            return Err(io::Error::new(
+            return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::Other,
                 "Maximum iteration limit exceeded",
-            ));
+            )));
         }
 
         // Clear buffer before reading (defensive: prevent data leakage)
@@ -4575,7 +4613,17 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
             }
         };
 
-        // Defensive assertion: bytes_read should never exceed buffer size
+        // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        // This is not included in production builds
+        // assert: only when running in a debug-build: will panic
+        debug_assert!(
+            bytes_read <= STDIN_CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            STDIN_CHUNK_SIZE
+        );
+        // This is not included in production builds
+        // assert: only when running cargo test: will panic
         #[cfg(test)]
         assert!(
             bytes_read <= STDIN_CHUNK_SIZE,
@@ -4583,6 +4631,14 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> io::Result<()> {
             bytes_read,
             STDIN_CHUNK_SIZE
         );
+        // Catch & Handle without panic in production
+        //
+        if bytes_read <= STDIN_CHUNK_SIZE {
+            // state.set_info_bar_message("Config error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "bytes_read <= STDIN_CHUNK_SIZE".into(),
+            ));
+        }
 
         // Check for exit command before writing to file
         // Only check if valid UTF-8 (don't fail on binary data)
@@ -7370,7 +7426,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         match std::env::current_dir() {
             Ok(cwd) => cwd.join(source_file_path),
             Err(e) => {
-                state.set_info_bar_message("cannot get cwd");
+                let _ = state.set_info_bar_message("cannot get cwd");
                 log_error(
                     &format!("Cannot get current directory: {}", e),
                     Some("insert_file_at_cursor"),
@@ -7383,7 +7439,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Defensive: Check source file exists before attempting to open
     // Fail fast with clear error message
     if !source_path.exists() {
-        state.set_info_bar_message("file not found");
+        let _ = state.set_info_bar_message("file not found");
         log_error(
             &format!("Source file does not exist: {}", source_path.display()),
             Some("insert_file_at_cursor"),
@@ -7397,7 +7453,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Defensive: Check source path is a file (not directory)
     // Attempting to read a directory would cause confusing errors later
     if !source_path.is_file() {
-        state.set_info_bar_message("not a file");
+        let _ = state.set_info_bar_message("not a file");
         log_error(
             &format!("Source path is not a file: {}", source_path.display()),
             Some("insert_file_at_cursor"),
@@ -7415,7 +7471,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // After this, all operations use byte offset arithmetic
 
     let target_file_path = state.read_copy_path.clone().ok_or_else(|| {
-        state.set_info_bar_message("no target file");
+        let _ = state.set_info_bar_message("no target file");
         log_error(
             "read_copy_path not set in editor state",
             Some("insert_file_at_cursor"),
@@ -7432,7 +7488,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     {
         Ok(Some(pos)) => pos.byte_offset,
         Ok(None) => {
-            state.set_info_bar_message("invalid cursor position");
+            let _ = state.set_info_bar_message("invalid cursor position");
             log_error(
                 "Cannot get byte position from cursor",
                 Some("insert_file_at_cursor"),
@@ -7443,7 +7499,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             ));
         }
         Err(e) => {
-            state.set_info_bar_message("cursor position error");
+            let _ = state.set_info_bar_message("cursor position error");
             log_error(
                 &format!("Error getting cursor position: {}", e),
                 Some("insert_file_at_cursor"),
@@ -7461,7 +7517,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     let mut source_file = match File::open(&source_path) {
         Ok(file) => file,
         Err(e) => {
-            state.set_info_bar_message("cannot read file");
+            let _ = state.set_info_bar_message("cannot read file");
             log_error(
                 &format!("Cannot open source file: {} - {}", source_path.display(), e),
                 Some("insert_file_at_cursor"),
@@ -7491,7 +7547,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // Defensive: Prevent infinite loop from filesystem corruption
         // Cosmic ray bit flips in file metadata could cause endless reads
         if chunk_counter >= MAX_CHUNKS {
-            state.set_info_bar_message("file too large");
+            let _ = state.set_info_bar_message("file too large");
             log_error(
                 &format!("Maximum chunk limit reached: {}", MAX_CHUNKS),
                 Some("insert_file_at_cursor"),
@@ -7516,7 +7572,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         let bytes_read = match source_file.read(&mut buffer) {
             Ok(n) => n,
             Err(e) => {
-                state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
+                let _ = state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
                 log_error(
                     &format!("Read error at chunk {}: {}", chunk_counter, e),
                     Some("insert_file_at_cursor"),
@@ -7608,10 +7664,23 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
 
     // Set success message in info bar
     // Shows total bytes (after final byte deletion)
-    state.set_info_bar_message(&format!(
-        "inserted {} bytes",
-        total_bytes_written.saturating_sub(1) // -1 because we deleted final byte
-    ));
+    // state.set_info_bar_message(&format!(
+    //     "inserted {} bytes",
+    //     total_bytes_written.saturating_sub(1) // -1 because we deleted final byte
+    // ));
+
+    // Set success message in info bar
+    // If it fails, continue operation (message display is non-critical)
+    let _ = state
+        .set_info_bar_message(&format!(
+            "inserted {} bytes",
+            total_bytes_written.saturating_sub(1)
+        ))
+        .or_else(|e| {
+            // Log error but don't propagate (message is cosmetic)
+            eprintln!("Warning: Failed to set info bar message: {}", e);
+            Ok::<(), LinesError>(()) // Convert to Ok to discard error
+        });
 
     Ok(())
 }
@@ -9323,7 +9392,7 @@ pub fn initialize_session_directory(
 /// - Creates parent directories if needed
 /// - Initializes new files with timestamp header
 /// - Creates read-copy for safety
-pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> io::Result<()> {
+pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
     //  ///////////////////////////////////////
     //  Initialization & Bootstrap Lines Editor
     //  ///////////////////////////////////////
