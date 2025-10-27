@@ -3,28 +3,27 @@
 Lines is a minimal text editor.
 
 ```
-quit save undo del|norm ins vis|wrap raw rlativ byte|wrd,b,end /cmmnt []rpt hjkl
+quit save undo del|norm ins vis hex raw|cvy pasty|wrd,b,end ///cmmnt []rpt hjkl
 1 # lines_editor
 2
 3 Lines is a minimal text editor.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+4
+5
+6
+7
+8
+9
+10
+11
+12 
+13 
+14 
+15 
+16 
+17 
+18
+19
+21
 NORMAL 1:3 README.md >
 ```
 
@@ -60,42 +59,47 @@ In 2025 these are all common, yet there is no good way to deal with these.
 - Navigation (hjkl, word boundaries, goto line)
 - Basic editing (insert characters, delete characters)
 - Line operations (delete line, comment/uncomment)
-- Save operations (save, save-as)
-- File safety (read-copies, timestamped archives)
-- Line wrapping toggle
+- Save operations (save)
+- File safety (read-copies, timestamped archives, hex-edit in place)
 - Visual mode (selection)
 - Line numbers (absolute/relative)
-- Multi-cursor/ctrl+d functionality
 ~ "Plugin" architecture: modular system for commands
 - 'Memo' Mode: (quick-start exists in original Lines)
 - open to line
-- go to end of file (just iterate, must see line number)
+- go to end of file
+- Hex editor dual-view
+- Byte viewing mode
+- Byte editing
+- help menu
+- source-it (see File Fantastic)
+- Pasty: copy(yank) paste
+- modular clipboard
+- insert file into file with file-path insert
+- empty-enter repeat last action
+- N-moves
+- end of line, end of file, insertions.
 
 
 ## Future/Probably Scope:
-- relative lines
+- Multi-cursor/ctrl+d functionality
+- save-as
 - Character encoding awareness
 - extended delete (line array slice)
 - Undo (optional, with constrained history buffers)
 - Encoding conversion (write in different encodings)
-- Hex editor dual-view
 - Search,
 - fuzzy search,
 - regex search,
 - some Extended goto commands
 - Configuration files
-- help menu
 - build .rs for --version
-- source-it (see File Fantastic)
 - super-mini directory file manager, for if "lines ." open in dir (list file/dir by number, if select file open in lines, if select dir show fiies, option 1 is back, option)
-- Byte viewing mode
-- Byte editing
-
+- extract line
+- extract header
 - Select:
---1. delete a selection
---2. ctrl+d superpower
---3. search for selection
---4. maybe crawl-count selection in file (though not all shown...)
+--1. ctrl+d superpower
+--2. search for selection
+--3. maybe crawl-count selection in file (though not all shown...)
 
 ## Out of Scope:
 - Redo functionality
@@ -106,9 +110,9 @@ In 2025 these are all common, yet there is no good way to deal with these.
 - Mouse support
 - Advanced goto features (e.g. Helix has a massive goto suite menu)
 - Themes/colors beyond basic highlighting
-
-
-
+- Line wrapping toggle
+- relative lines
+--1. delete a selection
 
 
 # Questions:
