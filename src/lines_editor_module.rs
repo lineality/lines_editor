@@ -405,7 +405,7 @@ fn move_cursor_to(x: usize, y: usize) {
     print!("\x1b[{};{}H", y + 1, x + 1);
 }
 
-fn parse_command(input: &str) -> (Option<char>, usize) {
+fn parse_commands_for_normal_visualselect_modes(input: &str) -> (Option<char>, usize) {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return (None, 1);
@@ -642,7 +642,7 @@ fn main() {
 
         let mut input = String::new();
         handle.read_line(&mut input).unwrap();
-        let (command, repeat_count) = parse_command(&input);
+        let (command, repeat_count) = parse_commands_for_normal_visualselect_modes(&input);
 
         if let Some(cmd) = command {
             let old_cursor = cursor;
@@ -731,33 +731,20 @@ fn main() {
 
 /*
 // src/main.rs
+use std::env;
+use std::path::PathBuf;
 
-// import file fantstic module w/ these 2 lines
+// import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
     LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
-use std::env;
-use std::path::PathBuf;
 
+// "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
-
-// Re-export things that tests need (if they're private)
-// #[cfg(test)]
-// pub(crate) use lines_editor_module::*; // Makes module contents available to tests
-
-#[cfg(test)]
-mod tests;
-
-// import file fantstic module w/ these 2 lines
-// #[cfg(test)]
-// mod lines_editor_module;
-// #[cfg(test)]
-// pub(crate) use lines_editor_module::*;
-
-// Developer explicitly lists files to embed
+// Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
     SourcedFile::new("src/main.rs", include_str!("main.rs")),
@@ -775,6 +762,10 @@ const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("LICENSE", include_str!("../LICENSE")),
     SourcedFile::new(".gitignore", include_str!("../.gitignore")),
 ];
+
+// Cargo-tests in tests.rs // run: cargo test
+#[cfg(test)]
+mod tests;
 
 /// Main entry point - routes between memo mode and full editor mode
 ///
@@ -838,7 +829,7 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 "--version" | "-v" | "-V" => {
-                    println!("lines editor v0.2.0");
+                    println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
                     Ok(())
                 }
                 "--source" | "--source_it" => {
@@ -849,12 +840,6 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 _ => {
-                    /*
-                    TODO:
-                    only open an existing file in memo-mode(append)
-                    if it has the -a flag
-                    if not existing path.. then memo mode...
-                    */
                     // Treat as file/directory path
                     if in_home && !arg.contains('/') && !arg.contains('\\') {
                         // In home + simple filename = memo mode with custom name
@@ -909,15 +894,15 @@ fn main() -> Result<(), LinesError> {
 */
 
 /*
-* Spec Notes:
+# Spec Notes:
 
 1. copy() in Rust uses stack: So no additional preallocations needed ...right??? TODO: check this
 
 2. Input System Architecture:
 
-- Lines uses Rust's standard stdin().read_line() which reads until Enter is pressed
-    uses a String (which DOES use heap - that's the OS/Rust input buffer)
-- NO direct keypress detection (no raw terminal)
+"+ Enter" System
+- Lines uses Rust's standard stdin().read() on stack, not .read_line() on heap
+- No direct keypress detection (no raw terminal)
 - Everything is "command + Enter"
 */
 
@@ -928,12 +913,6 @@ use std::io::{self, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// /// Tests are in src/tests.rs
-// #[cfg(test)]
-// mod tests;
-
-// TODO maybe this does not need to exist? not used...
-// note: may be used by pasty, pasty can use a smaller one
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
 /// This module manages all editor state using only pre-allocated memory.
@@ -978,7 +957,7 @@ const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
-const MAX_TUI_ROWS: usize = 48;
+pub const MAX_TUI_ROWS: usize = 48;
 
 /// Maximum number of columns (utf-8 char across) in largest supported TUI
 /// of which 157 can be file text
@@ -1000,14 +979,11 @@ const YELLOW: &str = "\x1b[33m";
 // const ITALIC: &str = "\x1b[3m";
 // const UNDERLINE: &str = "\x1b[4m";
 
-// use crate::limits;
-
 // ============================================================================
 // ERROR SECTION: ERROR HANDLING SYSTEM (start)
 // ============================================================================
-
 /*
-Converting to LinesError
+# Notes on Converting to LinesError:
 
 return Err(e);
 ->
@@ -1023,6 +999,9 @@ let file = File::open(path)?;
 ->
 let file = File::open(path).map_err(|e| LinesError::Io(e))?;
 
+
+# Notes on 'Power of Ten Rules' Inspired
+# "Assert & Catch-Handle" 3-part System
 
 // template/example for check/assert format
 //    =================================================
@@ -1050,7 +1029,7 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
     ));
 }
 
- */
+*/
 
 /// Error types for the Lines text editor
 ///
@@ -1282,6 +1261,14 @@ fn main() {
     // Normal application logic...
 }
 */
+
+// ==================
+// Movement Functions
+// ==================
+
+// =========================
+// End of Movement Functions
+// =========================
 
 /// Creates a timestamp string specifically for archive file naming
 ///
@@ -2077,7 +2064,7 @@ pub struct WindowPosition {
 }
 
 /// Maps window positions to file positions
-pub struct WindowMap {
+pub struct WindowMapStruct {
     /// Pre-allocated mapping array [row][col] -> Option<FilePosition>
     /// None means this position is empty/padding
     pub positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
@@ -2087,10 +2074,10 @@ pub struct WindowMap {
     pub valid_cols: usize,
 }
 
-impl WindowMap {
-    /// Creates a new WindowMap with all positions set to None
+impl WindowMapStruct {
+    /// Creates a new WindowMapStruct with all positions set to None
     pub fn new() -> Self {
-        WindowMap {
+        WindowMapStruct {
             positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
             valid_rows: DEFAULT_ROWS,
             valid_cols: DEFAULT_COLS,
@@ -2362,7 +2349,7 @@ pub struct EditorState {
     // pub filetui_windowmap_buffer_used: usize,
 
     /// Window to file position mapping
-    pub window_map: WindowMap,
+    pub window_map: WindowMapStruct,
 
     /// Cursor position in window
     pub cursor: WindowPosition,
@@ -2454,7 +2441,7 @@ impl EditorState {
             effective_cols,
             security_mode: false, // default setting, purpose: to force-reset manually clear overwrite buffers
 
-            window_map: WindowMap::new(),
+            window_map: WindowMapStruct::new(),
             cursor: WindowPosition { row: 0, col: 0 },
             // window_start: FilePosition {
             //     // for Wrap mode, if that happens
@@ -3298,7 +3285,7 @@ impl EditorState {
     /// - Cursor clamped to valid byte positions
     /// - No movement command can cause overflow
     /// - File size checked before each navigation
-    fn handle_hex_mode_input(
+    fn handle_parse_hex_mode_input_and_commands(
         &mut self,
         stdin_handle: &mut StdinLock,
         command_buffer: &mut [u8; WHOLE_COMMAND_BUFFER_SIZE],
@@ -3995,7 +3982,175 @@ impl EditorState {
         Ok(keep_editor_loop_running)
     }
 
-    /// Parses user input into a command
+    // /// Parses user input into a command for Normal-Mode and Visual-Select Mode
+    // ///
+    // /// # Arguments
+    // /// * `input` - Raw input string from user
+    // /// * `current_mode` - Current editor mode for context-aware parsing
+    // ///
+    // /// # Returns
+    // /// * `Command` - Parsed command or Command::None if invalid
+    // ///
+    // /// # Format
+    // /// - Single char: `j` -> MoveDown(1)
+    // /// - With count: `5j` -> MoveDown(5)
+    // /// - Count then command: `10l` -> MoveRight(10)
+    // /// - Mode commands: `i` -> EnterInsertMode
+    // ///
+    // /// # Examples
+    // /// - "j" -> MoveDown(1)
+    // /// - "5j" -> MoveDown(5)
+    // /// - "10k" -> MoveUp(10)
+    // /// - "3h" -> MoveLeft(3)
+    // /// - "7l" -> MoveRight(7)
+    // ///
+    // /// Note: For other command handling, also see: full_lines_editor()
+    // ///
+    // pub fn parse_commands_for_normal_visualselect_modes(
+    //     &mut self,
+    //     input: &str,
+    //     current_mode: EditorMode,
+    // ) -> Command {
+    //     let trimmed = input.trim();
+
+    //     if trimmed.is_empty() {
+    //         return Command::None;
+    //     }
+
+    //     // In insert mode, most keys are text, not commands
+    //     if current_mode == EditorMode::Insert {
+    //         // Check for escape sequences to exit insert mode
+    //         if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "-n" {
+    //             return Command::EnterNormalMode;
+    //         }
+
+    //         // delete key
+    //         if trimmed == "\x1b[3~" {
+    //             return Command::None;
+    //         }
+    //         // // Check for special commands in insert mode
+    //         // if trimmed == "-d" || trimmed == "\x1b[3~" {
+    //         //     return Command::DeleteBackspace;
+    //         // }
+    //         // Everything else is text input (handled separately)
+    //         return Command::None;
+    //     }
+
+    //     // Parse potential repeat count and command
+    //     let mut chars = trimmed.chars().peekable();
+    //     let mut count = 0usize;
+    //     let mut command_start = 0;
+
+    //     // // Defensive: Limit iteration on input parsing (not movement)
+    //     let mut iterations = 0;
+
+    //     // Parse numeric prefix
+    //     while let Some(&ch) = chars.peek() {
+    //         // Check for size of number for actions:
+    //         // this might be done more cleanly but is maybe ok.
+    //         // COMMAND_PARSE_MAX_CHARS is the max allowed use do*N
+    //         if iterations >= limits::COMMAND_PARSE_MAX_CHARS {
+    //             return Command::None; // Too long to be valid command
+    //         }
+    //         iterations += 1;
+
+    //         if ch.is_ascii_digit() {
+    //             count = count
+    //                 .saturating_mul(10)
+    //                 .saturating_add((ch as usize) - ('0' as usize));
+    //             chars.next();
+    //             command_start += 1;
+    //         } else {
+    //             break;
+    //         }
+    //     }
+
+    //     // Default count to 1 if not specified
+    //     if count == 0 {
+    //         count = 1;
+    //     }
+
+    //     // Get the command string (everything after the number)
+    //     let command_str = &trimmed[command_start..];
+
+    //     /*
+    //     For another command area, also see:
+    //     ```rust
+    //     fn full_lines_editor(){
+    //     ...
+    //     if state.mode == ...
+    //     ```
+    //      */
+    //     if current_mode == EditorMode::Normal {
+    //         match command_str {
+    //             // Single character commands
+    //             "h" => Command::MoveLeft(count),
+    //             "\x1b[D" => Command::MoveLeft(count), // left over arrow
+    //             "j" => Command::MoveDown(count),
+    //             "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
+    //             "l" => Command::MoveRight(count),
+    //             "\x1b[C" => Command::MoveRight(count), // starboard arrow
+    //             "k" => Command::MoveUp(count),
+    //             "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
+    //             "i" => Command::EnterInsertMode,
+    //             "v" => Command::EnterVisualMode,
+    //             // "c" | "y" => Command::Copyank,
+    //             // Multi-character commands
+    //             "wq" => Command::SaveAndQuit,
+    //             "s" | "w" => Command::Save,
+    //             "q" => Command::Quit,
+    //             "p" | "pasty" => Command::EnterPastyClipboardMode,
+    //             "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
+    //             // "wrap" => Command::ToggleWrap,
+    //             // "gg" => Command::MoveToTop,
+    //             "d" => Command::DeleteLine,
+    //             "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
+    //             _ => Command::None,
+    //         }
+    //     } else if current_mode == EditorMode::VisualSelectMode {
+    //         match command_str {
+    //             // same moves for selection:
+    //             "h" => Command::MoveLeft(count),
+    //             "\x1b[D" => Command::MoveLeft(count), // left over arrow
+    //             "j" => Command::MoveDown(count),
+    //             "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
+    //             "l" => Command::MoveRight(count),
+    //             "\x1b[C" => Command::MoveRight(count), // starboard arrow
+    //             "k" => Command::MoveUp(count),
+    //             "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
+    //             "i" => Command::EnterInsertMode,
+    //             "q" => Command::Quit,
+    //             "c" | "y" => Command::Copyank,
+    //             "s" | "w" => Command::Save,
+    //             "n" | "\x1b" => Command::EnterNormalMode,
+    //             "wq" => Command::SaveAndQuit,
+    //             "d" => Command::DeleteBackspace,
+    //             "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
+
+    //             "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
+    //             "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
+    //             // Some('p') => Command::PastyClipboard(count),
+    //             // // TODO: Make These, Command::Select...
+    //             // Some('w') => Command::SelectNextWord,
+    //             // Some('b') => Command::SelectPreviousWordBeginning,
+    //             // Some('e') => Command::SelectNextWordEnd,
+    //             //
+    //             // Some('h') => Command::SelectLeft(count),
+    //             // Some('j') => Command::SelectDown(count),
+    //             // Some('k') => Command::SelectUp(count),
+    //             // Some('l') => Command::SelectRight(count),
+    //             _ => Command::None,
+    //         }
+    //     } else {
+    //         match command_str {
+    //             // if current_mode == EditorMode::Insert {
+    //             // This is an edge case, see above
+    //             // (length limit not apply?)
+    //             _ => Command::None,
+    //         }
+    //     }
+    // }
+    /// Parses user input into a command for Normal-Mode and Visual-Select Mode
     ///
     /// # Arguments
     /// * `input` - Raw input string from user
@@ -4009,17 +4164,27 @@ impl EditorState {
     /// - With count: `5j` -> MoveDown(5)
     /// - Count then command: `10l` -> MoveRight(10)
     /// - Mode commands: `i` -> EnterInsertMode
+    /// - Line jump: `g45` -> GotoLine(45)
+    ///
+    /// # Special Parsing: g-commands
+    /// - `g` followed by digits = line jump (e.g., `g10` = line 10)
+    /// - `gg`, `ge`, `gh`, `gl` = special navigation
+    /// - Leading count is IGNORED for g-commands (e.g., `5g10` still goes to line 10)
     ///
     /// # Examples
     /// - "j" -> MoveDown(1)
     /// - "5j" -> MoveDown(5)
-    /// - "10k" -> MoveUp(10)
-    /// - "3h" -> MoveLeft(3)
-    /// - "7l" -> MoveRight(7)
+    /// - "g45" -> GotoLine(45)
+    /// - "5g10" -> GotoLine(10) [count ignored]
+    /// - "gg" -> GotoFileStart
     ///
     /// Note: For other command handling, also see: full_lines_editor()
     ///
-    pub fn parse_command(&mut self, input: &str, current_mode: EditorMode) -> Command {
+    pub fn parse_commands_for_normal_visualselect_modes(
+        &mut self,
+        input: &str,
+        current_mode: EditorMode,
+    ) -> Command {
         let trimmed = input.trim();
 
         if trimmed.is_empty() {
@@ -4037,10 +4202,6 @@ impl EditorState {
             if trimmed == "\x1b[3~" {
                 return Command::None;
             }
-            // // Check for special commands in insert mode
-            // if trimmed == "-d" || trimmed == "\x1b[3~" {
-            //     return Command::DeleteBackspace;
-            // }
             // Everything else is text input (handled separately)
             return Command::None;
         }
@@ -4050,7 +4211,7 @@ impl EditorState {
         let mut count = 0usize;
         let mut command_start = 0;
 
-        // // Defensive: Limit iteration on input parsing (not movement)
+        // Defensive: Limit iteration on input parsing (not movement)
         let mut iterations = 0;
 
         // Parse numeric prefix
@@ -4082,6 +4243,66 @@ impl EditorState {
         // Get the command string (everything after the number)
         let command_str = &trimmed[command_start..];
 
+        // =========================================================================
+        // SPECIAL CASE: g-commands (line jumps and navigation)
+        // =========================================================================
+        // Handle 'g' prefix commands BEFORE mode-specific parsing
+        // This allows both Normal and Visual modes to use same g-command logic
+        //
+        // g-commands:
+        // - g{digits} = jump to line number (e.g., g45)
+        // - gg = jump to file start
+        // - ge = jump to file end
+        // - gh = jump to line start
+        // - gl = jump to line end
+        //
+        // NOTE: Leading count is IGNORED for all g-commands
+        // Example: "5g10" -> GotoLine(10), not some multiple
+        if command_str.starts_with('g') && command_str.len() > 1 {
+            let rest = &command_str[1..];
+
+            // Check if rest is all digits (line number jump)
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                // Parse line number (defensive: use saturating operations)
+                let mut line_number = 0usize;
+                let mut digit_iterations = 0;
+
+                for ch in rest.chars() {
+                    // Defensive: prevent infinite loop on malformed input
+                    if digit_iterations >= limits::COMMAND_PARSE_MAX_CHARS {
+                        let _ = self.set_info_bar_message("Line number too long");
+                        return Command::None;
+                    }
+                    digit_iterations += 1;
+
+                    let digit_value = (ch as usize) - ('0' as usize);
+                    line_number = line_number.saturating_mul(10).saturating_add(digit_value);
+                }
+
+                // Defensive: reject line 0 (lines are 1-indexed)
+                if line_number == 0 {
+                    let _ = self.set_info_bar_message("Line numbers start at 1");
+                    return Command::None;
+                }
+
+                // Valid line jump command
+                return Command::GotoLine(line_number);
+            }
+
+            // Check for multi-character g-commands
+            match command_str {
+                // "gg" => return Command::GotoFileStart,
+                // "ge" => return Command::GotoFileEnd,
+                // "gh" => return Command::GotoLineStart,
+                // "gl" => return Command::GotoLineEnd,
+                _ => {
+                    // Unknown g-command
+                    let _ = self.set_info_bar_message(&format!("Unknown command: {}", command_str));
+                    return Command::None;
+                }
+            }
+        }
+
         /*
         For another command area, also see:
         ```rust
@@ -4107,12 +4328,12 @@ impl EditorState {
                 // "c" | "y" => Command::Copyank,
                 // Multi-character commands
                 "wq" => Command::SaveAndQuit,
-                "s" | "w" => Command::Save,
+                "s" => Command::Save,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
                 // "wrap" => Command::ToggleWrap,
-                // "gg" => Command::MoveToTop,
+                // "gg" => Command::MoveToTop, // Now handled above
                 "d" => Command::DeleteLine,
                 "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
                 _ => Command::None,
@@ -4131,7 +4352,7 @@ impl EditorState {
                 "i" => Command::EnterInsertMode,
                 "q" => Command::Quit,
                 "c" | "y" => Command::Copyank,
-                "s" | "w" => Command::Save,
+                "s" => Command::Save,
                 "n" | "\x1b" => Command::EnterNormalMode,
                 "wq" => Command::SaveAndQuit,
                 "d" => Command::DeleteBackspace,
@@ -4139,16 +4360,6 @@ impl EditorState {
 
                 "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
-                // Some('p') => Command::PastyClipboard(count),
-                // // TODO: Make These, Command::Select...
-                // Some('w') => Command::SelectNextWord,
-                // Some('b') => Command::SelectPreviousWordBeginning,
-                // Some('e') => Command::SelectNextWordEnd,
-                //
-                // Some('h') => Command::SelectLeft(count),
-                // Some('j') => Command::SelectDown(count),
-                // Some('k') => Command::SelectUp(count),
-                // Some('l') => Command::SelectRight(count),
                 _ => Command::None,
             }
         } else {
@@ -4160,8 +4371,8 @@ impl EditorState {
             }
         }
     }
-
-    /// Handles input when in Normal or Visual mode.
+    /// Handles input when in Normal or Visual mode: a wrapper for parse_commands_for_normal_visualselect_modes()
+    ///
     /// Reads a command from stdin, parses it, executes it, and stores it for repeat.
     ///
     /// # Return Value Semantics
@@ -4223,6 +4434,8 @@ impl EditorState {
     ///
     /// **Safety bound:** Drain limited to 1024 total bytes to prevent malicious/malformed
     /// stdin from causing infinite loops.
+    ///
+    /// ( wrapper for parse_commands_for_normal_visualselect_modes() )
     fn handle_normalmode_and_visualmode_input(
         &mut self,
         stdin_handle: &mut StdinLock,
@@ -4267,7 +4480,8 @@ impl EditorState {
         }
 
         // Parse command as utf-8 from bytes
-        let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or(""); // Ignore invalid UTF-8
+        // // Ignore invalid UTF-8
+        let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or("");
 
         // Normal/Visual mode: parse as command
         let trimmed = command_str.trim();
@@ -4280,7 +4494,7 @@ impl EditorState {
             }
         } else {
             // Normal/Visual mode: Parse this command
-            self.parse_command(command_str, self.mode)
+            self.parse_commands_for_normal_visualselect_modes(command_str, self.mode)
         };
 
         // Normal/Visual mode: Execute command
@@ -4417,6 +4631,7 @@ impl EditorState {
         }
     }
 
+    /// Is this for undo change-log?
     /// Initialize changelog for the current file
     pub fn init_changelog(&mut self, original_file_path: &Path) -> io::Result<()> {
         // Put changelog next to the file: "document.txt.changelog"
@@ -4463,41 +4678,6 @@ impl EditorState {
             .copy_from_slice(&line_bytes[..bytes_to_write]);
 
         Ok(bytes_to_write)
-    }
-
-    /// Updates terminal dimensions and recalculates effective area
-    ///
-    /// # Arguments
-    /// * `rows` - New terminal row count
-    /// * `cols` - New terminal column count
-    ///
-    /// # Returns
-    /// * `Ok(())` - Successfully updated
-    /// * `Err(io::Error)` - If dimensions exceed maximums
-    pub fn resize_terminal(&mut self, rows: usize, cols: usize) -> io::Result<()> {
-        // Defensive: Validate dimensions
-        if rows > MAX_TUI_ROWS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Rows {} exceeds maximum {}", rows, MAX_TUI_ROWS),
-            ));
-        }
-        if cols > MAX_TUI_COLS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Columns {} exceeds maximum {}", cols, MAX_TUI_COLS),
-            ));
-        }
-
-        // Recalculate effective area (reserve space for UI elements)
-        self.effective_rows = rows.saturating_sub(3);
-        self.effective_cols = cols.saturating_sub(3);
-
-        // Update window map dimensions
-        self.window_map.valid_rows = self.effective_rows;
-        self.window_map.valid_cols = self.effective_cols;
-
-        Ok(())
     }
 }
 
@@ -5351,7 +5531,7 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
 /// For a file starting "Hello\nWorld\n" with window at line 1:
 /// - Row 0: "1 Hello"
 /// - Row 1: "2 World"
-/// WindowMap will map each character to its file byte position.
+/// WindowMapStruct will map each character to its file byte position.
 pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path) -> Result<usize> {
     // Defensive: Validate inputs
     if !readcopy_file_path.is_absolute() {
@@ -5650,7 +5830,7 @@ fn read_single_line<'a>(
 ///
 /// # Purpose
 /// Takes a line's bytes, skips horizontal_offset characters, then writes
-/// the visible portion to the display buffer while updating WindowMap.
+/// the visible portion to the display buffer while updating WindowMapStruct.
 ///
 /// # Arguments
 /// * `state` - Editor state for buffers and map
@@ -5826,7 +6006,7 @@ fn process_line_with_offset(
                 state.utf8_txt_display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
             }
 
-            // Update WindowMap for this character position
+            // Update WindowMapStruct for this character position
             let file_pos = FilePosition {
                 byte_offset: file_line_start + byte_index as u64,
                 line_number: state.line_count_at_top_of_window,
@@ -6123,6 +6303,14 @@ pub enum Command {
     MoveDown(usize),  // j - repeat count
     MoveLeft(usize),  // h - repeat count
     MoveRight(usize), // l - repeat count
+
+    /// Jump to absolute line number (1-indexed, as displayed)
+    ///
+    /// # Examples
+    /// - `g1` - Go to line 1 (file start)
+    /// - `g45` - Go to line 45
+    /// - `g999` - Go to line 999 (or last line if file shorter)
+    GotoLine(usize),
 
     // Mode changes
     EnterInsertMode, // i
@@ -6463,7 +6651,38 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+        Command::GotoLine(line_number) => {
+            // Convert 1-indexed (user display) to 0-indexed (file storage)
+            let target_line = line_number.saturating_sub(1);
 
+            // // Get file path
+            // Get the read_copy path BEFORE the mutable borrow
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+            // Seek to target line and update window position
+            match seek_to_line_number(&mut File::open(&read_copy)?, target_line) {
+                Ok(byte_pos) => {
+                    lines_editor_state.line_count_at_top_of_window = target_line;
+                    lines_editor_state.file_position_of_topline_start = byte_pos;
+                    lines_editor_state.cursor.row = 0;
+                    lines_editor_state.cursor.col = 0;
+
+                    // Rebuild window to show the new position
+                    build_windowmap_nowrap(lines_editor_state, &read_copy)?;
+
+                    let _ = lines_editor_state
+                        .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                    Ok(true)
+                }
+                Err(_) => {
+                    let _ = lines_editor_state.set_info_bar_message("Line not found");
+                    Ok(true)
+                }
+            }
+        }
         Command::DeleteLine => {
             delete_current_line_noload(lines_editor_state, &edit_file_path)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -9760,7 +9979,7 @@ pub fn print_help() {
 /// - Line/col for cursor tracking
 /// - Filename for context
 /// - Input buffer shows what user is typing
-fn format_standard_info_bar(state: &EditorState) -> Result<String> {
+fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<String> {
     // Get mode string
     let mode_str = match state.mode {
         EditorMode::Normal => "NORMAL",
@@ -10395,7 +10614,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     }
 
     // === BOTTOM LINE: INFO BAR ===
-    let info_bar = format_standard_info_bar(state)?;
+    let info_bar = format_info_bar_cafe_normal_visualselect(state)?;
     print!("{}", info_bar);
 
     io::stdout()
@@ -10787,8 +11006,8 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
             //  ===============
             //  Hex Editor Mode
             //  ===============
-            keep_editor_loop_running =
-                lines_editor_state.handle_hex_mode_input(&mut stdin_handle, &mut command_buffer)?;
+            keep_editor_loop_running = lines_editor_state
+                .handle_parse_hex_mode_input_and_commands(&mut stdin_handle, &mut command_buffer)?;
         } else if lines_editor_state.mode == EditorMode::VisualSelectMode {
             //  ==================
             //  Visual Select Mode

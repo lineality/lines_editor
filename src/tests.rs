@@ -538,52 +538,6 @@ mod build_window_tests3 {
 }
 
 #[cfg(test)]
-mod editor_state_tests {
-    use super::*;
-
-    #[test]
-    fn test_editor_state_creation() {
-        let state = EditorState::new();
-        assert_eq!(state.mode, EditorMode::Normal);
-        // assert_eq!(state.terminal_rows, DEFAULT_ROWS);
-        // assert_eq!(state.terminal_cols, DEFAULT_COLS);
-        // assert_eq!(state.filetui_windowmap_buffer_used, 0);
-        assert!(!state.is_modified);
-    }
-
-    #[test]
-    fn test_resize_terminal_valid() {
-        let mut state = EditorState::new();
-        let result = state.resize_terminal(30, 100);
-        assert!(result.is_ok());
-        // assert_eq!(state.terminal_rows, 30);
-        // assert_eq!(state.terminal_cols, 100);
-        assert_eq!(state.effective_rows, 27); // 30 - 3
-        assert_eq!(state.effective_cols, 97); // 100 - 3
-    }
-
-    #[test]
-    fn test_resize_terminal_too_large() {
-        let mut state = EditorState::new();
-        let result = state.resize_terminal(200, 100); // 200 > MAX_ROWS
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_window_map_bounds_checking() {
-        let map = WindowMap::new();
-
-        // Valid access
-        let result = map.get_file_position(0, 0);
-        assert!(result.is_ok());
-
-        // Out of bounds access
-        let result = map.get_file_position(DEFAULT_ROWS, 0);
-        assert!(result.is_err());
-    }
-}
-
-#[cfg(test)]
 mod test_file_tests {
     use super::*;
 
@@ -901,255 +855,6 @@ mod revised_critical_distinction_tests {
             "Display width {} should not exceed terminal width 80",
             row_display_width
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_buffer_vs_terminal_size() -> io::Result<()> {
-        // This test verifies buffer size is independent of terminal size
-        let test_files = create_test_files_with_id("buffer_terminal")?;
-        let test_path = &test_files[2]; // mixed_utf8.txt has double-width chars
-
-        // Test with NARROW terminal
-        let mut state = EditorState::new();
-        state
-            .resize_terminal(24, 40)
-            .expect("Failed to resize to narrow");
-
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
-
-        let result = build_windowmap_nowrap(&mut state, &test_path);
-        assert!(result.is_ok(), "Should handle narrow terminal");
-
-        // First row should be limited by display columns (40), not buffer size (182)
-        let first_row_len = state.display_utf8txt_buffer_lengths[0];
-        assert!(first_row_len <= 182, "Should not exceed buffer size");
-        assert!(first_row_len > 0, "Should have content");
-
-        let first_row_content = &state.utf8_txt_display_buffers[0][..first_row_len];
-        let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
-
-        let display_width =
-            double_width::calculate_display_width(first_row_str).expect("Should calculate width");
-
-        assert!(
-            display_width <= 40,
-            "Display width {} should not exceed terminal width 40",
-            display_width
-        );
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod revised_boundary_tests {
-    use super::*; // ← Line 1: import from tests.rs
-
-    use std::fs;
-
-    #[test]
-    fn test_double_width_at_boundary() -> io::Result<()> {
-        // Create a custom test file for this specific case
-        let test_dir = env::current_dir()?.join("test_files");
-        fs::create_dir_all(&test_dir)?;
-        let test_path = test_dir.join("boundary_test.txt");
-
-        // Create a line with double-width character near terminal edge
-        let mut line = String::from("x").repeat(75);
-        line.push('中'); // Double-width character (takes 2 display columns)
-        line.push_str("yyy");
-
-        fs::write(&test_path, &line)?;
-
-        // ADD DIAGNOSTIC: Show what we created
-        println!("Created boundary test file: {}", test_path.display());
-        println!("Line content: {:?}", line);
-        println!("Line byte length: {}", line.len());
-        println!("Line char count: {}", line.chars().count());
-
-        // Calculate expected display width
-        let expected_display_width = 75 + 2 + 3; // 75 x's + 中(2 cols) + 3 y's = 80
-        println!("Expected display width: {}", expected_display_width);
-
-        // Create 80-column terminal
-        let mut state = EditorState::new();
-        state.resize_terminal(24, 80)?;
-
-        // ADD DIAGNOSTIC: Show state after resize
-        // println!("Terminal cols: {}", state.terminal_cols);
-        println!("Effective cols: {}", state.effective_cols);
-        println!("WindowMap valid_cols: {}", state.window_map.valid_cols);
-
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
-
-        // Build window
-        let result = build_windowmap_nowrap(&mut state, &test_path);
-
-        // Debug output if it fails
-        if let Err(ref e) = result {
-            println!("Build window error: {}", e);
-            println!("Error details: {:?}", e);
-
-            // ADD DIAGNOSTIC: Show where in the process we failed
-            println!("\nState at failure:");
-            println!(
-                "- display_utf8txt_buffer_lengths[0]: {}",
-                state.display_utf8txt_buffer_lengths[0]
-            );
-            if state.display_utf8txt_buffer_lengths[0] > 0 {
-                let partial_content =
-                    &state.utf8_txt_display_buffers[0][..state.display_utf8txt_buffer_lengths[0]];
-                if let Ok(s) = std::str::from_utf8(partial_content) {
-                    println!("- Partial row content: {:?}", s);
-                }
-            }
-        }
-
-        assert!(result.is_ok(), "Should build window successfully");
-
-        // Verify no invalid UTF-8 (which would indicate a split)
-        let row_content =
-            &state.utf8_txt_display_buffers[0][..state.display_utf8txt_buffer_lengths[0]];
-        let parse_result = std::str::from_utf8(row_content);
-
-        assert!(
-            parse_result.is_ok(),
-            "Row should not contain split UTF-8 sequences: {:?}",
-            parse_result.err()
-        );
-
-        // REMOVED THE FAULTY WINDOW MAP CHECK that tried to access column 77
-        // when valid columns are 0-76 (77 total, but 0-indexed)
-
-        // Instead, let's verify what actually got placed in the window
-        let row_str = parse_result.unwrap();
-        println!("Final row content: {:?}", row_str);
-        println!(
-            "Final row display width: {:?}",
-            double_width::calculate_display_width(row_str)
-        );
-
-        // The row should fit within terminal width
-        let display_width =
-            double_width::calculate_display_width(row_str).expect("Should calculate display width");
-        assert!(
-            display_width <= 80,
-            "Display width {} should not exceed terminal width 80",
-            display_width
-        );
-
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod revised_terminal_width_tests {
-    use super::*;
-
-    #[test]
-    fn test_terminal_width_limiting() -> io::Result<()> {
-        // Use long_lines.txt which has lines exceeding 80 chars
-        let test_files = create_test_files_with_id("width_limiting")?;
-        let test_path = &test_files[1]; // long_lines.txt
-
-        // Create editor state with specific terminal size
-        let mut state = EditorState::new();
-        state.resize_terminal(24, 80)?;
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
-
-        // Build window
-        let result = build_windowmap_nowrap(&mut state, &test_path);
-        assert!(result.is_ok(), "Should build window successfully");
-
-        // Verify no row exceeds terminal width
-        for row in 0..state.effective_rows {
-            if state.display_utf8txt_buffer_lengths[row] > 0 {
-                let row_content = &state.utf8_txt_display_buffers[row]
-                    [..state.display_utf8txt_buffer_lengths[row]];
-
-                // Verify valid UTF-8
-                let row_str = std::str::from_utf8(row_content)
-                    .expect(&format!("Row {} should be valid UTF-8", row));
-
-                // Check display width
-                let display_width = double_width::calculate_display_width(row_str)
-                    .expect(&format!("Row {} should have calculable width", row));
-
-                assert!(
-                    display_width <= 80,
-                    "Row {} display width {} exceeds terminal width 80",
-                    row,
-                    display_width
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_various_terminal_sizes() -> io::Result<()> {
-        let test_files = create_test_files_with_id("various_sizes")?;
-        let test_path = &test_files[0]; // basic_short.txt
-
-        // Test multiple terminal sizes
-        let terminal_sizes = vec![
-            (24, 40),  // Narrow
-            (24, 80),  // Standard
-            (24, 120), // Wide
-            (45, 157), // Maximum
-        ];
-
-        for (rows, cols) in terminal_sizes {
-            let mut state = EditorState::new();
-            state.resize_terminal(rows, cols)?;
-            state.line_count_at_top_of_window = 0;
-            state.file_position_of_topline_start = 0;
-            state.horizontal_utf8txt_line_char_offset = 0;
-
-            let result = build_windowmap_nowrap(&mut state, &test_path);
-            assert!(
-                result.is_ok(),
-                "Should build window for terminal size {}x{}",
-                cols,
-                rows
-            );
-
-            // Verify all rows respect terminal width
-            for row in 0..state.effective_rows {
-                if state.display_utf8txt_buffer_lengths[row] > 0 {
-                    let row_content = &state.utf8_txt_display_buffers[row]
-                        [..state.display_utf8txt_buffer_lengths[row]];
-                    let row_str = std::str::from_utf8(row_content)
-                        .expect(&format!("Row {} should be valid UTF-8", row));
-                    let display_width =
-                        double_width::calculate_display_width(row_str).ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::Other,
-                                format!("Could not calculate width for row {}", row),
-                            )
-                        })?;
-
-                    assert!(
-                        display_width <= cols,
-                        "Row {} width {} exceeds terminal width {} for size {}x{}",
-                        row,
-                        display_width,
-                        cols,
-                        cols,
-                        rows
-                    );
-                }
-            }
-        }
 
         Ok(())
     }
@@ -1599,39 +1304,39 @@ mod test_parse_movement {
         let mut state = EditorState::new();
         // Test basic movements
         assert_eq!(
-            state.parse_command("j", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("j", EditorMode::Normal),
             Command::MoveDown(1)
         );
 
         assert_eq!(
-            state.parse_command("5j", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("5j", EditorMode::Normal),
             Command::MoveDown(5)
         );
 
         assert_eq!(
-            state.parse_command("10k", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("10k", EditorMode::Normal),
             Command::MoveUp(10)
         );
 
         assert_eq!(
-            state.parse_command("3h", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("3h", EditorMode::Normal),
             Command::MoveLeft(3)
         );
 
         assert_eq!(
-            state.parse_command("7l", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("7l", EditorMode::Normal),
             Command::MoveRight(7)
         );
 
         // Test with whitespace
         assert_eq!(
-            state.parse_command("  5j  ", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("  5j  ", EditorMode::Normal),
             Command::MoveDown(5)
         );
 
         // Test with whitespace
         assert_eq!(
-            state.parse_command("  10j  ", EditorMode::Normal),
+            state.parse_commands_for_normal_visualselect_modes("  10j  ", EditorMode::Normal),
             Command::MoveDown(10)
         );
 

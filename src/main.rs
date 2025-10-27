@@ -1,31 +1,18 @@
 // src/main.rs
+use std::env;
+use std::path::PathBuf;
 
-// import file fantstic module w/ these 2 lines
+// import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
     LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
-use std::env;
-use std::path::PathBuf;
 
+// "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
-
-// Re-export things that tests need (if they're private)
-// #[cfg(test)]
-// pub(crate) use lines_editor_module::*; // Makes module contents available to tests
-
-#[cfg(test)]
-mod tests;
-
-// import file fantstic module w/ these 2 lines
-// #[cfg(test)]
-// mod lines_editor_module;
-// #[cfg(test)]
-// pub(crate) use lines_editor_module::*;
-
-// Developer explicitly lists files to embed
+// Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
     SourcedFile::new("src/main.rs", include_str!("main.rs")),
@@ -43,6 +30,10 @@ const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("LICENSE", include_str!("../LICENSE")),
     SourcedFile::new(".gitignore", include_str!("../.gitignore")),
 ];
+
+// Cargo-tests in tests.rs // run: cargo test
+#[cfg(test)]
+mod tests;
 
 /// Main entry point - routes between memo mode and full editor mode
 ///
@@ -117,12 +108,6 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 _ => {
-                    /*
-                    TODO:
-                    only open an existing file in memo-mode(append)
-                    if it has the -a flag
-                    if not existing path.. then memo mode...
-                    */
                     // Treat as file/directory path
                     if in_home && !arg.contains('/') && !arg.contains('\\') {
                         // In home + simple filename = memo mode with custom name
