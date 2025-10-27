@@ -815,7 +815,7 @@ fn main() -> Result<(), LinesError> {
                 let filename = prompt_for_filename()?;
                 let current_dir = env::current_dir()?;
                 let original_file_path = current_dir.join(filename);
-                full_lines_editor(Some(original_file_path))
+                full_lines_editor(Some(original_file_path), None)
             }
         }
         2 => {
@@ -840,16 +840,27 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 _ => {
+                    // Parse "filename:line" format
+                    let (file_path_str, starting_line) = if let Some(colon_pos) = arg.rfind(':') {
+                        let file_part = &arg[..colon_pos];
+                        let line_part = &arg[colon_pos + 1..];
+
+                        match line_part.parse::<usize>() {
+                            Ok(line_num) if line_num > 0 => (file_part.to_string(), Some(line_num)),
+                            _ => (arg.to_string(), None), // Invalid line, treat whole thing as filename
+                        }
+                    } else {
+                        (arg.to_string(), None)
+                    };
+
                     // Treat as file/directory path
-                    if in_home && !arg.contains('/') && !arg.contains('\\') {
-                        // In home + simple filename = memo mode with custom name
-                        println!("Starting memo mode with custom file: {}", arg);
-                        let original_file_path = get_default_filepath(Some(arg))?;
+                    if in_home && !file_path_str.contains('/') && !file_path_str.contains('\\') {
+                        println!("Starting memo mode with custom file: {}", file_path_str);
+                        let original_file_path = get_default_filepath(Some(&file_path_str))?;
                         memo_mode_mini_editor_loop(&original_file_path)
                     } else {
-                        // Full editor mode with specified path
-                        let path = PathBuf::from(arg);
-                        full_lines_editor(Some(path))
+                        let path = PathBuf::from(file_path_str);
+                        full_lines_editor(Some(path), starting_line) // Pass starting_line
                     }
                 }
             }
@@ -1265,6 +1276,27 @@ fn main() {
 // ==================
 // Movement Functions
 // ==================
+// move section
+// movement section
+
+/// Checks if a byte is a syntax (non-word) character
+///
+/// # Syntax chars (ASCII only):
+/// - Whitespace: space (0x20), tab (0x09), newline (0x0A)
+/// - Symbols: ( ) , . { } < > \ / : ! #
+///
+/// # Safety:
+/// Only checks single byte. Safe because all syntax chars are ASCII (< 0x80).
+/// Multi-byte UTF-8 chars (>= 0x80) are always non-syntax (word chars).
+fn is_syntax_char(byte: u8) -> Result<bool> {
+    match byte {
+        b' ' | b'\t' | b'\n' => Ok(true),
+        b'(' | b')' | b',' | b'.' => Ok(true),
+        b'{' | b'}' | b'<' | b'>' => Ok(true),
+        b'\\' | b'/' | b':' | b'!' | b'#' => Ok(true),
+        _ => Ok(false),
+    }
+}
 
 // =========================
 // End of Movement Functions
@@ -6670,6 +6702,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row = 0;
                     lines_editor_state.cursor.col = 0;
 
+                    // Position cursor AFTER line number (same as bootstrap)
+                    let line_num_width = calculate_line_number_width(line_number);
+                    lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &read_copy)?;
 
@@ -9935,6 +9971,7 @@ pub fn print_help() {
     println!("About Lines Editor:");
     println!("USAGE:");
     println!("    lines [FILE]");
+    println!("    lines FILE:LINE          # Open at : specific line");
     println!("OPTIONS:");
     println!("    --help, -h      Show this help message");
     println!("    --version, -v   Show version information");
@@ -9953,6 +9990,7 @@ pub fn print_help() {
     println!("Examples in terminal/shell:");
     println!("  lines                Memo mode (if in home)");
     println!("  lines notes.txt      Create/open notes.txt");
+    println!("  lines notes.txt:42    # Open to line 42");
     println!("  lines mydir/ Create new file in directory");
 }
 
@@ -9980,6 +10018,11 @@ pub fn print_help() {
 /// - Filename for context
 /// - Input buffer shows what user is typing
 fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<String> {
+    /*
+    Calculation note:
+    The column number should be - the number of digits +1
+
+    */
     // Get mode string
     let mode_str = match state.mode {
         EditorMode::Normal => "NORMAL",
@@ -9993,7 +10036,19 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
     // Get current line and column
     // Line is 1-indexed for display (humans count from 1)
     let line_display = state.line_count_at_top_of_window + state.cursor.row + 1;
-    let col_display = state.cursor.col + 1;
+    // let col_display = state.cursor.col + 1;
+
+    // // Add horizontal offset to get true character position in line
+    // let true_char_position = state.cursor.col + state.horizontal_utf8txt_line_char_offset;
+    // let col_display = true_char_position + 1; // +1 for human-friendly 1-indexing
+
+    // Get line number to calculate line number display width
+    let line_num = state.line_count_at_top_of_window + state.cursor.row + 1;
+    let line_num_width = calculate_line_number_width(line_num);
+
+    // Subtract line number width from displayed column
+    let true_char_position = state.cursor.col + state.horizontal_utf8txt_line_char_offset;
+    let col_display = true_char_position.saturating_sub(line_num_width) + 1;
 
     // Get filename (or "unnamed" if none)
     let filename = state
@@ -10819,6 +10874,37 @@ pub fn initialize_session_directory(
     Ok(())
 }
 
+/*
+for main
+/// Parses "filename:line" format and returns (filename, optional_line)
+fn parse_file_with_line(input: &str) -> (String, Option<usize>) {
+    // Split on last colon (to handle paths like /path/to:file.txt)
+    match input.rfind(':') {
+        Some(pos) => {
+            let (file_part, line_part) = input.split_at(pos);
+            let line_str = &line_part[1..]; // Skip the ':'
+
+            // Try to parse as line number
+            match line_str.parse::<usize>() {
+                Ok(line_num) if line_num > 0 => {
+                    // Valid: "file.txt:42"
+                    (file_part.to_string(), Some(line_num))
+                }
+                _ => {
+                    // Invalid line number or special flag
+                    // Treat whole thing as filename (e.g., "my:file.txt")
+                    (input.to_string(), None)
+                }
+            }
+        }
+        None => {
+            // No colon: just a filename
+            (input.to_string(), None)
+        }
+    }
+}
+*/
+
 /// Line-Editor, Full-Mode for editing files
 ///
 /// # Purpose
@@ -10843,7 +10929,10 @@ pub fn initialize_session_directory(
 /// - Creates parent directories if needed
 /// - Initializes new files with timestamp header
 /// - Creates read-copy for safety
-pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
+pub fn full_lines_editor(
+    original_file_path: Option<PathBuf>,
+    starting_line: Option<usize>,
+) -> Result<()> {
     //  ///////////////////////////////////////
     //  Initialization & Bootstrap Lines Editor
     //  ///////////////////////////////////////
@@ -10917,13 +11006,36 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
     // // Diagnostic
     // println!("Read-copy: {}", read_copy_path.display());
 
-    // Initialize editor lines_editor_state
-    lines_editor_state.read_copy_path = Some(read_copy_path);
-
     // Initialize window position
     lines_editor_state.line_count_at_top_of_window = 0;
     lines_editor_state.file_position_of_topline_start = 0;
     lines_editor_state.horizontal_utf8txt_line_char_offset = 0;
+
+    // Bootstrap initial cursor position, start of file, after "l "
+    lines_editor_state.cursor.row = 0;
+    lines_editor_state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
+
+    // IF userizer input line: Jump to starting line if provided
+    if let Some(line_num) = starting_line {
+        let target_line = line_num.saturating_sub(1); // Convert 1-indexed to 0-indexed
+
+        match seek_to_line_number(&mut File::open(&read_copy_path)?, target_line) {
+            Ok(byte_pos) => {
+                // Position cursor AFTER line number (same as bootstrap)
+                let line_num_width = calculate_line_number_width(target_line);
+                println!("{line_num_width}{target_line}");
+                lines_editor_state.cursor.col = line_num_width; // Skip over line number display
+                lines_editor_state.line_count_at_top_of_window = target_line;
+                lines_editor_state.file_position_of_topline_start = byte_pos;
+            }
+            Err(_) => {
+                eprintln!("Warning: Line {} not found, starting at line 1", line_num);
+                // Keep default (line 0)
+            }
+        }
+    }
+    // Initialize editor lines_editor_state
+    lines_editor_state.read_copy_path = Some(read_copy_path);
 
     // Build initial window content
     // Get the read_copy path BEFORE the mutable borrow
@@ -10939,10 +11051,6 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
 
     // Now we can mutably borrow lines_editor_state
     let _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
-
-    // Bootstrap initial cursor position, start of file, after "l "
-    lines_editor_state.cursor.row = 0;
-    lines_editor_state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
 
     // Main editor loop
     let mut keep_editor_loop_running = true;

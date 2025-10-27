@@ -83,7 +83,7 @@ fn main() -> Result<(), LinesError> {
                 let filename = prompt_for_filename()?;
                 let current_dir = env::current_dir()?;
                 let original_file_path = current_dir.join(filename);
-                full_lines_editor(Some(original_file_path))
+                full_lines_editor(Some(original_file_path), None)
             }
         }
         2 => {
@@ -108,16 +108,27 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 _ => {
+                    // Parse "filename:line" format
+                    let (file_path_str, starting_line) = if let Some(colon_pos) = arg.rfind(':') {
+                        let file_part = &arg[..colon_pos];
+                        let line_part = &arg[colon_pos + 1..];
+
+                        match line_part.parse::<usize>() {
+                            Ok(line_num) if line_num > 0 => (file_part.to_string(), Some(line_num)),
+                            _ => (arg.to_string(), None), // Invalid line, treat whole thing as filename
+                        }
+                    } else {
+                        (arg.to_string(), None)
+                    };
+
                     // Treat as file/directory path
-                    if in_home && !arg.contains('/') && !arg.contains('\\') {
-                        // In home + simple filename = memo mode with custom name
-                        println!("Starting memo mode with custom file: {}", arg);
-                        let original_file_path = get_default_filepath(Some(arg))?;
+                    if in_home && !file_path_str.contains('/') && !file_path_str.contains('\\') {
+                        println!("Starting memo mode with custom file: {}", file_path_str);
+                        let original_file_path = get_default_filepath(Some(&file_path_str))?;
                         memo_mode_mini_editor_loop(&original_file_path)
                     } else {
-                        // Full editor mode with specified path
-                        let path = PathBuf::from(arg);
-                        full_lines_editor(Some(path))
+                        let path = PathBuf::from(file_path_str);
+                        full_lines_editor(Some(path), starting_line) // Pass starting_line
                     }
                 }
             }
