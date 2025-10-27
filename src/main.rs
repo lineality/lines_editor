@@ -106,7 +106,7 @@ fn main() -> Result<(), LinesError> {
                     Ok(())
                 }
                 "--version" | "-v" | "-V" => {
-                    println!("lines editor v0.2.0");
+                    println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
                     Ok(())
                 }
                 "--source" | "--source_it" => {
