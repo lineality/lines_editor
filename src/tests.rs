@@ -3066,32 +3066,6 @@ mod tests {
     // }
 
     #[test]
-    fn test_empty_selection() {
-        let test_dir = match get_unique_test_dir() {
-            Ok(dir) => dir,
-            Err(e) => {
-                eprintln!("Failed to create test directory: {}", e);
-                return;
-            }
-        };
-
-        let source_file = match ensure_test_file(&test_dir, "source_empty.txt", b"some content") {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("Failed to create test file: {}", e);
-                return;
-            }
-        };
-
-        // Zero-length selection: start_byte == end_byte
-        let result = generate_clipboard_filename(5, 5, &source_file, &test_dir);
-
-        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
-        let filename = result.unwrap();
-        assert_eq!(filename, "item"); // Should fall back to "item" with no chars extracted
-    }
-
-    #[test]
     fn test_multiple_conflicts() {
         let test_dir = match get_unique_test_dir() {
             Ok(dir) => dir,
@@ -3170,6 +3144,58 @@ mod tests {
 
         assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
         let filename = result.unwrap();
-        assert_eq!(filename, "56789a");
+        assert_eq!(filename, "56789ab");
+    }
+    #[test]
+    fn test_single_byte_selection() {
+        // Renamed - not empty anymore
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_single.txt", b"some content") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        // Single-byte selection: start_byte == end_byte (position 5 = 'c')
+        let result = generate_clipboard_filename(5, 5, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "c"); // Now extracts the single character
+    }
+    #[test]
+    fn test_non_alphanumeric_fallback() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        // File with only punctuation
+        let source_file = match ensure_test_file(&test_dir, "source_punct.txt", b"!@#$%^&*()") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        // Select bytes 0-9 (all punctuation, no alphanumeric)
+        let result = generate_clipboard_filename(0, 9, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "item"); // Should fall back to "item"
     }
 }

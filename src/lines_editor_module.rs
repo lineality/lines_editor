@@ -2186,14 +2186,14 @@ pub enum EditorMode {
     HexMode,
 }
 
-/// Line wrap mode setting
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum WrapMode {
-    /// Lines wrap at terminal width
-    Wrap,
-    /// Lines extend beyond terminal width (horizontal scroll)
-    NoWrap,
-}
+// /// Line wrap mode setting
+// #[derive(Debug, Clone, Copy, PartialEq)]
+// pub enum WrapMode {
+//     /// Lines wrap at terminal width
+//     Wrap,
+//     /// Lines extend beyond terminal width (horizontal scroll)
+//     NoWrap,
+// }
 
 // const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;// not used
 
@@ -2337,9 +2337,8 @@ pub struct EditorState {
     /// Current editor mode
     pub mode: EditorMode,
 
-    /// Line wrap setting
-    pub wrap_mode: WrapMode,
-
+    // /// Line wrap setting
+    // pub wrap_mode: WrapMode,
     /// Absolute path to the file being edited
     pub original_file_path: Option<PathBuf>,
 
@@ -2395,11 +2394,11 @@ pub struct EditorState {
     pub file_position_of_vis_select_end: u64,
     /// For LineWrap mode: byte offset within the line where window starts
     /// Example: If line 500 has 300 chars and we're showing the 3rd wrap, this might be 211
-    pub linewrap_window_topline_startbyte_position: u64,
+    // pub linewrap_window_topline_startbyte_position: u64,
 
     /// For LineWrap mode: character offset within the line where window starts
     /// Example: Starting at character 70 of line 500
-    pub linewrap_window_topline_char_offset: usize,
+    // pub linewrap_window_topline_char_offset: usize,
 
     /// For NoWrap mode: horizontal character offset for all displayed lines
     /// Example: Showing characters 20-97 of each line
@@ -2448,7 +2447,7 @@ impl EditorState {
             the_last_command: None,
             session_directory_path: None,
             mode: EditorMode::Normal,
-            wrap_mode: WrapMode::Wrap,
+            // wrap_mode: WrapMode::Wrap,
             original_file_path: None,
             read_copy_path: None,
             effective_rows,
@@ -2476,8 +2475,8 @@ impl EditorState {
             file_position_of_vis_select_start: 0,
             file_position_of_vis_select_end: 0,
 
-            linewrap_window_topline_startbyte_position: 0,
-            linewrap_window_topline_char_offset: 0,
+            // linewrap_window_topline_startbyte_position: 0,
+            // linewrap_window_topline_char_offset: 0,
             horizontal_utf8txt_line_char_offset: 0,
 
             // Display buffers - initialized to zero
@@ -6135,10 +6134,7 @@ pub enum Command {
 
     // Text editing
     InsertNewline(char), // Insert single \n at cursor's file-position
-    InsertText(String),  // Insert input buffer string at cursor
-    DeleteChar,          // Delete character at cursor
-    Backspace,           // Delete character before cursor
-
+    // DeleteChar,          // Delete character at cursor // legacy?
     /// Delete entire line at cursor (normal mode)
     DeleteLine,
 
@@ -6153,7 +6149,7 @@ pub enum Command {
     SaveAndQuit, // w (write-quit)
 
     // Display
-    ToggleWrap, // w (in normal mode)
+    // ToggleWrap, // w (in normal mode) // not in scope?
 
     // Cosplay for Variables
     Copyank, // c,y (in a normal mood)
@@ -6536,25 +6532,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        // Todo: why is there a phantom command?
-        Command::InsertText(_) => {
-            // This command is not used in normal flow
-            // Text insertion happens via read_stdin_and_insert_to_file()
-            eprintln!("Warning: InsertText command called directly (unexpected)");
-            Ok(true)
-        }
-        Command::DeleteChar => {
-            // This command is not used in normal flow
-            eprintln!("Warning: DeleteChar command called directly (unexpected)");
-            Ok(true)
-        }
-
-        Command::Backspace => {
-            // This command is not used in normal flow
-            eprintln!("Warning: Backspace command called directly (unexpected)");
-            Ok(true)
-        }
-
+        // TODO: this legacy item may not be needed...
+        // Command::DeleteChar => {
+        //     // This command is not used in normal flow
+        //     eprintln!("Warning: DeleteChar command called directly (unexpected)");
+        //     Ok(true)
+        // }
         Command::EnterInsertMode => {
             // Without rebuild here, hexedit changes do not appear until
             // after a next change. Keep in Sync.
@@ -6675,18 +6658,17 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
             Ok(false) // Signal to exit after save
         }
+        // TODO Maybe not in scope
+        // Command::ToggleWrap => {
+        //     lines_editor_state.wrap_mode = match lines_editor_state.wrap_mode {
+        //         WrapMode::Wrap => WrapMode::NoWrap,
+        //         WrapMode::NoWrap => WrapMode::Wrap,
+        //     };
 
-        Command::ToggleWrap => {
-            lines_editor_state.wrap_mode = match lines_editor_state.wrap_mode {
-                WrapMode::Wrap => WrapMode::NoWrap,
-                WrapMode::NoWrap => WrapMode::Wrap,
-            };
-
-            // Rebuild window with new wrap mode
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-            Ok(true)
-        }
-
+        //     // Rebuild window with new wrap mode
+        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+        //     Ok(true)
+        // }
         Command::Copyank => {
             let read_copy = lines_editor_state
                 .read_copy_path
@@ -7809,39 +7791,6 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // Loop will exit when bytes_read == 0 (EOF) or chunk_counter >= MAX_CHUNKS
     }
 
-    // // ============================================
-    // // Phase 6: Remove Final Byte
-    // // ============================================
-    // // Unconditionally delete the last byte inserted
-    // // This removes trailing newline (or whatever the final byte was)
-
-    // if total_bytes_written > 0 {
-    //     // Calculate position of last byte: start + (total - 1)
-    //     // Example: inserted 10 bytes starting at position 5
-    //     //   Bytes occupy positions 5,6,7,8,9,10,11,12,13,14
-    //     //   Last byte is at position 5 + 10 - 1 = 14 ✓
-    //     let last_byte_position = start_byte_position + total_bytes_written - 1;
-
-    //     // Delete byte at calculated position
-    //     // Helper function handles: seek, read-after, seek-back, write-shifted, truncate, flush
-    //     delete_byte_at_position(&target_file_path, last_byte_position)?;
-
-    //     // Log success with statistics
-    //     log_error(
-    //         &format!(
-    //             "File inserted: {} bytes in {} chunks, removed final byte at position {}",
-    //             total_bytes_written, chunk_counter, last_byte_position
-    //         ),
-    //         Some("insert_file_at_cursor"),
-    //     );
-    // } else {
-    //     // Empty file - nothing inserted, nothing to delete
-    //     log_error(
-    //         "Empty file - nothing inserted",
-    //         Some("insert_file_at_cursor"),
-    //     );
-    // }
-
     // ============================================
     // Phase 7: Update Editor State
     // ============================================
@@ -8305,6 +8254,382 @@ pub fn insert_text_chunk_at_cursor_position(
 //  Have a Pasty!!
 // ===============
 
+/// Copies visual selection from source file to clipboard file with UTF-8 safety
+///
+/// # Purpose
+/// Extracts bytes from a visual selection in the source document and saves them
+/// as a new clipboard file. Handles multi-byte UTF-8 characters correctly by
+/// ensuring character boundaries are not split. Generates human-readable filenames
+/// from selection content (alphanumeric extraction).
+///
+/// # High-Level Workflow
+/// ```text
+/// 1. Normalize selection range (handle forward/backward selection)
+/// 2. Adjust end position to include complete UTF-8 character
+///    - If end points to start of multi-byte char, find its last byte
+///    - Example: 花 (3 bytes) → ensures all bytes included
+/// 3. Ensure clipboard directory exists (create if needed)
+/// 4. Generate unique filename from selection content
+///    - Extract alphanumeric chars for readable name
+///    - Handle collisions with _2, _3, etc.
+/// 5. Copy byte range to clipboard file (one byte at a time)
+/// 6. Return Ok(()) on success
+/// ```
+///
+/// # UTF-8 Character Boundary Safety
+///
+/// **Critical:** Selection end positions are byte offsets, not character offsets.
+/// If user selects text ending with multi-byte character (e.g., Kanji, emoji),
+/// the end position might point to the **start byte** of that character.
+///
+/// **Example without adjustment:**
+/// ```text
+/// Text: "hello 花"
+/// 花 = 0xE8 0x8A 0xB1 (3 bytes at positions 6,7,8)
+/// User selects to position 6 (start of 花)
+/// Copy bytes 0-6 → gets "hello \xE8" ❌ CORRUPTED
+/// ```
+///
+/// **Example with adjustment:**
+/// ```text
+/// Text: "hello 花"
+/// User selects to position 6 (start of 花)
+/// find_utf8_char_end(6) → returns 8 (last byte of 花)
+/// Copy bytes 0-8 → gets "hello 花" ✓ COMPLETE
+/// ```
+///
+/// This adjustment is performed by `find_utf8_char_end()`, which:
+/// - Reads first byte at end position
+/// - Determines character length from UTF-8 encoding pattern
+/// - Calculates position of last byte in character
+/// - Returns adjusted end position
+///
+/// # Arguments
+///
+/// * `state` - Editor state containing:
+///   - `file_position_of_vis_select_start` - Selection start byte offset (inclusive)
+///   - `file_position_of_vis_select_end` - Selection end byte offset (inclusive)
+///   - `session_directory_path` - Root directory for session data
+///   - Used to modify: (none - state not changed by this function)
+///
+/// * `source_file_path` - Absolute path to document being copied from
+///   - Must exist and be readable
+///   - Selection byte positions are relative to this file
+///
+/// # Returns
+///
+/// * `Ok(())` - Selection copied successfully to clipboard file
+/// * `Err(LinesError)` - Operation failed at some stage
+///
+/// # Error Conditions
+///
+/// Returns `Err` with detailed context if:
+/// - Selection range invalid (start > end after normalization)
+/// - Session directory path not initialized in state
+/// - Cannot create clipboard directory (permissions, disk space)
+/// - Cannot read source file for filename generation (permissions, hardware)
+/// - Cannot determine UTF-8 character boundary (corrupted file, invalid UTF-8)
+/// - All 1000 filename variants already exist (hash collision)
+/// - Cannot copy bytes to clipboard file (permissions, disk full, hardware)
+///
+/// # Memory Safety
+///
+/// **Stack allocations only:**
+/// - No heap allocation for data processing
+/// - Filename generation: 16-byte buffer for alphanumeric extraction
+/// - Byte copying: 1-byte buffer for sequential read/write
+///
+/// **Never loads entire selection:**
+/// - Selection may be gigabytes - never loaded into memory
+/// - All operations byte-by-byte or small fixed buffers
+/// - Per NASA Rule 3: pre-allocate all memory
+///
+/// # Clipboard Organization
+///
+/// **Directory structure:**
+/// ```text
+/// <session_dir>/
+///   clipboard/
+///     HelloWorld       ← alphanumeric from "Hello, World!"
+///     test123          ← alphanumeric from "test 123 !!!"
+///     item             ← fallback when no alphanumeric found
+///     item_2           ← collision resolution
+///     README_3         ← collision resolution for "README"
+/// ```
+///
+/// **File naming policy:**
+/// - Extract first 16 alphanumeric characters (a-z, A-Z, 0-9)
+/// - Skip punctuation, whitespace, special characters
+/// - Use "item" if no alphanumeric characters found
+/// - Append _2, _3, ... _1000 to resolve name collisions
+/// - No file extensions - clipboard files are raw byte copies
+///
+/// **Filename generation algorithm:**
+/// ```text
+/// 1. Read up to 16 bytes from selection start
+/// 2. Extract ASCII alphanumeric only
+/// 3. Convert to string (e.g., "Hello123")
+/// 4. Check if clipboard/Hello123 exists
+/// 5. If exists, try Hello123_2, Hello123_3, ..., Hello123_1000
+/// 6. If all 1000 slots taken, return error
+/// 7. Return unique filename (no path, no extension)
+/// ```
+///
+/// # Selection Direction Handling
+///
+/// Visual selection can be forward or backward:
+/// ```text
+/// Forward:  start=10, end=20 → copy bytes 10-20
+/// Backward: start=20, end=10 → normalize to 10-20, copy bytes 10-20
+/// ```
+///
+/// Normalization by `normalize_pasty_selection_range()`:
+/// - Compares start and end positions
+/// - Returns `(min, max)` tuple ensuring start ≤ end
+/// - Both positions remain inclusive after normalization
+///
+/// # Byte Position Semantics
+///
+/// **All positions are 0-indexed byte offsets:**
+/// - Position 0 = first byte of file
+/// - Position N = (N+1)th byte of file
+/// - Both start and end are **inclusive**
+///
+/// **Inclusive range examples:**
+/// ```text
+/// start=0, end=0   → Copy 1 byte (byte 0)
+/// start=0, end=3   → Copy 4 bytes (bytes 0,1,2,3)
+/// start=5, end=5   → Copy 1 byte (byte 5)
+/// ```
+///
+/// **Range calculation:**
+/// ```text
+/// bytes_to_copy = (end - start) + 1
+/// Example: (3 - 0) + 1 = 4 bytes ✓
+/// ```
+///
+/// # Edge Cases
+///
+/// **Empty selection (0 bytes):**
+/// - Not possible: start and end are always equal or different
+/// - Minimum selection is 1 byte (start == end)
+/// - Single byte selection is valid
+///
+/// **Selection ends mid-character:**
+/// - Handled by `find_utf8_char_end()` adjustment
+/// - Ensures complete character copied
+/// - Example: Select up to 2nd byte of 花 → adjusted to include all 3 bytes
+///
+/// **Selection contains only non-alphanumeric:**
+/// - Example: "!@#$%^&*()"
+/// - Filename generation uses fallback: "item"
+/// - File content still copied correctly (raw bytes preserved)
+///
+/// **Selection starts mid-character:**
+/// - Not adjusted - start position used as-is
+/// - May result in partial character at start (corrupted)
+/// - Current design: only adjust end, not start (room for improvement)
+///
+/// **Selection spans multi-byte characters:**
+/// - Example: "hello 花 world 🌟"
+/// - All bytes copied correctly (byte-by-byte copy)
+/// - End adjustment ensures last character complete
+/// - Filename: "helloworld" (alphanumeric only)
+///
+/// **Very large selection (gigabytes):**
+/// - Memory safe: never loads entire selection
+/// - Time: slow (one byte at a time)
+/// - Storage: creates file of equal size
+/// - No size limit enforced (disk space is limit)
+///
+/// **Filename collision cascade:**
+/// - "test" exists → try "test_2"
+/// - "test_2" exists → try "test_3"
+/// - ... continues to "test_1000"
+/// - If all 1000 exist → return error
+///
+/// **Session directory not initialized:**
+/// - Returns error immediately
+/// - No clipboard operation attempted
+/// - Error message: "Session directory path is not initialized"
+///
+/// **Source file modified during copy:**
+/// - Not detected or handled
+/// - Byte positions may become invalid mid-operation
+/// - May copy garbage data or fail with I/O error
+/// - Defensive note: caller should ensure file stable
+///
+/// # Integration with Editor Modes
+///
+/// **Called by:**
+/// - Visual mode: 'y' (yank) command
+/// - Visual mode: 'c' (change/copy) command
+/// - Both commands select text, then call this function
+///
+/// **Preconditions:**
+/// - Visual selection active (start and end positions set)
+/// - Source file exists and readable
+/// - Session directory initialized
+///
+/// **Postconditions:**
+/// - New file created in clipboard directory
+/// - File contains exact byte copy of selection (UTF-8 safe)
+/// - Editor state unchanged (selection still active)
+/// - Can paste from clipboard using Pasty mode
+///
+/// # Performance Characteristics
+///
+/// **Time complexity:**
+/// - O(N) where N = selection size in bytes
+/// - One byte at a time (no buffering for correctness)
+/// - Sequential I/O (no random seeks during copy)
+///
+/// **Space complexity:**
+/// - O(1) - fixed-size stack buffers only
+/// - 16-byte filename buffer + 1-byte copy buffer = 17 bytes
+/// - No growth with selection size
+///
+/// **I/O operations:**
+/// - Filename generation: Up to 16 sequential reads from source
+/// - Filename collision check: Up to 1000 directory lookups
+/// - Byte copy: N sequential reads + N sequential writes (where N = selection size)
+/// - Total: O(N) I/O operations
+///
+/// # Defensive Programming
+///
+/// **Guards against:**
+/// - Cosmic ray bit flips: Validates all calculations, checks all returns
+/// - Hardware failures: All I/O operations return Result, explicitly handled
+/// - Filesystem corruption: Bounded loops, validates file existence
+/// - Invalid UTF-8: find_utf8_char_end handles gracefully, returns error
+/// - Disk full: File write errors caught and returned
+/// - Permission errors: Directory creation and file operations checked
+///
+/// **Bounded operations:**
+/// - Filename generation: Max 1024 bytes read (safety limit)
+/// - Collision resolution: Max 1000 attempts
+/// - Byte copy: Bounded by selection size (validated)
+///
+/// **No unwrap, no panic in production:**
+/// - All Results explicitly handled with `?` or match
+/// - Error context logged before returning
+/// - Uses defensive arithmetic (saturating_sub, saturating_add)
+///
+/// # Example Usage
+///
+/// ```no_run
+/// # use std::path::Path;
+/// # fn example(state: &mut EditorState) -> Result<()> {
+/// // User selects "Hello, 世界!" in visual mode and presses 'y'
+/// // Selection: bytes 100-120 (includes multi-byte characters)
+/// // state.file_position_of_vis_select_start = 100
+/// // state.file_position_of_vis_select_end = 120
+///
+/// let source = Path::new("/home/user/document.txt");
+///
+/// // Copy selection to clipboard
+/// copy_selection_to_clipboardfile(state, source)?;
+///
+/// // Result:
+/// // - File created: <session_dir>/clipboard/Hello
+/// // - Contains UTF-8 bytes: "Hello, 世界!"
+/// // - Multi-byte characters complete and uncorrupted
+/// // - Can paste via Pasty mode
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Policy Notes
+///
+/// **No automatic clipboard management:**
+/// - Old clipboard items not auto-deleted
+/// - User must manually clear via Pasty mode
+/// - All clipboard items preserved across sessions
+///
+/// **No clipboard size limits:**
+/// - Selection size unlimited (disk space is limit)
+/// - Number of clipboard items unlimited (up to filesystem limits)
+/// - No auto-cleanup of old items
+///
+/// **Filename conflicts resolved, not prevented:**
+/// - No attempt to predict or prevent collisions
+/// - Simple numbered suffix strategy (_2, _3, etc.)
+/// - Limit of 1000 variants per base name
+///
+/// **UTF-8 safety philosophy:**
+/// - End position adjusted to preserve complete characters
+/// - Start position not adjusted (may begin mid-character)
+/// - Byte-level operations preserve all data as-is
+/// - No character encoding conversion
+///
+/// # See Also
+///
+/// * `normalize_pasty_selection_range()` - Handles forward/backward selection
+/// * `find_utf8_char_end()` - UTF-8 character boundary detection
+/// * `generate_clipboard_filename()` - Alphanumeric extraction for names
+/// * `append_bytes_from_file_to_file()` - Low-level byte copying
+/// * `pasty_mode()` - Clipboard browsing and paste interface
+/// * `insert_file_at_cursor()` - Used by paste to insert clipboard files
+///
+/// # Testing Considerations
+///
+/// Test with selections containing:
+/// - Pure ASCII text
+/// - Multi-byte UTF-8 (Kanji, emoji, accented characters)
+/// - Selection ending exactly on multi-byte character start
+/// - Selection ending mid-multi-byte character
+/// - Only punctuation (tests fallback filename)
+/// - Very long alphanumeric string (tests 16-char limit)
+/// - Duplicate selections (tests collision resolution)
+/// - 1-byte selection
+/// - Large selection (megabytes)
+/// - Forward and backward selections
+/// - Selection at start of file (byte 0)
+/// - Selection at end of file
+pub fn copy_selection_to_clipboardfile(
+    state: &mut EditorState,
+    source_file_path: &Path,
+) -> Result<()> {
+    // Step 1: Normalize selection
+    let (start, end) = normalize_pasty_selection_range(
+        state.file_position_of_vis_select_start,
+        state.file_position_of_vis_select_end,
+    )?;
+
+    // Step 1.5: Adjust end position to include complete UTF-8 character
+    // If end points to start of multi-byte char (like 花), find its last byte
+    // Example: end=7 for 花 at bytes [7,8,9] → adjusted_end=9
+    let adjusted_end = find_utf8_char_end(source_file_path, end)?;
+
+    // Step 2: Get clipboard directory
+    let clipboard_dir = state
+        .session_directory_path
+        .as_ref()
+        .ok_or_else(|| {
+            log_error(
+                "Session directory path is not set",
+                Some("copy_selection_to_clipboardfile"),
+            );
+            LinesError::StateError("Session directory path is not initialized".into())
+        })?
+        .join("clipboard");
+
+    // Create clipboard directory if it doesn't exist
+    if !clipboard_dir.exists() {
+        fs::create_dir_all(&clipboard_dir)?;
+    }
+
+    // Step 3: Generate filename
+    let filename =
+        generate_clipboard_filename(start, adjusted_end, source_file_path, &clipboard_dir)?;
+
+    // Step 4: Copy selection to clipboard file using adjusted end
+    let clipboard_path = clipboard_dir.join(&filename);
+    append_bytes_from_file_to_file(source_file_path, start, adjusted_end, &clipboard_path)?;
+
+    Ok(())
+}
+
 /// Checks if a file byte position is within the current visual selection
 ///
 /// # Purpose
@@ -8350,142 +8675,6 @@ fn normalize_pasty_selection_range(start: u64, end: u64) -> Result<(u64, u64)> {
         Ok((end, start))
     }
 }
-
-/// Adjusts a byte position forward to the start of the next UTF-8 character
-///
-/// # Purpose
-/// Ensures that a byte position points to a valid UTF-8 character boundary,
-/// not the middle of a multi-byte character. This prevents corruption when
-/// copying byte ranges that might split UTF-8 characters.
-///
-/// # Arguments
-/// * `file_path` - Path to the UTF-8 encoded file
-/// * `byte_position` - Byte offset that might be mid-character
-///
-/// # Returns
-/// * `Ok(u64)` - Adjusted position at next character boundary
-/// * `Err(LinesError)` - If file operations fail
-///
-/// # Algorithm
-/// UTF-8 character byte patterns:
-/// - 0xxxxxxx (0x00-0x7F): Single-byte character (ASCII)
-/// - 110xxxxx (0xC0-0xDF): Start of 2-byte character
-/// - 1110xxxx (0xE0-0xEF): Start of 3-byte character
-/// - 11110xxx (0xF0-0xF7): Start of 4-byte character
-/// - 10xxxxxx (0x80-0xBF): Continuation byte (middle of character)
-///
-/// If byte_position points to a continuation byte, advance until we find
-/// the start of the next character (non-continuation byte).
-///
-/// # Safety
-/// - Bounded loop: max 4 bytes forward (UTF-8 max character length)
-/// - Handles EOF gracefully
-/// - Never goes backward (preserves at least the position given)
-pub fn adjust_to_utf8_boundary(file_path: &Path, byte_position: u64) -> Result<u64> {
-    // Open file for reading
-    let mut file = File::open(file_path).map_err(|e| {
-        log_error(
-            &format!("Cannot open file for UTF-8 boundary check: {}", e),
-            Some("adjust_to_utf8_boundary"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    // Seek to the byte position
-    file.seek(SeekFrom::Start(byte_position)).map_err(|e| {
-        log_error(
-            &format!("Cannot seek to byte {}: {}", byte_position, e),
-            Some("adjust_to_utf8_boundary"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    let mut current_position = byte_position;
-    let mut byte_buffer: [u8; 1] = [0; 1];
-
-    // Safety limit: UTF-8 characters are max 4 bytes
-    // If we're in the middle of a character, we need at most 3 more bytes
-    const MAX_CONTINUATION_BYTES: u64 = 3;
-
-    for _ in 0..=MAX_CONTINUATION_BYTES {
-        match file.read(&mut byte_buffer) {
-            Ok(0) => {
-                // End of file - return current position
-                return Ok(current_position);
-            }
-            Ok(_) => {
-                let byte = byte_buffer[0];
-
-                // Check if this is a UTF-8 continuation byte (10xxxxxx)
-                // Continuation bytes: 0x80-0xBF (binary: 10xxxxxx)
-                let is_continuation = (byte & 0b1100_0000) == 0b1000_0000;
-
-                if is_continuation {
-                    // This is middle of a character - advance
-                    current_position = current_position.saturating_add(1);
-                    // Continue loop to next byte
-                } else {
-                    // This is the start of a character (or ASCII)
-                    // Return this position
-                    return Ok(current_position);
-                }
-            }
-            Err(e) => {
-                // Read error
-                log_error(
-                    &format!("Error reading for UTF-8 boundary check: {}", e),
-                    Some("adjust_to_utf8_boundary"),
-                );
-                return Err(LinesError::Io(e));
-            }
-        }
-    }
-
-    // If we got here, we advanced 4 bytes and still hitting continuation bytes
-    // This shouldn't happen with valid UTF-8, but handle defensively
-    // Return the advanced position
-    Ok(current_position)
-}
-
-// // TODO needs full doc string
-// /// copy_bytes_from_file_to_file: no-heap, append each byte to the file, without ever loading the whole selection or file.
-// pub fn copy_selection_to_clipboardfile(
-//     state: &mut EditorState,
-//     source_file_path: &Path,
-// ) -> Result<()> {
-//     // Step 1: Normalize selection
-//     let (start, end) = normalize_pasty_selection_range(
-//         state.file_position_of_vis_select_start,
-//         state.file_position_of_vis_select_end,
-//     )?;
-
-//     // Step 3: Check for collision in clipboard dir
-//     let clipboard_dir = state
-//         .session_directory_path
-//         .as_ref()
-//         .ok_or_else(|| {
-//             log_error(
-//                 "Session directory path is not set",
-//                 Some("function_name_here"),
-//             );
-//             LinesError::StateError("Session directory path is not initialized".into())
-//         })?
-//         .join("clipboard");
-
-//     // Create clipboard directory if it doesn't exist
-//     if !clipboard_dir.exists() {
-//         fs::create_dir_all(&clipboard_dir)?;
-//     }
-
-//     // Step 2: Generate filename from SOURCE content
-//     let filename = generate_clipboard_filename(start, end, source_file_path, &clipboard_dir)?;
-
-//     // Step 4: Copy selection to clipboard file
-//     let clipboard_path = clipboard_dir.join(&filename);
-//     append_bytes_from_file_to_file(source_file_path, start, end, &clipboard_path)?;
-
-//     Ok(())
-// }
 
 /// Finds the last byte position of a UTF-8 character starting at given position
 ///
@@ -8588,93 +8777,6 @@ pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64>
             Err(LinesError::Io(e))
         }
     }
-}
-
-// pub fn copy_selection_to_clipboardfile(
-//     state: &mut EditorState,
-//     source_file_path: &Path,
-// ) -> Result<()> {
-//     // Step 1: Normalize selection
-//     let (start, end) = normalize_pasty_selection_range(
-//         state.file_position_of_vis_select_start,
-//         state.file_position_of_vis_select_end,
-//     )?;
-
-//     // Step 1.5: Adjust end position to include complete UTF-8 character
-//     // If end position is in the middle of a multi-byte character,
-//     // advance to the start of the next character to include the complete character
-//     let adjusted_end = adjust_to_utf8_boundary(source_file_path, end)?;
-
-//     // Step 2: Generate filename from SOURCE content
-//     let clipboard_dir = state
-//         .session_directory_path
-//         .as_ref()
-//         .ok_or_else(|| {
-//             log_error(
-//                 "Session directory path is not set",
-//                 Some("copy_selection_to_clipboardfile"),
-//             );
-//             LinesError::StateError("Session directory path is not initialized".into())
-//         })?
-//         .join("clipboard");
-
-//     // Create clipboard directory if it doesn't exist
-//     if !clipboard_dir.exists() {
-//         fs::create_dir_all(&clipboard_dir)?;
-//     }
-
-//     let filename =
-//         generate_clipboard_filename(start, adjusted_end, source_file_path, &clipboard_dir)?;
-
-//     // Step 3: Copy selection to clipboard file
-//     let clipboard_path = clipboard_dir.join(&filename);
-//     append_bytes_from_file_to_file(source_file_path, start, adjusted_end, &clipboard_path)?;
-
-//     Ok(())
-// }
-
-pub fn copy_selection_to_clipboardfile(
-    state: &mut EditorState,
-    source_file_path: &Path,
-) -> Result<()> {
-    // Step 1: Normalize selection
-    let (start, end) = normalize_pasty_selection_range(
-        state.file_position_of_vis_select_start,
-        state.file_position_of_vis_select_end,
-    )?;
-
-    // Step 1.5: Adjust end position to include complete UTF-8 character
-    // If end points to start of multi-byte char (like 花), find its last byte
-    // Example: end=7 for 花 at bytes [7,8,9] → adjusted_end=9
-    let adjusted_end = find_utf8_char_end(source_file_path, end)?;
-
-    // Step 2: Get clipboard directory
-    let clipboard_dir = state
-        .session_directory_path
-        .as_ref()
-        .ok_or_else(|| {
-            log_error(
-                "Session directory path is not set",
-                Some("copy_selection_to_clipboardfile"),
-            );
-            LinesError::StateError("Session directory path is not initialized".into())
-        })?
-        .join("clipboard");
-
-    // Create clipboard directory if it doesn't exist
-    if !clipboard_dir.exists() {
-        fs::create_dir_all(&clipboard_dir)?;
-    }
-
-    // Step 3: Generate filename
-    let filename =
-        generate_clipboard_filename(start, adjusted_end, source_file_path, &clipboard_dir)?;
-
-    // Step 4: Copy selection to clipboard file using adjusted end
-    let clipboard_path = clipboard_dir.join(&filename);
-    append_bytes_from_file_to_file(source_file_path, start, adjusted_end, &clipboard_path)?;
-
-    Ok(())
 }
 
 /// Creates a readable clipboard filename from selected text
@@ -9263,34 +9365,6 @@ pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<
 
     // Extract just the paths
     Ok(files_with_time.into_iter().map(|(path, _)| path).collect())
-}
-
-/// Draws clipboard items with rank numbers, returns count of visible items drawn
-fn draw_pasty_clipboard_items(
-    sorted_files: &[PathBuf],
-    offset: usize,
-    items_per_page: usize,
-) -> usize {
-    let _ = (offset + items_per_page).min(sorted_files.len()); // 'end'
-    let mut visible_count = 0;
-
-    for (idx, file_path) in sorted_files
-        .iter()
-        .enumerate()
-        .skip(offset)
-        .take(items_per_page)
-    {
-        let rank = idx + 1; // 1-indexed display
-        let filename = file_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("???");
-
-        println!("{}{}. {}{}", RED, rank, YELLOW, filename);
-        visible_count += 1;
-    }
-
-    visible_count
 }
 
 /// Formats the Pasty legend with color-coded commands
