@@ -1803,7 +1803,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}|{}{}{}r{}aw {}p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}//cmmnt {}[]{}rpt {}hjkl{}{}",
+        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}//cmmnt {}[]{}rpt {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -10313,7 +10313,7 @@ fn format_hex_info_bar(state: &EditorState) -> Result<String> {
     // Build info bar
     // Show byte position as 1-indexed for human readability
     let info_bar = format!(
-        "{}HEX byte {}{}{} of {}{}{} {} (use dashes for commands -n) {}> ",
+        "{}HEX byte {}{}{} of {}{}{} {} (Enter Hex to Edit Cursor) {}> ",
         YELLOW,
         RED,
         state.hex_cursor.byte_offset + 1, // Human-friendly: 1-indexed
