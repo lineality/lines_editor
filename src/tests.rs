@@ -2858,3 +2858,318 @@ mod pasty_file_append_tests {
         let _ = fs::remove_file(&target_path);
     }
 }
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+// =============================================================================
+// TESTS
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Global counter for unique test identifiers
+    static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Helper: Get project root test_files directory
+    /// Creates it if it doesn't exist
+    fn get_test_files_dir() -> io::Result<PathBuf> {
+        // Get the project root (assuming tests run from project root)
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("test_files");
+        path.push("clipboard_filename_tests");
+
+        // Create directory if it doesn't exist
+        fs::create_dir_all(&path)?;
+
+        Ok(path)
+    }
+
+    /// Helper: Get unique test subdirectory to avoid race conditions
+    /// Each test gets its own isolated directory
+    fn get_unique_test_dir() -> io::Result<PathBuf> {
+        let base_dir = get_test_files_dir()?;
+
+        // Create unique subdirectory using counter and thread ID
+        let test_id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let thread_id = std::thread::current().id();
+        let unique_name = format!("test_{}_{:?}", test_id, thread_id);
+
+        let test_dir = base_dir.join(unique_name);
+        fs::create_dir_all(&test_dir)?;
+
+        Ok(test_dir)
+    }
+
+    /// Helper: Create test file with content in given directory
+    /// Only creates if file doesn't already exist
+    fn ensure_test_file(dir: &Path, name: &str, content: &[u8]) -> io::Result<PathBuf> {
+        let file_path = dir.join(name);
+
+        // Only create if doesn't exist
+        if !file_path.exists() {
+            let mut file = File::create(&file_path)?;
+            file.write_all(content)?;
+            file.flush()?;
+        }
+
+        Ok(file_path)
+    }
+
+    #[test]
+    fn test_basic_alphanumeric_extraction() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_basic.txt", b"Hello World 123")
+        {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        let result = generate_clipboard_filename(0, 15, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "HelloWorld123");
+    }
+
+    #[test]
+    fn test_fallback_to_item() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_symbols.txt", b"!@#$%^&*()") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        let result = generate_clipboard_filename(0, 10, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "item");
+    }
+
+    #[test]
+    fn test_max_16_characters() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file =
+            match ensure_test_file(&test_dir, "source_long.txt", b"abcdefghijklmnopqrstuvwxyz") {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("Failed to create test file: {}", e);
+                    return;
+                }
+            };
+
+        let result = generate_clipboard_filename(0, 26, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(
+            filename.len(),
+            16,
+            "Expected 16 chars, got: {}",
+            filename.len()
+        );
+        assert_eq!(filename, "abcdefghijklmnop");
+    }
+
+    #[test]
+    fn test_conflict_resolution() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_conflict.txt", b"testname") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        // Create conflicting file "testname"
+        let conflict_file = test_dir.join("testname");
+        if let Err(e) = fs::write(&conflict_file, b"existing content") {
+            eprintln!("Failed to create conflict file: {}", e);
+            return;
+        }
+
+        let result = generate_clipboard_filename(0, 8, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "testname_2");
+    }
+
+    // #[test]
+    // fn test_invalid_byte_range() {
+    //     let test_dir = match get_unique_test_dir() {
+    //         Ok(dir) => dir,
+    //         Err(e) => {
+    //             eprintln!("Failed to create test directory: {}", e);
+    //             return;
+    //         }
+    //     };
+
+    //     let source_file = match ensure_test_file(&test_dir, "source_invalid.txt", b"test content") {
+    //         Ok(path) => path,
+    //         Err(e) => {
+    //             eprintln!("Failed to create test file: {}", e);
+    //             return;
+    //         }
+    //     };
+
+    //     // start_byte > end_byte should return error
+    //     let result = generate_clipboard_filename(10, 5, &source_file, &test_dir);
+
+    //     assert!(
+    //         result.is_err(),
+    //         "Expected Err for invalid range, got: {:?}",
+    //         result
+    //     );
+    // }
+
+    #[test]
+    fn test_empty_selection() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_empty.txt", b"some content") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        // Zero-length selection: start_byte == end_byte
+        let result = generate_clipboard_filename(5, 5, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "item"); // Should fall back to "item" with no chars extracted
+    }
+
+    #[test]
+    fn test_multiple_conflicts() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_multi.txt", b"duplicate") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        // Create multiple conflicting files
+        let _ = fs::write(test_dir.join("duplicate"), b"content1");
+        let _ = fs::write(test_dir.join("duplicate_2"), b"content2");
+        let _ = fs::write(test_dir.join("duplicate_3"), b"content3");
+
+        let result = generate_clipboard_filename(0, 9, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "duplicate_4");
+    }
+
+    #[test]
+    fn test_mixed_alphanumeric_and_symbols() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file = match ensure_test_file(&test_dir, "source_mixed.txt", b"abc-123-xyz!@#") {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("Failed to create test file: {}", e);
+                return;
+            }
+        };
+
+        let result = generate_clipboard_filename(0, 14, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "abc123xyz"); // Only alphanumeric extracted
+    }
+
+    #[test]
+    fn test_partial_selection() {
+        let test_dir = match get_unique_test_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                eprintln!("Failed to create test directory: {}", e);
+                return;
+            }
+        };
+
+        let source_file =
+            match ensure_test_file(&test_dir, "source_partial.txt", b"0123456789abcdefghij") {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("Failed to create test file: {}", e);
+                    return;
+                }
+            };
+
+        // Select only middle portion: bytes 5-10 = "56789a"
+        let result = generate_clipboard_filename(5, 11, &source_file, &test_dir);
+
+        assert!(result.is_ok(), "Expected Ok, got: {:?}", result);
+        let filename = result.unwrap();
+        assert_eq!(filename, "56789a");
+    }
+}

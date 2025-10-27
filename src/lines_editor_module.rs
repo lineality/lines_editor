@@ -953,7 +953,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
 
-// for commands such as 'n'
+// for commands such as "n"
 const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 
 // for iterating chunks of text to be inserted into file
@@ -972,7 +972,7 @@ const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 /// Towers of Hanoy
 const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256;
 
-const MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE: usize = 256;
+// const MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE: usize = 256;
 
 const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
@@ -1022,6 +1022,33 @@ return Err(LinesError::Io(io::Error::new(
 let file = File::open(path)?;
 ->
 let file = File::open(path).map_err(|e| LinesError::Io(e))?;
+
+
+// template/example for check/assert format
+//    =================================================
+// // Debug-Assert, Test-Asset, Production-Catch-Handle
+//    =================================================
+// This is not included in production builds
+// assert: only when running in a debug-build: will panic
+debug_assert!(
+    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+    "Info bar buffer must have non-zero capacity"
+);
+// This is not included in production builds
+// assert: only when running cargo test: will panic
+#[cfg(test)]
+assert!(
+    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+    "Info bar buffer must have non-zero capacity"
+);
+// Catch & Handle without panic in production
+// This IS included in production to safe-catch
+if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
+    // state.set_info_bar_message("Config error");
+    return Err(LinesError::GeneralAssertionCatchViolation(
+        "zero buffer size error".into(),
+    ));
+}
 
  */
 
@@ -2150,7 +2177,7 @@ pub enum EditorMode {
     /// Insert mode for typing
     Insert,
     /// Visual selection mode
-    Visual,
+    VisualSelectMode,
     /// Visual selection mode
     PastyMode,
     /// Multi-cursor mode (ctrl+d equivalent)
@@ -2787,36 +2814,6 @@ impl EditorState {
         // Note: Relative paths accepted - conversion to absolute happens elsewhere
         Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
     }
-
-    // // stub/placeholder/shell function
-    // // needs doc string
-    // // needs error handling, info-bar message
-    // fn pasty_mode(
-    //     &mut self,
-    //     stdin_handle: &mut StdinLock,
-    //     text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
-    // ) -> io::Result<bool> {
-    //     // Default: keep editor loop running (will be set to false by quit commands)
-    //     let mut keep_editor_loop_running: bool = true;
-
-    //     // // call handle_pasty_mode_input()
-    //     // match self.handle_pasty_mode_input(&mut stdin_handle, &mut text_buffer) {
-    //     //     Ok(PastyInputPathOrCommand::Back) => return Ok(true),
-    //     //     Ok(PastyInputPathOrCommand::PageUp) => {
-    //     //         offset = offset.saturating_sub(items_per_page);
-    //     //     }
-    //     //     Ok(PastyInputPathOrCommand::SelectPath(path)) => {
-    //     //         insert_file_at_cursor(self, &path)?;
-    //     //         return Ok(true);
-    //     //     }
-    //     //     Err(_) => {
-    //     //         self.set_info_bar_message("invalid input");
-    //     //         // Stay in loop
-    //     //     } // ... etc
-    //     // }
-
-    //     Ok(keep_editor_loop_running)
-    // }
 
     /// Handles Pasty mode - clipboard management and file insertion interface
     ///
@@ -4108,6 +4105,7 @@ impl EditorState {
                 "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
+                // "c" | "y" => Command::Copyank,
                 // Multi-character commands
                 "wq" => Command::SaveAndQuit,
                 "s" | "w" => Command::Save,
@@ -4120,10 +4118,20 @@ impl EditorState {
                 "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
                 _ => Command::None,
             }
-        } else if current_mode == EditorMode::Visual {
+        } else if current_mode == EditorMode::VisualSelectMode {
             match command_str {
+                // same moves for selection:
+                "h" => Command::MoveLeft(count),
+                "\x1b[D" => Command::MoveLeft(count), // left over arrow
+                "j" => Command::MoveDown(count),
+                "\x1b[B" => Command::MoveDown(count), // down cast arrow -> \x1b[B
+                "l" => Command::MoveRight(count),
+                "\x1b[C" => Command::MoveRight(count), // starboard arrow
+                "k" => Command::MoveUp(count),
+                "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
                 "i" => Command::EnterInsertMode,
                 "q" => Command::Quit,
+                "c" | "y" => Command::Copyank,
                 "s" | "w" => Command::Save,
                 "n" | "\x1b" => Command::EnterNormalMode,
                 "wq" => Command::SaveAndQuit,
@@ -6147,6 +6155,9 @@ pub enum Command {
     // Display
     ToggleWrap, // w (in normal mode)
 
+    // Cosplay for Variables
+    Copyank, // c,y (in a normal mood)
+
     // No operation
     None,
 }
@@ -6231,9 +6242,9 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
 /// * `Ok(true)` - Continue editor loop
 /// * `Ok(false)` - Exit editor loop
 /// * `Err(io::Error)` - Command execution failed
-pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool> {
+pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -> Result<bool> {
     // Get read-copy path
-    let base_edit_filepath: PathBuf = state
+    let base_edit_filepath: PathBuf = lines_editor_state
         .read_copy_path
         .as_ref()
         .ok_or_else(|| {
@@ -6258,16 +6269,16 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                if state.cursor.col > 0 {
+                if lines_editor_state.cursor.col > 0 {
                     // Cursor can move left within visible window
-                    let cursor_moves = remaining_moves.min(state.cursor.col);
-                    state.cursor.col -= cursor_moves;
+                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
+                    lines_editor_state.cursor.col -= cursor_moves;
                     remaining_moves -= cursor_moves;
-                } else if state.horizontal_utf8txt_line_char_offset > 0 {
+                } else if lines_editor_state.horizontal_utf8txt_line_char_offset > 0 {
                     // Cursor at left edge, scroll window left
                     let scroll_amount =
-                        remaining_moves.min(state.horizontal_utf8txt_line_char_offset);
-                    state.horizontal_utf8txt_line_char_offset -= scroll_amount;
+                        remaining_moves.min(lines_editor_state.horizontal_utf8txt_line_char_offset);
+                    lines_editor_state.horizontal_utf8txt_line_char_offset -= scroll_amount;
                     remaining_moves -= scroll_amount;
                     needs_rebuild = true;
                 } else {
@@ -6287,7 +6298,7 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             // Only rebuild if we scrolled the window
             if needs_rebuild {
                 // Rebuild window to show the change from read-copy file
-                build_windowmap_nowrap(state, &edit_file_path)?;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -6307,27 +6318,29 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
 
                 // Calculate space available before right edge
                 // Reserve 1 column to prevent display overflow
-                let right_edge = state.effective_cols.saturating_sub(1);
+                let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-                if state.cursor.col < right_edge {
+                if lines_editor_state.cursor.col < right_edge {
                     // Cursor can move right within visible window
-                    let space_available = right_edge - state.cursor.col;
+                    let space_available = right_edge - lines_editor_state.cursor.col;
                     let cursor_moves = remaining_moves.min(space_available);
 
                     // inspection
                     println!("Inspection cursor_moves-> {:?}", &cursor_moves);
 
-                    state.cursor.col += cursor_moves;
+                    lines_editor_state.cursor.col += cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at right edge, scroll window right
                     // Cap scroll to prevent excessive horizontal offset
 
-                    if state.horizontal_utf8txt_line_char_offset < limits::CURSOR_MOVEMENT_STEPS {
+                    if lines_editor_state.horizontal_utf8txt_line_char_offset
+                        < limits::CURSOR_MOVEMENT_STEPS
+                    {
                         let max_scroll = limits::CURSOR_MOVEMENT_STEPS
-                            - state.horizontal_utf8txt_line_char_offset;
+                            - lines_editor_state.horizontal_utf8txt_line_char_offset;
                         let scroll_amount = remaining_moves.min(max_scroll);
-                        state.horizontal_utf8txt_line_char_offset += scroll_amount;
+                        lines_editor_state.horizontal_utf8txt_line_char_offset += scroll_amount;
                         remaining_moves -= scroll_amount;
                         needs_rebuild = true;
                     } else {
@@ -6348,7 +6361,7 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             // Only rebuild if we scrolled the window
             if needs_rebuild {
                 // Rebuild window to show the change from read-copy file
-                build_windowmap_nowrap(state, &edit_file_path)?;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
 
             Ok(true)
@@ -6379,41 +6392,43 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
                 iterations += 1;
 
                 // Calculate space available before bottom edge
-                let bottom_edge = state.effective_rows.saturating_sub(1);
+                let bottom_edge = lines_editor_state.effective_rows.saturating_sub(1);
 
-                if state.cursor.row < bottom_edge {
+                if lines_editor_state.cursor.row < bottom_edge {
                     // Cursor can move down within visible window
                     // Check if EOF limits movement
-                    let space_available =
-                        if let Some((_eof_line, eof_row)) = state.eof_fileline_tuirow_tuple {
-                            if state.cursor.row < eof_row {
-                                // Can move toward EOF
-                                (eof_row - state.cursor.row).min(bottom_edge - state.cursor.row)
-                            } else {
-                                // At or past EOF, cannot move
-                                0
-                            }
+                    let space_available = if let Some((_eof_line, eof_row)) =
+                        lines_editor_state.eof_fileline_tuirow_tuple
+                    {
+                        if lines_editor_state.cursor.row < eof_row {
+                            // Can move toward EOF
+                            (eof_row - lines_editor_state.cursor.row)
+                                .min(bottom_edge - lines_editor_state.cursor.row)
                         } else {
-                            // No EOF visible, normal movement
-                            bottom_edge - state.cursor.row
-                        };
+                            // At or past EOF, cannot move
+                            0
+                        }
+                    } else {
+                        // No EOF visible, normal movement
+                        bottom_edge - lines_editor_state.cursor.row
+                    };
 
                     if space_available == 0 {
                         break;
                     }
 
                     let cursor_moves = remaining_moves.min(space_available);
-                    state.cursor.row += cursor_moves;
+                    lines_editor_state.cursor.row += cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at bottom edge, try: scroll window down
                     // Check if EOF is visible (prevents scrolling past end)
-                    if state.eof_fileline_tuirow_tuple.is_some() {
+                    if lines_editor_state.eof_fileline_tuirow_tuple.is_some() {
                         // EOF visible, cannot scroll further
                         break;
                     }
 
-                    state.line_count_at_top_of_window += remaining_moves;
+                    lines_editor_state.line_count_at_top_of_window += remaining_moves;
                     remaining_moves = 0;
                     needs_rebuild = true;
                 }
@@ -6430,18 +6445,18 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             // Rebuild window if we scrolled
             if needs_rebuild {
                 // Rebuild window to show new content from file
-                build_windowmap_nowrap(state, &edit_file_path)?;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
 
                 // Defensive: After scrolling, verify cursor didn't scroll past EOF
-                match state.eof_fileline_tuirow_tuple {
+                match lines_editor_state.eof_fileline_tuirow_tuple {
                     Some((_file_line_of_eof, eof_tui_display_row)) => {
                         // EOF is visible in rebuilt window
                         // file_line_of_eof = file line number where EOF occurs
                         // eof_tui_display_row = display row showing EOF
 
-                        if state.cursor.row > eof_tui_display_row {
+                        if lines_editor_state.cursor.row > eof_tui_display_row {
                             // Cursor past EOF, clamp to EOF position
-                            state.cursor.row = eof_tui_display_row;
+                            lines_editor_state.cursor.row = eof_tui_display_row;
                         }
                     }
                     None => {
@@ -6454,14 +6469,14 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::DeleteLine => {
-            delete_current_line_noload(state, &edit_file_path)?;
-            build_windowmap_nowrap(state, &edit_file_path)?;
+            delete_current_line_noload(lines_editor_state, &edit_file_path)?;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
 
         Command::DeleteBackspace => {
-            backspace_style_delete_noload(state, &edit_file_path)?;
-            build_windowmap_nowrap(state, &edit_file_path)?;
+            backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
 
@@ -6477,15 +6492,16 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                if state.cursor.row > 0 {
+                if lines_editor_state.cursor.row > 0 {
                     // Cursor can move up within visible window
-                    let cursor_moves = remaining_moves.min(state.cursor.row);
-                    state.cursor.row -= cursor_moves;
+                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.row);
+                    lines_editor_state.cursor.row -= cursor_moves;
                     remaining_moves -= cursor_moves;
-                } else if state.line_count_at_top_of_window > 0 {
+                } else if lines_editor_state.line_count_at_top_of_window > 0 {
                     // Cursor at top edge, scroll window up
-                    let scroll_amount = remaining_moves.min(state.line_count_at_top_of_window);
-                    state.line_count_at_top_of_window -= scroll_amount;
+                    let scroll_amount =
+                        remaining_moves.min(lines_editor_state.line_count_at_top_of_window);
+                    lines_editor_state.line_count_at_top_of_window -= scroll_amount;
                     remaining_moves -= scroll_amount;
                     needs_rebuild = true;
                 } else {
@@ -6505,17 +6521,17 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             // Rebuild window if we scrolled
             if needs_rebuild {
                 // Rebuild window to show the change from read-copy file
-                build_windowmap_nowrap(state, &edit_file_path)?;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
 
             Ok(true)
         }
 
         Command::InsertNewline(_) => {
-            insert_newline_at_cursor_chunked(state, edit_file_path)?;
+            insert_newline_at_cursor_chunked(lines_editor_state, edit_file_path)?;
 
             // Rebuild window to show the change
-            build_windowmap_nowrap(state, edit_file_path)?;
+            build_windowmap_nowrap(lines_editor_state, edit_file_path)?;
 
             Ok(true)
         }
@@ -6540,60 +6556,82 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::EnterInsertMode => {
+            // Without rebuild here, hexedit changes do not appear until
+            // after a next change. Keep in Sync.
             // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-            state.mode = EditorMode::Insert;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::Insert;
             Ok(true)
         }
 
         Command::EnterNormalMode => {
+            // Without rebuild here, hexedit changes do not appear until
+            // after a next change. Keep in Sync.
             // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-            state.mode = EditorMode::Normal;
-            Ok(true)
-        }
-
-        Command::EnterPastyClipboardMode => {
-            state.mode = EditorMode::PastyMode;
-            Ok(true)
-        }
-
-        Command::EnterHexEditMode => {
-            // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-            state.mode = EditorMode::HexMode;
-
-            // Convert current window position to file byte offset
-            if let Ok(Some(file_pos)) = state
-                .window_map
-                .get_file_position(state.cursor.row, state.cursor.col)
-            {
-                // Start hex cursor at same file position
-                state.hex_cursor.byte_offset = file_pos.byte_offset as usize;
-            } else {
-                // Fallback to file start if cursor position invalid
-                state.hex_cursor.byte_offset = 0;
-            }
-
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::Normal;
             Ok(true)
         }
 
         Command::EnterVisualMode => {
-            // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(state, &edit_file_path)?;
-            state.mode = EditorMode::Visual;
-            // Set selection start at current cursor position
-            if let Ok(Some(file_pos)) = state
+            // Without rebuild here, hexedit changes do not appear until
+            // after a next change. Keep in Sync.
+
+            // Set cursor position to file_position_of_vis_select_start
+            // Get current cursor position in FILE
+            if let Ok(Some(file_pos)) = lines_editor_state
                 .window_map
-                .get_file_position(state.cursor.row, state.cursor.col)
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
             {
-                state.selection_start = Some(file_pos);
+                // Set BOTH start and end to same position initially
+                lines_editor_state.file_position_of_vis_select_start = file_pos.byte_offset;
+                lines_editor_state.file_position_of_vis_select_end = file_pos.byte_offset;
+            }
+
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::VisualSelectMode;
+            // Set selection start at current cursor position
+            if let Ok(Some(file_pos)) = lines_editor_state
+                .window_map
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            {
+                lines_editor_state.selection_start = Some(file_pos);
             }
             Ok(true)
         }
 
+        Command::EnterPastyClipboardMode => {
+            // rebuild may not be needed here, but just in case
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::PastyMode;
+            Ok(true)
+        }
+
+        Command::EnterHexEditMode => {
+            // rebuild may not be needed here, but just in case
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::HexMode;
+
+            // Convert current window position to file byte offset
+            if let Ok(Some(file_pos)) = lines_editor_state
+                .window_map
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            {
+                // Start hex cursor at same file position
+                lines_editor_state.hex_cursor.byte_offset = file_pos.byte_offset as usize;
+            } else {
+                // Fallback to file start if cursor position invalid
+                lines_editor_state.hex_cursor.byte_offset = 0;
+            }
+
+            Ok(true)
+        }
+
         Command::Save => {
-            save_file(state)?;
+            save_file(lines_editor_state)?;
             Ok(true)
             // Save doesn't need rebuild (no content change in display)
         }
@@ -6610,7 +6648,7 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
             // Clean up session directory before the exiting
             // Wash your teeth and brush your face!
 
-            if let Err(e) = cleanup_session_directory(state) {
+            if let Err(e) = cleanup_session_directory(lines_editor_state) {
                 eprintln!("Warning: Session cleanup failed: {}", e);
                 log_error(
                     &format!("Session cleanup failed: {}", e),
@@ -6624,10 +6662,10 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::SaveAndQuit => {
-            save_file(state)?; // save file
+            save_file(lines_editor_state)?; // save file
 
             // Clean up session directory after save
-            if let Err(e) = cleanup_session_directory(state) {
+            if let Err(e) = cleanup_session_directory(lines_editor_state) {
                 eprintln!("Warning: Session cleanup failed: {}", e);
                 log_error(
                     &format!("Session cleanup failed: {}", e),
@@ -6639,13 +6677,25 @@ pub fn execute_command(state: &mut EditorState, command: Command) -> Result<bool
         }
 
         Command::ToggleWrap => {
-            state.wrap_mode = match state.wrap_mode {
+            lines_editor_state.wrap_mode = match lines_editor_state.wrap_mode {
                 WrapMode::Wrap => WrapMode::NoWrap,
                 WrapMode::NoWrap => WrapMode::Wrap,
             };
 
             // Rebuild window with new wrap mode
-            build_windowmap_nowrap(state, &edit_file_path)?;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+
+        Command::Copyank => {
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+            // Copy the Selection To The Pasty Clipboard (as a file)
+            copy_selection_to_clipboardfile(lines_editor_state, &read_copy)?;
+
             Ok(true)
         }
 
@@ -7759,38 +7809,38 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // Loop will exit when bytes_read == 0 (EOF) or chunk_counter >= MAX_CHUNKS
     }
 
-    // ============================================
-    // Phase 6: Remove Final Byte
-    // ============================================
-    // Unconditionally delete the last byte inserted
-    // This removes trailing newline (or whatever the final byte was)
+    // // ============================================
+    // // Phase 6: Remove Final Byte
+    // // ============================================
+    // // Unconditionally delete the last byte inserted
+    // // This removes trailing newline (or whatever the final byte was)
 
-    if total_bytes_written > 0 {
-        // Calculate position of last byte: start + (total - 1)
-        // Example: inserted 10 bytes starting at position 5
-        //   Bytes occupy positions 5,6,7,8,9,10,11,12,13,14
-        //   Last byte is at position 5 + 10 - 1 = 14 ✓
-        let last_byte_position = start_byte_position + total_bytes_written - 1;
+    // if total_bytes_written > 0 {
+    //     // Calculate position of last byte: start + (total - 1)
+    //     // Example: inserted 10 bytes starting at position 5
+    //     //   Bytes occupy positions 5,6,7,8,9,10,11,12,13,14
+    //     //   Last byte is at position 5 + 10 - 1 = 14 ✓
+    //     let last_byte_position = start_byte_position + total_bytes_written - 1;
 
-        // Delete byte at calculated position
-        // Helper function handles: seek, read-after, seek-back, write-shifted, truncate, flush
-        delete_byte_at_position(&target_file_path, last_byte_position)?;
+    //     // Delete byte at calculated position
+    //     // Helper function handles: seek, read-after, seek-back, write-shifted, truncate, flush
+    //     delete_byte_at_position(&target_file_path, last_byte_position)?;
 
-        // Log success with statistics
-        log_error(
-            &format!(
-                "File inserted: {} bytes in {} chunks, removed final byte at position {}",
-                total_bytes_written, chunk_counter, last_byte_position
-            ),
-            Some("insert_file_at_cursor"),
-        );
-    } else {
-        // Empty file - nothing inserted, nothing to delete
-        log_error(
-            "Empty file - nothing inserted",
-            Some("insert_file_at_cursor"),
-        );
-    }
+    //     // Log success with statistics
+    //     log_error(
+    //         &format!(
+    //             "File inserted: {} bytes in {} chunks, removed final byte at position {}",
+    //             total_bytes_written, chunk_counter, last_byte_position
+    //         ),
+    //         Some("insert_file_at_cursor"),
+    //     );
+    // } else {
+    //     // Empty file - nothing inserted, nothing to delete
+    //     log_error(
+    //         "Empty file - nothing inserted",
+    //         Some("insert_file_at_cursor"),
+    //     );
+    // }
 
     // ============================================
     // Phase 7: Update Editor State
@@ -8254,6 +8304,612 @@ pub fn insert_text_chunk_at_cursor_position(
 // ===============
 //  Have a Pasty!!
 // ===============
+
+/// Checks if a file byte position is within the current visual selection
+///
+/// # Purpose
+/// Determines if a given byte offset falls within the selected range.
+/// Handles both forward and backward selections.
+///
+/// # Arguments
+/// * `file_pos` - Byte offset in file to check
+/// * `sel_start` - Selection start byte (may be > sel_end if backward select)
+/// * `sel_end` - Selection end byte (may be < sel_start if backward select)
+///
+/// # Returns
+/// * `true` if file_pos is within selection range (inclusive)
+/// * `false` otherwise
+///
+/// # Examples
+/// ```ignore
+/// // Forward selection: bytes 10-20
+/// is_in_selection(15, 10, 20) → true
+/// is_in_selection(5, 10, 20) → false
+///
+/// // Backward selection: bytes 20-10
+/// is_in_selection(15, 20, 10) → true
+/// is_in_selection(5, 20, 10) → false
+/// ```
+fn is_in_selection(file_pos: u64, sel_start: u64, sel_end: u64) -> Result<bool> {
+    // Normalize: ensure start ≤ end
+    let (start, end) = if sel_start <= sel_end {
+        (sel_start, sel_end)
+    } else {
+        (sel_end, sel_start)
+    };
+
+    // Check if position falls within normalized range (inclusive on both ends)
+    Ok(file_pos >= start && file_pos <= end)
+}
+
+/// If: Backwards, Then: Makes Not Backwards
+fn normalize_pasty_selection_range(start: u64, end: u64) -> Result<(u64, u64)> {
+    if start <= end {
+        Ok((start, end))
+    } else {
+        Ok((end, start))
+    }
+}
+
+/// Adjusts a byte position forward to the start of the next UTF-8 character
+///
+/// # Purpose
+/// Ensures that a byte position points to a valid UTF-8 character boundary,
+/// not the middle of a multi-byte character. This prevents corruption when
+/// copying byte ranges that might split UTF-8 characters.
+///
+/// # Arguments
+/// * `file_path` - Path to the UTF-8 encoded file
+/// * `byte_position` - Byte offset that might be mid-character
+///
+/// # Returns
+/// * `Ok(u64)` - Adjusted position at next character boundary
+/// * `Err(LinesError)` - If file operations fail
+///
+/// # Algorithm
+/// UTF-8 character byte patterns:
+/// - 0xxxxxxx (0x00-0x7F): Single-byte character (ASCII)
+/// - 110xxxxx (0xC0-0xDF): Start of 2-byte character
+/// - 1110xxxx (0xE0-0xEF): Start of 3-byte character
+/// - 11110xxx (0xF0-0xF7): Start of 4-byte character
+/// - 10xxxxxx (0x80-0xBF): Continuation byte (middle of character)
+///
+/// If byte_position points to a continuation byte, advance until we find
+/// the start of the next character (non-continuation byte).
+///
+/// # Safety
+/// - Bounded loop: max 4 bytes forward (UTF-8 max character length)
+/// - Handles EOF gracefully
+/// - Never goes backward (preserves at least the position given)
+pub fn adjust_to_utf8_boundary(file_path: &Path, byte_position: u64) -> Result<u64> {
+    // Open file for reading
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open file for UTF-8 boundary check: {}", e),
+            Some("adjust_to_utf8_boundary"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Seek to the byte position
+    file.seek(SeekFrom::Start(byte_position)).map_err(|e| {
+        log_error(
+            &format!("Cannot seek to byte {}: {}", byte_position, e),
+            Some("adjust_to_utf8_boundary"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    let mut current_position = byte_position;
+    let mut byte_buffer: [u8; 1] = [0; 1];
+
+    // Safety limit: UTF-8 characters are max 4 bytes
+    // If we're in the middle of a character, we need at most 3 more bytes
+    const MAX_CONTINUATION_BYTES: u64 = 3;
+
+    for _ in 0..=MAX_CONTINUATION_BYTES {
+        match file.read(&mut byte_buffer) {
+            Ok(0) => {
+                // End of file - return current position
+                return Ok(current_position);
+            }
+            Ok(_) => {
+                let byte = byte_buffer[0];
+
+                // Check if this is a UTF-8 continuation byte (10xxxxxx)
+                // Continuation bytes: 0x80-0xBF (binary: 10xxxxxx)
+                let is_continuation = (byte & 0b1100_0000) == 0b1000_0000;
+
+                if is_continuation {
+                    // This is middle of a character - advance
+                    current_position = current_position.saturating_add(1);
+                    // Continue loop to next byte
+                } else {
+                    // This is the start of a character (or ASCII)
+                    // Return this position
+                    return Ok(current_position);
+                }
+            }
+            Err(e) => {
+                // Read error
+                log_error(
+                    &format!("Error reading for UTF-8 boundary check: {}", e),
+                    Some("adjust_to_utf8_boundary"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        }
+    }
+
+    // If we got here, we advanced 4 bytes and still hitting continuation bytes
+    // This shouldn't happen with valid UTF-8, but handle defensively
+    // Return the advanced position
+    Ok(current_position)
+}
+
+// // TODO needs full doc string
+// /// copy_bytes_from_file_to_file: no-heap, append each byte to the file, without ever loading the whole selection or file.
+// pub fn copy_selection_to_clipboardfile(
+//     state: &mut EditorState,
+//     source_file_path: &Path,
+// ) -> Result<()> {
+//     // Step 1: Normalize selection
+//     let (start, end) = normalize_pasty_selection_range(
+//         state.file_position_of_vis_select_start,
+//         state.file_position_of_vis_select_end,
+//     )?;
+
+//     // Step 3: Check for collision in clipboard dir
+//     let clipboard_dir = state
+//         .session_directory_path
+//         .as_ref()
+//         .ok_or_else(|| {
+//             log_error(
+//                 "Session directory path is not set",
+//                 Some("function_name_here"),
+//             );
+//             LinesError::StateError("Session directory path is not initialized".into())
+//         })?
+//         .join("clipboard");
+
+//     // Create clipboard directory if it doesn't exist
+//     if !clipboard_dir.exists() {
+//         fs::create_dir_all(&clipboard_dir)?;
+//     }
+
+//     // Step 2: Generate filename from SOURCE content
+//     let filename = generate_clipboard_filename(start, end, source_file_path, &clipboard_dir)?;
+
+//     // Step 4: Copy selection to clipboard file
+//     let clipboard_path = clipboard_dir.join(&filename);
+//     append_bytes_from_file_to_file(source_file_path, start, end, &clipboard_path)?;
+
+//     Ok(())
+// }
+
+/// Finds the last byte position of a UTF-8 character starting at given position
+///
+/// # Purpose
+/// Given a byte position pointing to the START of a UTF-8 character,
+/// returns the position of the LAST byte of that character.
+///
+/// # Arguments
+/// * `file_path` - Path to the UTF-8 encoded file
+/// * `char_start_byte` - Byte offset pointing to start of UTF-8 character
+///
+/// # Returns
+/// * `Ok(u64)` - Position of the last byte of the character
+/// * `Err(LinesError)` - If file operations fail
+///
+/// # UTF-8 Character Length Detection
+/// UTF-8 first byte patterns indicate character byte length:
+/// - `0xxxxxxx` (0x00-0x7F): 1-byte character (ASCII) → returns same position
+/// - `110xxxxx` (0xC0-0xDF): 2-byte character → returns position + 1
+/// - `1110xxxx` (0xE0-0xEF): 3-byte character → returns position + 2
+/// - `11110xxx` (0xF0-0xF7): 4-byte character → returns position + 3
+///
+/// # Example
+/// ```ignore
+/// // 花 (U+82B1) = E8 8A B1 (3 bytes) at position 7
+/// find_utf8_char_end(path, 7) → Ok(9)  // Last byte at position 9
+///
+/// // ASCII 'a' = 0x61 (1 byte) at position 5
+/// find_utf8_char_end(path, 5) → Ok(5)  // Last byte at position 5
+/// ```
+pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64> {
+    // Open file for reading
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open file for UTF-8 character end check: {}", e),
+            Some("find_utf8_char_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Seek to character start position
+    file.seek(SeekFrom::Start(char_start_byte)).map_err(|e| {
+        log_error(
+            &format!("Cannot seek to byte {}: {}", char_start_byte, e),
+            Some("find_utf8_char_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Read first byte to determine character length
+    let mut byte_buffer: [u8; 1] = [0; 1];
+
+    match file.read(&mut byte_buffer) {
+        Ok(0) => {
+            // EOF reached - return start position
+            Ok(char_start_byte)
+        }
+        Ok(_) => {
+            let first_byte = byte_buffer[0];
+
+            // Determine character byte length from first byte bit pattern
+            let char_byte_length: u64 = if first_byte < 0x80 {
+                // 0xxxxxxx: 1-byte character (ASCII)
+                1
+            } else if (first_byte & 0b1110_0000) == 0b1100_0000 {
+                // 110xxxxx: 2-byte character
+                2
+            } else if (first_byte & 0b1111_0000) == 0b1110_0000 {
+                // 1110xxxx: 3-byte character (like 花)
+                3
+            } else if (first_byte & 0b1111_1000) == 0b1111_0000 {
+                // 11110xxx: 4-byte character
+                4
+            } else {
+                // Invalid UTF-8 or continuation byte - treat as 1 byte
+                log_error(
+                    &format!(
+                        "Invalid UTF-8 start byte 0x{:02X} at position {}",
+                        first_byte, char_start_byte
+                    ),
+                    Some("find_utf8_char_end"),
+                );
+                1
+            };
+
+            // Calculate last byte position of this character
+            // For 1-byte char at position N: last byte is at N (0 additional bytes)
+            // For 2-byte char at position N: last byte is at N+1 (1 additional byte)
+            // For 3-byte char at position N: last byte is at N+2 (2 additional bytes)
+            // For 4-byte char at position N: last byte is at N+3 (3 additional bytes)
+            let last_byte_position = char_start_byte.saturating_add(char_byte_length - 1);
+
+            Ok(last_byte_position)
+        }
+        Err(e) => {
+            log_error(
+                &format!("Error reading byte for UTF-8 character length: {}", e),
+                Some("find_utf8_char_end"),
+            );
+            Err(LinesError::Io(e))
+        }
+    }
+}
+
+// pub fn copy_selection_to_clipboardfile(
+//     state: &mut EditorState,
+//     source_file_path: &Path,
+// ) -> Result<()> {
+//     // Step 1: Normalize selection
+//     let (start, end) = normalize_pasty_selection_range(
+//         state.file_position_of_vis_select_start,
+//         state.file_position_of_vis_select_end,
+//     )?;
+
+//     // Step 1.5: Adjust end position to include complete UTF-8 character
+//     // If end position is in the middle of a multi-byte character,
+//     // advance to the start of the next character to include the complete character
+//     let adjusted_end = adjust_to_utf8_boundary(source_file_path, end)?;
+
+//     // Step 2: Generate filename from SOURCE content
+//     let clipboard_dir = state
+//         .session_directory_path
+//         .as_ref()
+//         .ok_or_else(|| {
+//             log_error(
+//                 "Session directory path is not set",
+//                 Some("copy_selection_to_clipboardfile"),
+//             );
+//             LinesError::StateError("Session directory path is not initialized".into())
+//         })?
+//         .join("clipboard");
+
+//     // Create clipboard directory if it doesn't exist
+//     if !clipboard_dir.exists() {
+//         fs::create_dir_all(&clipboard_dir)?;
+//     }
+
+//     let filename =
+//         generate_clipboard_filename(start, adjusted_end, source_file_path, &clipboard_dir)?;
+
+//     // Step 3: Copy selection to clipboard file
+//     let clipboard_path = clipboard_dir.join(&filename);
+//     append_bytes_from_file_to_file(source_file_path, start, adjusted_end, &clipboard_path)?;
+
+//     Ok(())
+// }
+
+pub fn copy_selection_to_clipboardfile(
+    state: &mut EditorState,
+    source_file_path: &Path,
+) -> Result<()> {
+    // Step 1: Normalize selection
+    let (start, end) = normalize_pasty_selection_range(
+        state.file_position_of_vis_select_start,
+        state.file_position_of_vis_select_end,
+    )?;
+
+    // Step 1.5: Adjust end position to include complete UTF-8 character
+    // If end points to start of multi-byte char (like 花), find its last byte
+    // Example: end=7 for 花 at bytes [7,8,9] → adjusted_end=9
+    let adjusted_end = find_utf8_char_end(source_file_path, end)?;
+
+    // Step 2: Get clipboard directory
+    let clipboard_dir = state
+        .session_directory_path
+        .as_ref()
+        .ok_or_else(|| {
+            log_error(
+                "Session directory path is not set",
+                Some("copy_selection_to_clipboardfile"),
+            );
+            LinesError::StateError("Session directory path is not initialized".into())
+        })?
+        .join("clipboard");
+
+    // Create clipboard directory if it doesn't exist
+    if !clipboard_dir.exists() {
+        fs::create_dir_all(&clipboard_dir)?;
+    }
+
+    // Step 3: Generate filename
+    let filename =
+        generate_clipboard_filename(start, adjusted_end, source_file_path, &clipboard_dir)?;
+
+    // Step 4: Copy selection to clipboard file using adjusted end
+    let clipboard_path = clipboard_dir.join(&filename);
+    append_bytes_from_file_to_file(source_file_path, start, adjusted_end, &clipboard_path)?;
+
+    Ok(())
+}
+
+/// Creates a readable clipboard filename from selected text
+///
+/// # Purpose
+/// Generates a unique filename based on alphanumeric characters extracted from
+/// a byte range in a source file. Used for saving clipboard content with
+/// human-readable names.
+///
+/// # Algorithm
+/// 1. Reads up to 16 bytes from source file starting at `start_byte`
+/// 2. Extracts ASCII alphanumeric characters only (a-z, A-Z, 0-9)
+/// 3. Falls back to "item" if no valid characters found
+/// 4. Checks for filename conflicts in clipboard directory
+/// 5. Appends _2, _3, ... _1000 to resolve conflicts
+/// 6. Returns unique filename string (no path, no extension)
+///
+/// # Arguments
+/// * `start_byte` - Starting byte position in source file
+/// * `end_byte` - Ending byte position in source file
+/// * `source_file_path` - Path to file being read from
+/// * `clipboard_path` - Session directory where clipboard files are stored
+///
+/// # Returns
+/// * `Ok(String)` - Unique filename (just the name, no path or extension)
+/// * `Err(LinesError)` - If file operations fail or all 1000 name variants exist
+///
+/// # Memory Safety
+/// Uses only pre-allocated 16-byte buffer. Never loads entire files.
+/// Reads source file incrementally, one byte at a time.
+///
+/// # Error Handling
+/// - Invalid byte range (start > end)
+/// - Source file open/seek/read failures
+/// - Clipboard directory access failures
+/// - All 1000 filename slots taken
+///
+/// # Example Filenames
+/// - Source text "Hello World!" → "HelloWorld"
+/// - Source text "123 test" → "123test"
+/// - Source text "!@#$" → "item" (fallback)
+/// - Conflict resolution → "item_2", "item_3", etc.
+pub fn generate_clipboard_filename(
+    start_byte: u64,
+    end_byte: u64,
+    source_file_path: &Path,
+    clipboard_path: &Path,
+) -> Result<String> {
+    // =========================================================================
+    // VALIDATION: Check byte range validity
+    // =========================================================================
+
+    // Debug-Assert: Validate byte range in debug builds
+    //
+    //    =================================================
+    // // Debug-Assert, Test-Asset, Production-Catch-Handle
+    //    =================================================
+    // This is not included in production builds
+    // assert: only when running in a debug-build: will panic
+    debug_assert!(start_byte <= end_byte, "start_byte must be <= end_byte");
+    // This is not included in production builds
+    // assert: only when running cargo test: will panic
+    #[cfg(test)]
+    assert!(start_byte <= end_byte, "start_byte must be <= end_byte");
+    // Catch & Handle without panic in production
+    // This IS included in production to safe-catch
+    if !start_byte <= end_byte {
+        // state.set_info_bar_message("Config error");
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "start_byte must be <= end_byte".into(),
+        ));
+    }
+
+    // Production-Catch-Handle: Invalid byte range
+    if start_byte > end_byte {
+        log_error(
+            &format!(
+                "Invalid byte range: start={} > end={}",
+                start_byte, end_byte
+            ),
+            Some("generate_clipboard_filename"),
+        );
+        return Err(LinesError::InvalidInput(
+            "start_byte must be less than or equal to end_byte".into(),
+        ));
+    }
+
+    // =========================================================================
+    // STEP 1: Extract alphanumeric characters from source file
+    // =========================================================================
+
+    // Pre-allocated buffer for extracted name (max 16 ASCII chars)
+    let mut name_buffer: [u8; 16] = [0; 16];
+    let mut name_length: usize = 0;
+
+    // Open source file for reading
+    let mut file = File::open(source_file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open source file: {}", e),
+            Some("generate_clipboard_filename"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Seek to start position
+    file.seek(SeekFrom::Start(start_byte)).map_err(|e| {
+        log_error(
+            &format!("Cannot seek to byte {}: {}", start_byte, e),
+            Some("generate_clipboard_filename"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Read bytes one at a time, extracting alphanumeric characters
+    // Loop bounded by: selection size and buffer capacity
+    let bytes_to_read = end_byte.saturating_sub(start_byte) + 1; // +1 for inclusive range
+    let max_iterations = bytes_to_read.min(1024); // Safety limit: read max 1KB
+
+    for iteration in 0..max_iterations {
+        // Stop if buffer is full
+        if name_length >= 16 {
+            break;
+        }
+
+        // Stop if we've reached end of selection
+        if iteration >= bytes_to_read {
+            break;
+        }
+
+        // Read one byte
+        let mut byte_buffer: [u8; 1] = [0; 1];
+        match file.read(&mut byte_buffer) {
+            Ok(0) => {
+                // End of file reached
+                break;
+            }
+            Ok(_) => {
+                let byte = byte_buffer[0];
+
+                // Check if byte is ASCII alphanumeric
+                // a-z: 97-122, A-Z: 65-90, 0-9: 48-57
+                let is_alphanumeric = (byte >= 48 && byte <= 57)  // 0-9
+                    || (byte >= 65 && byte <= 90)  // A-Z
+                    || (byte >= 97 && byte <= 122); // a-z
+
+                if is_alphanumeric {
+                    name_buffer[name_length] = byte;
+                    name_length += 1;
+                }
+                // Skip non-alphanumeric bytes (punctuation, whitespace, etc.)
+            }
+            Err(e) => {
+                // Read error - log and stop reading
+                log_error(
+                    &format!("Error reading source file: {}", e),
+                    Some("generate_clipboard_filename"),
+                );
+                break;
+            }
+        }
+    }
+
+    // =========================================================================
+    // STEP 2: Create base filename (or use fallback)
+    // =========================================================================
+
+    let base_name = if name_length == 0 {
+        // No alphanumeric characters found - use fallback
+        String::from("item")
+    } else {
+        // Convert extracted bytes to string
+        // We know these are valid ASCII alphanumeric, so UTF-8 conversion is safe
+        match std::str::from_utf8(&name_buffer[..name_length]) {
+            Ok(s) => String::from(s),
+            Err(e) => {
+                // This should never happen with ASCII alphanumeric, but handle defensively
+                log_error(
+                    &format!("UTF-8 conversion error (using fallback): {}", e),
+                    Some("generate_clipboard_filename"),
+                );
+                String::from("item")
+            }
+        }
+    };
+
+    // =========================================================================
+    // STEP 3: Find unique filename (handle conflicts)
+    // =========================================================================
+
+    // Check if base name is available
+    let candidate_path = clipboard_path.join(&base_name);
+
+    if !candidate_path.exists() {
+        // Base name is unique - return it
+        return Ok(base_name);
+    }
+
+    // Base name exists - try numbered variants
+    // Loop bounded: max 1000 attempts
+    const MAX_ATTEMPTS: u32 = 1000;
+
+    for suffix in 2..=MAX_ATTEMPTS {
+        // Build candidate name with suffix
+        // Pre-allocate string capacity to avoid heap reallocation
+        let mut candidate_name = String::with_capacity(base_name.len() + 10);
+        candidate_name.push_str(&base_name);
+        candidate_name.push('_');
+        candidate_name.push_str(&suffix.to_string());
+
+        // Check if this candidate exists
+        let candidate_path = clipboard_path.join(&candidate_name);
+
+        if !candidate_path.exists() {
+            // Found unique name
+            return Ok(candidate_name);
+        }
+    }
+
+    // =========================================================================
+    // ERROR: All 1000 filename slots are taken
+    // =========================================================================
+
+    log_error(
+        &format!(
+            "All {} filename variants exist for base name: {}",
+            MAX_ATTEMPTS, base_name
+        ),
+        Some("generate_clipboard_filename"),
+    );
+
+    Err(LinesError::StateError(format!(
+        "Cannot generate unique filename - all {} variants of '{}' already exist",
+        MAX_ATTEMPTS, base_name
+    )))
+}
 
 /// Appends a range of bytes from one file to another, one byte at a time
 ///
@@ -9035,7 +9691,7 @@ fn format_standard_info_bar(state: &EditorState) -> Result<String> {
     let mode_str = match state.mode {
         EditorMode::Normal => "NORMAL",
         EditorMode::Insert => "INSERT",
-        EditorMode::Visual => "VISUAL",
+        EditorMode::VisualSelectMode => "VISUAL",
         EditorMode::PastyMode => "PASTY",
         EditorMode::MultiCursor => "MULTI",
         EditorMode::HexMode => "HEX",
@@ -9649,7 +10305,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
             match std::str::from_utf8(row_content) {
                 Ok(row_str) => {
                     // ADD CURSOR HIGHLIGHTING HERE (was missing!)
-                    let display_str = render_utf8txt_row_with_cursor(state, row, row_str);
+                    let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
                     println!("{}", display_str);
                 }
                 Err(_) => println!("�"),
@@ -9674,64 +10330,90 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
 
     Ok(())
 }
-
-/// Renders one row of the display with cursor highlighting
+/// Renders one row of display with both cursor and visual selection highlighting
 ///
 /// # Purpose
-/// Takes a display buffer row and adds cursor highlighting if cursor is on this row.
-/// Uses ANSI escape codes to show cursor position visually.
+/// Takes a display row and adds:
+/// 1. Cursor highlighting (RED + WHITE_BG) if cursor on this row - PRIORITY 1
+/// 2. Visual selection highlighting (YELLOW + CYAN_BG) if in visual mode - PRIORITY 2
+/// 3. Character-by-character highlighting via window_map
 ///
 /// # Arguments
-/// * `state` - Editor state with cursor position
-/// * `row_index` - Which display row we're rendering (0-indexed)
+/// * `state` - Editor state (mode, cursor position, window_map)
+/// * `row_index` - Display row being rendered (0-indexed)
 /// * `row_content` - The text content for this row
 ///
 /// # Returns
-/// * `String` - The row with cursor highlighting applied
+/// * `Ok(String)` - Row with highlighting applied
+/// * `Err(LinesError)` - If window_map lookup fails or selection check fails
+///
+/// # Error Handling
+/// All failures are propagated - no silent failures.
+/// Window_map errors, selection calculation errors, all returned as Err.
+///
+/// # Design Notes
+/// - Window_map provides byte_offset for each display position
+/// - Cursor takes priority over selection highlighting
+/// - All operations can fail and must be handled by caller
 fn render_utf8txt_row_with_cursor(
     state: &EditorState,
     row_index: usize,
     row_content: &str,
-) -> String {
-    // Not on cursor row - return as-is
-    if row_index != state.cursor.row {
-        return row_content.to_string();
-    }
-
-    // On cursor row - highlight the cursor position
+) -> Result<String> {
     const BOLD: &str = "\x1b[1m";
     const RED: &str = "\x1b[31m";
+    const YELLOW: &str = "\x1b[33m";
     const BG_WHITE: &str = "\x1b[47m";
+    const BG_CYAN: &str = "\x1b[46m";
     const RESET: &str = "\x1b[0m";
 
     let chars: Vec<char> = row_content.chars().collect();
-    let mut result = String::with_capacity(row_content.len() + 20); // Extra for ANSI codes
+    let mut result = String::with_capacity(row_content.len() + 100);
 
-    // Defensive: Handle cursor beyond line end
+    // Defensive: prevent cursor beyond line length
     let cursor_col = state.cursor.col.min(chars.len());
+    let cursor_on_this_row = row_index == state.cursor.row;
 
-    // Build string with cursor highlighting
-    for (i, &ch) in chars.iter().enumerate() {
-        if i == cursor_col {
-            // This is the cursor position - highlight it
+    // Process each character in the row
+    for col in 0..chars.len() {
+        let ch = chars[col];
+
+        // PRIORITY 1: Cursor highlighting (takes precedence)
+        if cursor_on_this_row && col == cursor_col {
             result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
-        } else {
-            result.push(ch);
+            continue;
         }
+
+        // PRIORITY 2: Visual selection highlighting
+        if state.mode == EditorMode::VisualSelectMode {
+            // Get file position - propagate error if lookup fails
+            let file_pos_option = state.window_map.get_file_position(row_index, col)?;
+
+            if let Some(file_pos) = file_pos_option {
+                // Check if in selection - propagate error if check fails
+                let in_selection = is_in_selection(
+                    file_pos.byte_offset,
+                    state.file_position_of_vis_select_start,
+                    state.file_position_of_vis_select_end,
+                )?;
+
+                if in_selection {
+                    result.push_str(&format!("{}{}{}{}{}", BOLD, YELLOW, BG_CYAN, ch, RESET));
+                    continue;
+                }
+            }
+        }
+
+        // PRIORITY 3: Normal character (no highlighting)
+        result.push(ch);
     }
 
-    // // If cursor is at/past end of line, show a space character as cursor
-    // if cursor_col >= chars.len() {
-    //     result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
-    // }
-
-    // NEW: Always show cursor at/past end of line
-    if cursor_col >= chars.len() {
-        // Show a block cursor at EOL position
+    // Handle cursor at/past end of line
+    if cursor_on_this_row && cursor_col >= chars.len() {
         result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
     }
 
-    result
+    Ok(result)
 }
 
 /// Initializes the session directory structure for this editing session
@@ -10033,10 +10715,24 @@ pub fn full_lines_editor(original_file_path: Option<PathBuf>) -> Result<()> {
             //  ===============
             keep_editor_loop_running =
                 lines_editor_state.handle_hex_mode_input(&mut stdin_handle, &mut command_buffer)?;
+        } else if lines_editor_state.mode == EditorMode::VisualSelectMode {
+            //  ==================
+            //  Visual Select Mode
+            //  ==================
+            // Set cursor position to file_position_of_vis_select_end
+            // After movement, update END position to new cursor location
+            if let Ok(Some(file_pos)) = lines_editor_state
+                .window_map
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            {
+                lines_editor_state.file_position_of_vis_select_end = file_pos.byte_offset;
+            }
+            keep_editor_loop_running = lines_editor_state
+                .handle_normalmode_and_visualmode_input(&mut stdin_handle, &mut command_buffer)?;
         } else {
-            //  ==========================================
-            //  IF in Normal/Visual mode: parse as command
-            //  ==========================================
+            //  ===================================
+            //  IF in Normal mode: parse as command
+            //  ===================================
             keep_editor_loop_running = lines_editor_state
                 .handle_normalmode_and_visualmode_input(&mut stdin_handle, &mut command_buffer)?;
         }
