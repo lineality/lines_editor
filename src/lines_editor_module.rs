@@ -1568,7 +1568,319 @@ pub fn move_word_forward(
         }
     }
 }
+/// Moves cursor to position BEFORE next syntax character (Vim-style 'e' command)
+///
+/// # Purpose
+/// Implements 'e' command for word navigation. Moves cursor forward to the
+/// position BEFORE the next syntax character. This positions cursor at the
+/// last non-syntax character of current word.
+/// Also counts newlines to allow window scrolling without rebuild.
+///
+/// # Algorithm
+/// 1. Move forward 2 bytes (assumption: next byte is syntax, skip it)
+/// 2. Loop (max 64 iterations):
+///    - Peek ahead 1 byte (look at next position)
+///    - If next byte is syntax OR EOF → STOP (cursor is positioned)
+///    - If next byte is non-syntax → move cursor forward 1 byte, continue
+///    - If newline encountered during move: increment counter
+/// 3. Return final byte offset AND newline count
+///
+/// # Arguments
+/// * `file_path` - Absolute path to file being edited
+/// * `current_byte_offset` - Current cursor position (0-indexed byte offset)
+/// * `file_size` - Total file size in bytes (for EOF detection)
+///
+/// # Returns
+/// * `Ok((new_byte_offset, newlines_crossed))` where:
+///   - `new_byte_offset` - Position before next syntax char (or EOF)
+///   - `newlines_crossed` - Number of 0x0A bytes encountered during move
+/// * `Err(LinesError)` - File read error
+///
+/// # Edge Cases
+/// - Cursor at EOF: returns `(EOF_pos, 0)` (no movement possible)
+/// - Cursor already before syntax: moves past it to next word end
+/// - Multiple syntax chars in row: skips first, stops at next
+/// - Crosses newline: counts it, positions before next syntax
+/// - File with no syntax: moves 64+ bytes forward (iteration limit)
+///
+/// # Memory Safety
+/// - Stack-only: 1-byte read buffer
+/// - No dynamic allocation
+/// - Bounded iterations (max 64)
+///
+/// # Defensive Programming
+/// - Iteration limit prevents infinite loops (NASA Rule #2)
+/// - All read errors propagated
+/// - Saturating arithmetic prevents underflow/overflow
+/// - Peek-ahead safely handles EOF (no buffer overflow)
+/// - Byte-level syntax check safe for UTF-8
+///
+/// # Example
+/// ```ignore
+/// // File: "hello world"
+/// // Cursor at byte 0 (on 'h')
+/// let (new_pos, newlines) = move_word_end(path, 0, 11)?;
+/// // Moves forward 2 (to 'l'), then peeks at 'l' (non-syntax)
+/// // Continues moving: 'l'->'o'->space (stop before space)
+/// // Returns (4, 0) - positioned on 'o'
+/// ```
+pub fn move_word_end(
+    file_path: &Path,
+    current_byte_offset: u64,
+    file_size: u64,
+) -> Result<(u64, usize)> {
+    // Returns: (new_byte_offset, newlines_crossed)
 
+    // =========================================================================
+    // INPUT VALIDATION
+    // =========================================================================
+
+    // Debug assert: path should be valid
+    debug_assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Test assert: path should be valid
+    #[cfg(test)]
+    assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Production check: path empty
+    if file_path.as_os_str().is_empty() {
+        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
+    }
+
+    // Debug assert: offset should not exceed file size
+    debug_assert!(
+        current_byte_offset <= file_size,
+        "Cursor offset {} exceeds file size {}",
+        current_byte_offset,
+        file_size
+    );
+
+    // Test assert: offset should not exceed file size
+    #[cfg(test)]
+    assert!(
+        current_byte_offset <= file_size,
+        "Cursor offset {} exceeds file size {}",
+        current_byte_offset,
+        file_size
+    );
+
+    // Production check: offset exceeds file size
+    if current_byte_offset > file_size {
+        return Err(LinesError::InvalidInput(format!(
+            "Cursor offset {} exceeds file size {}",
+            current_byte_offset, file_size
+        )));
+    }
+
+    // =========================================================================
+    // EARLY RETURN: ALREADY AT EOF
+    // =========================================================================
+
+    // If cursor already at EOF, nowhere to move to
+    if current_byte_offset >= file_size {
+        return Ok((current_byte_offset, 0)); // Stay at EOF, no newlines
+    }
+
+    // =========================================================================
+    // OPEN FILE FOR READING
+    // =========================================================================
+
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open file for word end movement: {}", e),
+            Some("move_word_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // =========================================================================
+    // INITIALIZE STATE
+    // =========================================================================
+
+    // Pre-allocated 1-byte buffer (stack only, no allocation)
+    let mut byte_buffer: [u8; 1] = [0];
+
+    // Current position during iteration
+    let mut current_pos: u64 = current_byte_offset;
+
+    // Newline counter (for window scrolling)
+    let mut newlines_crossed: usize = 0;
+
+    // =========================================================================
+    // STEP 1: MOVE FORWARD 2 BYTES (ASSUMPTION: NEXT IS SYNTAX, SKIP IT)
+    // =========================================================================
+
+    // First move: skip 1 byte
+    current_pos = current_pos.saturating_add(1);
+    if current_pos >= file_size {
+        return Ok((current_pos, newlines_crossed));
+    }
+
+    // Second move: skip another byte (assumption: it's syntax)
+    // But we need to track if it's a newline
+    file.seek(io::SeekFrom::Start(current_pos)).map_err(|e| {
+        log_error(
+            &format!(
+                "Cannot seek to byte {} for word end initial move: {}",
+                current_pos, e
+            ),
+            Some("move_word_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    match file.read(&mut byte_buffer) {
+        Ok(0) => {
+            // EOF at this position
+            return Ok((current_pos, newlines_crossed));
+        }
+        Ok(1) => {
+            // Track if we're moving past a newline
+            if byte_buffer[0] == b'\n' {
+                newlines_crossed += 1;
+            }
+            current_pos = current_pos.saturating_add(1);
+        }
+        Ok(n) => {
+            let error_msg = format!(
+                "Unexpected read count {} at byte {} (expected 0 or 1)",
+                n, current_pos
+            );
+            log_error(&error_msg, Some("move_word_end"));
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                error_msg,
+            )));
+        }
+        Err(e) => {
+            log_error(
+                &format!("Read error at byte {}: {}", current_pos, e),
+                Some("move_word_end"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    }
+
+    // Check if we've gone past EOF after second move
+    if current_pos >= file_size {
+        return Ok((current_pos, newlines_crossed));
+    }
+
+    // =========================================================================
+    // MAIN LOOP: PEEK AHEAD UNTIL NEXT BYTE IS SYNTAX
+    // =========================================================================
+
+    let mut iteration: usize = 0;
+    const WORD_MOVE_MAX_ITERATIONS: usize = 64;
+
+    loop {
+        // Defensive: Check iteration limit
+        if iteration >= WORD_MOVE_MAX_ITERATIONS {
+            // Hit iteration limit - stop here
+            log_error(
+                &format!(
+                    "Word end movement hit iteration limit at byte {}",
+                    current_pos
+                ),
+                Some("move_word_end"),
+            );
+            return Ok((current_pos, newlines_crossed));
+        }
+
+        iteration += 1;
+
+        // ===================================================================
+        // PEEK AHEAD TO NEXT BYTE (BEFORE MOVING)
+        // ===================================================================
+
+        // Calculate next position
+        let next_pos = current_pos.saturating_add(1);
+
+        // Check if next position would be past EOF
+        if next_pos >= file_size {
+            // Next byte would be past EOF - stop here (cursor at current position)
+            return Ok((current_pos, newlines_crossed));
+        }
+
+        // ===================================================================
+        // READ NEXT BYTE (PEEK AHEAD)
+        // ===================================================================
+
+        // Seek to next position
+        file.seek(io::SeekFrom::Start(next_pos)).map_err(|e| {
+            log_error(
+                &format!("Cannot seek to byte {} for word end peek: {}", next_pos, e),
+                Some("move_word_end"),
+            );
+            LinesError::Io(e)
+        })?;
+
+        // Read one byte
+        match file.read(&mut byte_buffer) {
+            Ok(0) => {
+                // EOF at next position - stop here
+                return Ok((current_pos, newlines_crossed));
+            }
+            Ok(1) => {
+                // Got one byte - check if it's syntax
+                let next_byte = byte_buffer[0];
+
+                match is_syntax_char(next_byte) {
+                    Ok(true) => {
+                        // Next byte IS syntax - STOP HERE (cursor stays before it)
+                        return Ok((current_pos, newlines_crossed));
+                    }
+                    Ok(false) => {
+                        // Next byte is non-syntax - move cursor forward to it
+                        current_pos = next_pos;
+
+                        // Check if we just moved through a newline
+                        if next_byte == b'\n' {
+                            newlines_crossed += 1;
+                        }
+
+                        // Continue loop to peek at the byte after this one
+                        continue;
+                    }
+                    Err(e) => {
+                        // Error checking syntax (shouldn't happen, but handle it)
+                        log_error(
+                            &format!("Error checking syntax at byte {}: {}", next_pos, e),
+                            Some("move_word_end"),
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+            Ok(n) => {
+                // Unexpected: read() returned more than 1 byte for 1-byte buffer
+                let error_msg = format!(
+                    "Unexpected read count {} at byte {} (expected 0 or 1)",
+                    n, next_pos
+                );
+                log_error(&error_msg, Some("move_word_end"));
+                return Err(LinesError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    error_msg,
+                )));
+            }
+            Err(e) => {
+                // Read error - propagate
+                log_error(
+                    &format!("Read error at byte {}: {}", next_pos, e),
+                    Some("move_word_end"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        }
+    }
+}
 // =========================
 // End of Movement Functions
 // =========================
@@ -7229,7 +7541,63 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        Command::MoveWordEnd(count) => Ok(true),
+        Command::MoveWordEnd(count) => {
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
+
+            let current_file_pos = match lines_editor_state
+                .window_map
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            {
+                Ok(Some(pos)) => pos.byte_offset,
+                Ok(None) => return Ok(true),
+                Err(_) => return Ok(true),
+            };
+
+            let file_size = fs::metadata(&read_copy).ok().map(|m| m.len()).unwrap_or(0);
+
+            // Execute move for each count
+            for _ in 0..count {
+                let (new_pos, newlines_crossed) =
+                    move_word_end(&read_copy, current_file_pos, file_size)?;
+
+                // ===================================================================
+                // CASE 1: NO NEWLINES - Same line, just update column
+                // ===================================================================
+                if newlines_crossed == 0 {
+                    // Search current window for new_pos
+                    for col in 0..lines_editor_state.effective_cols {
+                        if let Ok(Some(file_pos)) = lines_editor_state
+                            .window_map
+                            .get_file_position(lines_editor_state.cursor.row, col)
+                        {
+                            if file_pos.byte_offset == new_pos {
+                                lines_editor_state.cursor.col = col;
+                                break;
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // ===================================================================
+                // CASE 2: CROSSED NEWLINES - Use existing commands
+                // ===================================================================
+                if newlines_crossed > 0 {
+                    // Go to start of current line
+                    execute_command(lines_editor_state, Command::GotoLineStart)?;
+
+                    // Move down to target line
+                    execute_command(lines_editor_state, Command::MoveDown(newlines_crossed))?;
+
+                    continue;
+                }
+            }
+
+            Ok(true)
+        }
         Command::MoveWordBack(count) => Ok(true),
         Command::GotoLine(line_number) => {
             // Convert 1-indexed (user display) to 0-indexed (file storage)
