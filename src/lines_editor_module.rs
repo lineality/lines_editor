@@ -7310,20 +7310,73 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
+        // v2 - next line
         Command::MoveRight(count) => {
-            // Vim-like behavior: move cursor right, scroll window if at edge
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
+
+            let file_size = fs::metadata(&read_copy).ok().map(|m| m.len()).unwrap_or(0);
 
             let mut remaining_moves = count;
             let mut needs_rebuild = false;
-
-            // Defensive: Limit iterations
             let mut iterations = 0;
 
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                // Calculate space available before right edge
-                // Reserve 1 column to prevent display overflow
+                // ===================================================================
+                // CHECK IF NEXT CHARACTER IS A NEWLINE (BEFORE MOVING)
+                // ===================================================================
+
+                let current_file_pos = match lines_editor_state
+                    .window_map
+                    .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+                {
+                    Ok(Some(pos)) => pos.byte_offset,
+                    Ok(None) => {
+                        // Can't get position, just try moving right normally
+                        break;
+                    }
+                    Err(_) => break,
+                };
+
+                // Peek ahead to see if next byte is newline
+                let mut peek_buffer = [0u8; 1];
+                let mut peek_file = File::open(&read_copy)?;
+                let next_byte_pos = current_file_pos.saturating_add(1);
+
+                let is_next_newline = if next_byte_pos < file_size {
+                    peek_file.seek(io::SeekFrom::Start(next_byte_pos)).ok();
+                    match peek_file.read(&mut peek_buffer) {
+                        Ok(1) if peek_buffer[0] == b'\n' => true,
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+
+                // ===================================================================
+                // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
+                // ===================================================================
+
+                if is_next_newline {
+                    // Move to start of current line
+                    execute_command(lines_editor_state, Command::GotoLineStart)?;
+
+                    // Move down one line
+                    execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+                    remaining_moves -= 1;
+                    needs_rebuild = true;
+                    continue;
+                }
+
+                // ===================================================================
+                // NORMAL RIGHT MOVEMENT (EXISTING LOGIC)
+                // ===================================================================
+
                 let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
                 if lines_editor_state.cursor.col < right_edge {
@@ -7331,15 +7384,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     let space_available = right_edge - lines_editor_state.cursor.col;
                     let cursor_moves = remaining_moves.min(space_available);
 
-                    // inspection
-                    println!("Inspection cursor_moves-> {:?}", &cursor_moves);
-
                     lines_editor_state.cursor.col += cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at right edge, scroll window right
-                    // Cap scroll to prevent excessive horizontal offset
-
                     if lines_editor_state.horizontal_utf8txt_line_char_offset
                         < limits::CURSOR_MOVEMENT_STEPS
                     {
@@ -7364,15 +7412,76 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 )));
             }
 
-            // Only rebuild if we scrolled the window
+            // Rebuild if needed
             if needs_rebuild {
-                // Rebuild window to show the change from read-copy file
-                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+                build_windowmap_nowrap(lines_editor_state, &read_copy)?;
             }
 
             Ok(true)
         }
 
+        // Command::MoveRight(count) => {
+        //     // Vim-like behavior: move cursor right, scroll window if at edge
+
+        //     let mut remaining_moves = count;
+        //     let mut needs_rebuild = false;
+
+        //     // Defensive: Limit iterations
+        //     let mut iterations = 0;
+
+        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+        //         iterations += 1;
+
+        //         // Calculate space available before right edge
+        //         // Reserve 1 column to prevent display overflow
+        //         let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+
+        //         if lines_editor_state.cursor.col < right_edge {
+        //             // Cursor can move right within visible window
+        //             let space_available = right_edge - lines_editor_state.cursor.col;
+        //             let cursor_moves = remaining_moves.min(space_available);
+
+        //             // inspection
+        //             println!("Inspection cursor_moves-> {:?}", &cursor_moves);
+
+        //             lines_editor_state.cursor.col += cursor_moves;
+        //             remaining_moves -= cursor_moves;
+        //         } else {
+        //             // Cursor at right edge, scroll window right
+        //             // Cap scroll to prevent excessive horizontal offset
+
+        //             if lines_editor_state.horizontal_utf8txt_line_char_offset
+        //                 < limits::CURSOR_MOVEMENT_STEPS
+        //             {
+        //                 let max_scroll = limits::CURSOR_MOVEMENT_STEPS
+        //                     - lines_editor_state.horizontal_utf8txt_line_char_offset;
+        //                 let scroll_amount = remaining_moves.min(max_scroll);
+        //                 lines_editor_state.horizontal_utf8txt_line_char_offset += scroll_amount;
+        //                 remaining_moves -= scroll_amount;
+        //                 needs_rebuild = true;
+        //             } else {
+        //                 // Hit maximum horizontal scroll
+        //                 break;
+        //             }
+        //         }
+        //     }
+
+        //     // Defensive: Check iteration limit
+        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
+        //         return Err(LinesError::Io(io::Error::new(
+        //             io::ErrorKind::Other,
+        //             "Maximum iterations exceeded in MoveRight",
+        //         )));
+        //     }
+
+        //     // Only rebuild if we scrolled the window
+        //     if needs_rebuild {
+        //         // Rebuild window to show the change from read-copy file
+        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+        //     }
+
+        //     Ok(true)
+        // }
         Command::MoveDown(count) => {
             // Vim-like behavior: move cursor down, scroll window if at bottom edge
             // Handle downward cursor movement with EOF boundary enforcement
