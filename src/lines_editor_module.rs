@@ -901,7 +901,6 @@ fn main() -> Result<(), LinesError> {
         }
     }
 }
-
 */
 
 /*
@@ -962,8 +961,6 @@ const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 /// Towers of Hanoy
 const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256;
 
-// const MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE: usize = 256;
-
 const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
@@ -994,6 +991,16 @@ const YELLOW: &str = "\x1b[33m";
 // ERROR SECTION: ERROR HANDLING SYSTEM (start)
 // ============================================================================
 /*
+Error Policy:
+- Do not panic-crash ever.
+- 'Let it fail and try again.'
+- Every line in every function WILL fail eventually
+if only due to hardware, radiation, power-supply, attacks, etc.
+- Every failure must be handled smoothly, returning to the last
+stable state so the user can choose what to do next, trying
+again or not.
+
+
 # Notes on Converting to LinesError:
 
 return Err(e);
@@ -1776,6 +1783,185 @@ pub fn split_timestamp_no_heap(
     }
 
     Ok((copy1, copy2))
+}
+
+/// Counts total lines in file by scanning for newline characters
+///
+/// # Purpose
+/// Single-pass linear scan through file to count newlines.
+/// Used to find total line count for GotoFileEnd command.
+/// Does not load entire file into memory.
+///
+/// # Arguments
+/// * `file_path` - Absolute path to file (must exist and be readable)
+///
+/// # Returns
+/// * `Ok((line_count, last_newline_byte_pos))` where:
+///   - `line_count` - Total lines (1-indexed, 0 for empty file)
+///   - `last_newline_byte_pos` - Byte offset of final \n (0-indexed), or 0 if no newlines
+/// * `Err(LinesError)` - File open, read, or seek failed
+///
+/// # Memory Safety
+/// - Stack-only: single 1-byte buffer
+/// - No heap allocation during scan
+/// - No file pre-loading
+///
+/// # Defensive Programming
+/// - Bounded iteration (file size is finite)
+/// - All I/O errors propagated
+/// - No unwrap() calls
+/// - Handles empty files gracefully
+///
+/// # Edge Cases
+/// - Empty file (0 bytes): returns `Ok((0, 0))`
+/// - File with no newlines: returns `Ok((0, 0))`
+/// - File ending with newline: counted correctly
+/// - File ending without newline: counted correctly (last line still exists)
+///
+/// # Example
+/// ```ignore
+/// let (total_lines, _) = count_lines_in_file(Path::new("/path/to/file.txt"))?;
+/// // Now jump to last line
+/// execute_command(state, Command::GotoLine(total_lines))?;
+/// ```
+pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
+    // =========================================================================
+    // STEP 1: DEFENSIVE INPUT VALIDATION
+    // =========================================================================
+
+    // Debug assert: path should not be empty
+    debug_assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Test assert: path should not be empty
+    #[cfg(test)]
+    assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Production check: path empty
+    if file_path.as_os_str().is_empty() {
+        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
+    }
+
+    // =========================================================================
+    // STEP 2: OPEN FILE FOR READING
+    // =========================================================================
+
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open file for line count: {}", e),
+            Some("count_lines_in_file"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // =========================================================================
+    // STEP 3: INITIALIZE STATE
+    // =========================================================================
+
+    // Pre-allocated 1-byte buffer on stack (no dynamic allocation)
+    let mut byte_buffer: [u8; 1] = [0];
+
+    // Counters for line tracking
+    let mut line_count: usize = 0;
+    let mut last_newline_position: u64 = 0;
+    let mut current_byte_position: u64 = 0;
+
+    // Loop iteration counter (NASA Rule #2: upper bound on loops)
+    let mut iterations: usize = 0;
+
+    // Safety limit: prevent infinite loops from filesystem corruption
+    // Reasonable upper bound: 10GB file = 10,737,418,240 bytes
+    // With defensive checking, we'll catch runaway loops long before this
+    const MAX_ITERATIONS: usize = 10_737_418_240;
+
+    // =========================================================================
+    // STEP 4: LINEAR SCAN - READ BYTE BY BYTE
+    // =========================================================================
+
+    loop {
+        // Defensive: Check iteration limit (cosmic ray protection)
+        if iterations >= MAX_ITERATIONS {
+            let error_msg = format!(
+                "Line count exceeded maximum iterations ({}). File may be corrupted.",
+                MAX_ITERATIONS
+            );
+            log_error(&error_msg, Some("count_lines_in_file"));
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::Other,
+                error_msg,
+            )));
+        }
+
+        iterations += 1;
+
+        // Read one byte
+        match file.read(&mut byte_buffer) {
+            Ok(0) => {
+                // EOF reached - exit loop normally
+                break;
+            }
+            Ok(1) => {
+                // Got one byte - check if it's newline
+                if byte_buffer[0] == b'\n' {
+                    line_count += 1;
+                    last_newline_position = current_byte_position;
+                }
+                current_byte_position += 1;
+            }
+            Ok(n) => {
+                // Unexpected: read() should return 0 or 1 for 1-byte buffer
+                let error_msg = format!(
+                    "read() returned unexpected byte count: {} (expected 0 or 1)",
+                    n
+                );
+                log_error(&error_msg, Some("count_lines_in_file"));
+                return Err(LinesError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    error_msg,
+                )));
+            }
+            Err(e) => {
+                // Read error - propagate
+                log_error(
+                    &format!("Read error at byte {}: {}", current_byte_position, e),
+                    Some("count_lines_in_file"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        }
+    }
+
+    // =========================================================================
+    // STEP 5: RETURN RESULTS
+    // =========================================================================
+
+    // Defensive assertion: line_count should never be negative (usize is unsigned)
+    // But verify it's reasonable
+    debug_assert!(
+        line_count <= MAX_ITERATIONS,
+        "Line count {} exceeds reasonable maximum",
+        line_count
+    );
+
+    #[cfg(test)]
+    assert!(
+        line_count <= MAX_ITERATIONS,
+        "Line count {} exceeds reasonable maximum",
+        line_count
+    );
+
+    if line_count > MAX_ITERATIONS {
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "Line count exceeded maximum iterations".into(),
+        ));
+    }
+
+    Ok((line_count, last_newline_position))
 }
 
 /// Formats the navigation legend with color-coded keyboard shortcuts
@@ -4182,6 +4368,7 @@ impl EditorState {
     //         }
     //     }
     // }
+
     /// Parses user input into a command for Normal-Mode and Visual-Select Mode
     ///
     /// # Arguments
@@ -4323,10 +4510,10 @@ impl EditorState {
 
             // Check for multi-character g-commands
             match command_str {
-                // "gg" => return Command::GotoFileStart,
-                // "ge" => return Command::GotoFileEnd,
-                // "gh" => return Command::GotoLineStart,
-                // "gl" => return Command::GotoLineEnd,
+                "gg" => return Command::GotoFileStart,
+                "ge" => return Command::GotoFileLastLine,
+                "gh" => return Command::GotoLineStart,
+                "gl" => return Command::GotoLineEnd,
                 _ => {
                     // Unknown g-command
                     let _ = self.set_info_bar_message(&format!("Unknown command: {}", command_str));
@@ -6344,6 +6531,11 @@ pub enum Command {
     /// - `g999` - Go to line 999 (or last line if file shorter)
     GotoLine(usize),
 
+    GotoFileStart,
+    GotoFileLastLine,
+    GotoLineStart,
+    GotoLineEnd,
+
     // Mode changes
     EnterInsertMode, // i
     EnterVisualMode, // v
@@ -6683,6 +6875,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::GotoLine(line_number) => {
             // Convert 1-indexed (user display) to 0-indexed (file storage)
             let target_line = line_number.saturating_sub(1);
@@ -6703,6 +6896,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.col = 0;
 
                     // Position cursor AFTER line number (same as bootstrap)
+                    // number of digits in line number + 1 is first character
                     let line_num_width = calculate_line_number_width(line_number);
                     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
 
@@ -6718,6 +6912,83 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     Ok(true)
                 }
             }
+        }
+
+        Command::GotoFileStart => {
+            // same as go-to-line-1
+            let line_number: usize = 0;
+            // Convert 1-indexed (user display) to 0-indexed (file storage)
+            let target_line = line_number.saturating_sub(1);
+
+            // // Get file path
+            // Get the read_copy path BEFORE the mutable borrow
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+            // Seek to target line and update window position
+            match seek_to_line_number(&mut File::open(&read_copy)?, target_line) {
+                Ok(byte_pos) => {
+                    lines_editor_state.line_count_at_top_of_window = target_line;
+                    lines_editor_state.file_position_of_topline_start = byte_pos;
+                    lines_editor_state.cursor.row = 0;
+                    lines_editor_state.cursor.col = 3; // Skip over line number displayfull_lines_editor
+
+                    // Rebuild window to show the new position
+                    build_windowmap_nowrap(lines_editor_state, &read_copy)?;
+
+                    let _ = lines_editor_state
+                        .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                    Ok(true)
+                }
+                Err(_) => {
+                    let _ = lines_editor_state.set_info_bar_message("Line not found");
+                    Ok(true)
+                }
+            }
+        }
+
+        Command::GotoFileLastLine => {
+            // Get read-copy path
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| LinesError::StateError("No read-copy path available".into()))?;
+
+            // Count lines in file
+            let (total_lines, _) = count_lines_in_file(&read_copy)?;
+
+            // If file is empty, stay at current position
+            if total_lines == 0 {
+                let _ = lines_editor_state.set_info_bar_message("File is empty");
+                return Ok(true);
+            }
+
+            // Jump to last line
+            execute_command(lines_editor_state, Command::GotoLine(total_lines))?;
+
+            Ok(true)
+        }
+
+        Command::GotoLineStart => {
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+            goto_line_start(lines_editor_state, &read_copy)?;
+            Ok(true)
+        }
+
+        Command::GotoLineEnd => {
+            let read_copy = lines_editor_state
+                .read_copy_path
+                .clone()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+
+            goto_line_end(lines_editor_state, &read_copy)?;
+            Ok(true)
         }
         Command::DeleteLine => {
             delete_current_line_noload(lines_editor_state, &edit_file_path)?;
@@ -6938,6 +7209,246 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
         Command::None => Ok(true),
     }
+}
+
+/// Moves cursor to start of current displayed line
+///
+/// # Purpose
+/// Positions cursor at the beginning of the line in the file.
+/// Scrolls horizontally back to show line start (undoes any rightward scroll).
+///
+/// # Memory Safety
+/// - Pre-allocated 4096-byte buffer (stack-only)
+/// - Reads ONE line at a time
+/// - No file loading
+/// - No dynamic allocation
+///
+/// # Defensive Programming
+/// - All errors logged and handled gracefully
+/// - Returns with info bar message on any issue
+/// - Never crashes, never panics in production
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to read-copy file
+///
+/// # Returns
+/// * `Ok(())` - Always succeeds or logs error and continues
+fn goto_line_start(state: &mut EditorState, file_path: &Path) -> Result<()> {
+    // ========================================================================
+    // STEP 1: Get file position from cursor (defensive)
+    // ========================================================================
+
+    let current_file_pos = match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
+            let _ = state.set_info_bar_message("cursor position unavailable");
+            return Ok(());
+        }
+        Err(e) => {
+            let _ = state.set_info_bar_message("cannot get cursor position");
+            log_error(
+                &format!("goto_line_start window_map error: {}", e),
+                Some("goto_line_start"),
+            );
+            return Ok(());
+        }
+    };
+
+    let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
+
+    // ========================================================================
+    // STEP 2: Calculate line number width for cursor positioning
+    // ========================================================================
+
+    let line_num_width = calculate_line_number_width(line_number_for_display);
+
+    // ========================================================================
+    // STEP 3: Reset horizontal scroll to 0
+    // ========================================================================
+
+    // This is the key difference from gl
+    // gh always goes back to the left edge (character 0 of the line)
+    let previous_offset = state.horizontal_utf8txt_line_char_offset;
+    state.horizontal_utf8txt_line_char_offset = 0;
+
+    // ========================================================================
+    // STEP 4: Position cursor at line start (after line number)
+    // ========================================================================
+
+    state.cursor.col = line_num_width;
+
+    // ========================================================================
+    // STEP 5: Rebuild window if horizontal offset changed
+    // ========================================================================
+
+    let needs_rebuild = previous_offset != 0;
+
+    if needs_rebuild {
+        if let Err(e) = build_windowmap_nowrap(state, file_path) {
+            let _ = state.set_info_bar_message("display update failed");
+            log_error(
+                &format!("goto_line_start rebuild error: {}", e),
+                Some("goto_line_start"),
+            );
+            // Continue anyway - cursor was updated
+        }
+    }
+
+    let _ = state.set_info_bar_message("start of line");
+    Ok(())
+}
+
+/// Moves cursor to end of current displayed line
+///
+/// # Purpose
+/// Positions cursor at last character of line displayed at cursor.row.
+/// If line longer than terminal width, scrolls horizontally to show end.
+///
+/// # Memory Safety
+/// - Pre-allocated 4096-byte buffer (stack-only)
+/// - Reads ONE line at a time
+/// - No file loading
+/// - No dynamic allocation
+///
+/// # Defensive Programming
+/// - All errors logged and handled gracefully
+/// - Returns with info bar message on any issue
+/// - Never crashes, never panics in production
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to read-copy file
+///
+/// # Returns
+/// * `Ok(())` - Always succeeds or logs error and continues
+fn goto_line_end(state: &mut EditorState, file_path: &Path) -> Result<()> {
+    // ========================================================================
+    // STEP 1: Get file position from cursor (defensive)
+    // ========================================================================
+
+    let current_file_pos = match state
+        .window_map
+        .get_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
+            let _ = state.set_info_bar_message("cursor position unavailable");
+            return Ok(());
+        }
+        Err(e) => {
+            let _ = state.set_info_bar_message("cannot get cursor position");
+            log_error(
+                &format!("goto_line_end window_map error: {}", e),
+                Some("goto_line_end"),
+            );
+            return Ok(());
+        }
+    };
+
+    let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
+    let line_start_byte = current_file_pos.byte_offset - (current_file_pos.byte_in_line as u64);
+
+    // ========================================================================
+    // STEP 2: Read the line from file
+    // ========================================================================
+
+    let mut line_buffer = [0u8; 4096];
+
+    let mut file = match File::open(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            let _ = state.set_info_bar_message("cannot open file");
+            log_error(
+                &format!("goto_line_end open error: {}", e),
+                Some("goto_line_end"),
+            );
+            return Ok(());
+        }
+    };
+
+    if let Err(e) = file.seek(SeekFrom::Start(line_start_byte)) {
+        let _ = state.set_info_bar_message("cannot seek to line");
+        log_error(
+            &format!("goto_line_end seek error: {}", e),
+            Some("goto_line_end"),
+        );
+        return Ok(());
+    }
+
+    let (_, line_length, _) = match read_single_line(&mut file, &mut line_buffer) {
+        Ok(result) => result,
+        Err(e) => {
+            let _ = state.set_info_bar_message("cannot read line");
+            log_error(
+                &format!("goto_line_end read error: {}", e),
+                Some("goto_line_end"),
+            );
+            return Ok(());
+        }
+    };
+
+    // ========================================================================
+    // STEP 3: Convert bytes to characters
+    // ========================================================================
+
+    let line_bytes = &line_buffer[..line_length];
+    let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+
+    let char_count = line_str.chars().count();
+    let char_position_in_line = if char_count > 0 { char_count - 1 } else { 0 };
+
+    // ========================================================================
+    // STEP 4: Calculate display column
+    // ========================================================================
+
+    let line_num_width = calculate_line_number_width(line_number_for_display);
+    let display_col_for_line_end = line_num_width + char_position_in_line;
+
+    let right_edge = state.effective_cols.saturating_sub(1);
+    let mut needs_rebuild = false;
+
+    // ========================================================================
+    // STEP 5: Handle horizontal scrolling
+    // ========================================================================
+
+    if display_col_for_line_end > right_edge {
+        // Line is longer than terminal width
+        let overflow = display_col_for_line_end - right_edge;
+
+        state.horizontal_utf8txt_line_char_offset = state
+            .horizontal_utf8txt_line_char_offset
+            .saturating_add(overflow);
+
+        state.cursor.col = right_edge;
+        // println!("right_edge {right_edge}, display_col_for_line_end {display_col_for_line_end}");
+        needs_rebuild = true;
+    } else {
+        // Line fits within terminal
+        // TODO: why is this odd?
+        state.cursor.col = display_col_for_line_end;
+    }
+
+    // ========================================================================
+    // STEP 6: Rebuild if needed
+    // ========================================================================
+
+    if needs_rebuild {
+        if let Err(e) = build_windowmap_nowrap(state, file_path) {
+            let _ = state.set_info_bar_message("display update failed");
+            log_error(
+                &format!("goto_line_end rebuild error: {}", e),
+                Some("goto_line_end"),
+            );
+            // Continue anyway - cursor was updated
+        }
+    }
+
+    let _ = state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
+    Ok(())
 }
 
 /// Deletes the character before cursor WITHOUT loading whole file
@@ -10036,16 +10547,12 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
     // Get current line and column
     // Line is 1-indexed for display (humans count from 1)
     let line_display = state.line_count_at_top_of_window + state.cursor.row + 1;
-    // let col_display = state.cursor.col + 1;
-
-    // // Add horizontal offset to get true character position in line
-    // let true_char_position = state.cursor.col + state.horizontal_utf8txt_line_char_offset;
-    // let col_display = true_char_position + 1; // +1 for human-friendly 1-indexing
 
     // Get line number to calculate line number display width
     let line_num = state.line_count_at_top_of_window + state.cursor.row + 1;
     let line_num_width = calculate_line_number_width(line_num);
 
+    // Add horizontal offset to get character position in line
     // Subtract line number width from displayed column
     let true_char_position = state.cursor.col + state.horizontal_utf8txt_line_char_offset;
     let col_display = true_char_position.saturating_sub(line_num_width) + 1;
@@ -10058,9 +10565,6 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
         .and_then(|n| n.to_str())
         .unwrap_or("unmanned file");
 
-    // TODO
-    // let message_for_infobar = state.info_bar_message_buffer...
-
     // Extract message from buffer (find null terminator or use full buffer)
     let message_len = state
         .info_bar_message_buffer
@@ -10071,14 +10575,10 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
     let message_for_infobar =
         std::str::from_utf8(&state.info_bar_message_buffer[..message_len]).unwrap_or(""); // Empty string if invalid UTF-8
 
-    // TODO add info_bar_message to state
-    // show (snother colour? no colour? after filename)
-    // keep buffer short 16 char?
-
     // Build the info bar
     let info = format!(
         // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
-        "{}{} {}{}{}:{}{}{} {}{} {}{}> ",
+        "{}{} {}{}{}:{}{}{} {}{} {}{} > ",
         YELLOW,
         mode_str,
         // YELLOW,
@@ -11023,7 +11523,7 @@ pub fn full_lines_editor(
             Ok(byte_pos) => {
                 // Position cursor AFTER line number (same as bootstrap)
                 let line_num_width = calculate_line_number_width(target_line);
-                println!("{line_num_width}{target_line}");
+                // println!("{line_num_width}{target_line}");
                 lines_editor_state.cursor.col = line_num_width; // Skip over line number display
                 lines_editor_state.line_count_at_top_of_window = target_line;
                 lines_editor_state.file_position_of_topline_start = byte_pos;
