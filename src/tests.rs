@@ -453,7 +453,7 @@ mod build_window_tests4 {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
+        state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
         let result = build_windowmap_nowrap(&mut state, basic_file);
         assert!(result.is_ok(), "Should build window successfully");
@@ -490,7 +490,7 @@ mod build_window_tests3 {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
+        state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
         // Debug: print file path
         println!("Test file path: {:?}", basic_file);
@@ -740,7 +740,7 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
     let mut state = EditorState::new();
     state.line_count_at_top_of_window = 0;
     state.file_position_of_topline_start = 0;
-    state.horizontal_utf8txt_line_char_offset = 0;
+    state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
     // Debug: print file path and existence
     println!("Test file path: {:?}", basic_file);
@@ -824,7 +824,7 @@ mod revised_critical_distinction_tests {
         let mut state = EditorState::new();
         state.line_count_at_top_of_window = 0;
         state.file_position_of_topline_start = 0;
-        state.horizontal_utf8txt_line_char_offset = 0;
+        state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
         let result = build_windowmap_nowrap(&mut state, &test_path);
         assert!(result.is_ok(), "Build window should succeed");
