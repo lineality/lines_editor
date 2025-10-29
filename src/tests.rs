@@ -2904,3 +2904,69 @@ mod tests {
         assert_eq!(filename, "item"); // Should fall back to "item"
     }
 }
+#[cfg(test)]
+mod byte_positions_tests {
+    use super::*;
+
+    #[test]
+    fn test_set_and_get_line_byte_range() {
+        let mut window_map = WindowMapStruct::new();
+
+        // Set a line range
+        assert!(window_map.set_line_byte_range(0, 10, 15).is_ok());
+
+        // Get it back
+        let range = window_map.get_line_byte_range(0).unwrap();
+        assert_eq!(range, Some((10, 15)));
+    }
+
+    #[test]
+    fn test_is_at_line_start() {
+        let mut window_map = WindowMapStruct::new();
+        window_map.set_line_byte_range(0, 10, 15).unwrap();
+
+        assert!(window_map.is_at_line_start(0, 10).unwrap());
+        assert!(!window_map.is_at_line_start(0, 11).unwrap());
+        assert!(!window_map.is_at_line_start(0, 15).unwrap());
+    }
+
+    #[test]
+    fn test_is_at_line_end() {
+        let mut window_map = WindowMapStruct::new();
+        window_map.set_line_byte_range(0, 10, 15).unwrap();
+
+        assert!(!window_map.is_at_line_end(0, 10).unwrap());
+        assert!(!window_map.is_at_line_end(0, 12).unwrap());
+        assert!(window_map.is_at_line_end(0, 15).unwrap());
+    }
+
+    #[test]
+    fn test_empty_line_ambiguity() {
+        let mut window_map = WindowMapStruct::new();
+        window_map.set_line_byte_range(1, 20, 20).unwrap();
+
+        // Empty line: start == end
+        assert!(window_map.is_at_line_start(1, 20).unwrap());
+        assert!(window_map.is_at_line_end(1, 20).unwrap());
+    }
+
+    #[test]
+    fn test_invalid_byte_range() {
+        let mut window_map = WindowMapStruct::new();
+
+        // start > end should error
+        assert!(window_map.set_line_byte_range(0, 20, 10).is_err());
+    }
+
+    #[test]
+    fn test_out_of_bounds_row() {
+        let mut window_map = WindowMapStruct::new();
+
+        // Row beyond maximum should error
+        assert!(
+            window_map
+                .set_line_byte_range(MAX_TUI_ROWS + 1, 0, 10)
+                .is_err()
+        );
+    }
+}

@@ -50,7 +50,7 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
 
 - Always defensive best practice:
-- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
+- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are common), there must always be fail-safe error handling.
 
 Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
 
@@ -1622,7 +1622,7 @@ pub fn move_word_end(
 ///
 /// # Purpose
 /// Safe, defensive helper function for peek-ahead operations. Used by movement
-/// commands to detect when cursor would cross a line boundary without actually
+/// commands to detect when cursor would cross a line boundary without
 /// moving or modifying state.
 ///
 /// # Design Philosophy
@@ -2853,6 +2853,64 @@ pub struct WindowMapStruct {
     pub valid_rows: usize,
     /// Number of valid columns in current window
     pub valid_cols: usize,
+    /// start stop Byte positions for each display row in the file
+    ///
+    /// # Purpose
+    /// Tracks the start and end byte positions for each line displayed on screen.
+    /// Enables O(1) line boundary detection for cursor movement and viewport calculations.
+    ///
+    /// # Format
+    /// `display_line_byte_ranges[row] = Some((line_start_byte, line_end_byte_inclusive))`
+    ///
+    /// # Semantics
+    /// - `line_start_byte` (inclusive): First byte of the line in file
+    /// - `line_end_byte_inclusive` (inclusive): Last byte before newline (or EOF for last line)
+    /// - `None`: Row not populated (empty window area)
+    ///
+    /// # Examples
+    /// - Line with content "hello\n" at bytes [10-15]:
+    ///   `Some((10, 15))` - range includes all content bytes, NOT the newline
+    /// - Last line "world" with no trailing newline at bytes [20-24]:
+    ///   `Some((20, 24))` - range ends at last content byte
+    /// - Empty line (just "\n") at bytes [30-30]:
+    ///   `Some((30, 30))` - start and end on the newline position?
+    ///   `Some((30, 29))` - inverted to signal "empty line"?
+    ///   Or better: handle separately in logic
+    ///
+    /// # Usage
+    /// ```ignore
+    /// // Jump to end of line for cursor
+    /// if let Some((_, line_end)) = window_map.display_line_byte_ranges[row] {
+    ///     cursor_position = line_end;
+    /// }
+    ///
+    /// // Check if cursor at line start
+    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[row] {
+    ///     if cursor_byte == line_start {
+    ///         // At start of line
+    ///     }
+    /// }
+    ///
+    /// // Detect line boundary for move-left wrapping
+    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[current_row] {
+    ///     if cursor_byte == line_start {
+    ///         // Move to previous line end
+    ///         let prev_line = current_row - 1;
+    ///         if let Some((_, prev_end)) = window_map.display_line_byte_ranges[prev_line] {
+    ///             cursor_byte = prev_end;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Empty Lines
+    /// Empty lines (containing only "\n") need special handling:
+    /// - Option 1: `Some((pos, pos))` - start equals end, signals empty
+    /// - Option 2: `Some((pos, pos - 1))` - inverted range signals empty
+    /// - Option 3: Track separately with a `[bool; MAX_TUI_ROWS]` for "is_empty_line"
+    ///
+    /// Recommend Option 1 (start == end) as most intuitive.
+    pub line_byte_start_end_position_pairs: [Option<(u64, u64)>; MAX_TUI_ROWS],
 }
 
 impl WindowMapStruct {
@@ -2862,6 +2920,7 @@ impl WindowMapStruct {
             positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
             valid_rows: DEFAULT_ROWS,
             valid_cols: DEFAULT_COLS,
+            line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
         }
     }
 
@@ -2933,6 +2992,206 @@ impl WindowMapStruct {
             for col in 0..MAX_TUI_COLS {
                 self.positions[row][col] = None;
             }
+        }
+    }
+
+    // ============================================================================
+    // LINE BOUNDARY TRACKING (added to WindowMapStruct)
+    // ============================================================================
+
+    /// Stores the byte range for a single display row
+    ///
+    /// # Purpose
+    /// Records where a line begins and ends in the file.
+    /// Enables O(1) line boundary detection without scanning file.
+    ///
+    /// # Arguments
+    /// * `row` - Display row index (0-indexed, 0..MAX_TUI_ROWS)
+    /// * `start_byte` - First byte of line in file (inclusive)
+    /// * `end_byte` - Last byte before newline (inclusive), or EOF position
+    ///
+    /// # Returns
+    /// * `Ok(())` - Successfully stored
+    /// * `Err(io::Error)` - If row index out of bounds
+    ///
+    /// # Semantics
+    /// - Empty line "just \n": `start_byte == end_byte` signals empty
+    /// - Normal line "text\n": stores content bytes, NOT the newline itself
+    /// - Last line no newline: stores up to last content byte
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // "hello\n" at bytes [10..15]
+    /// set_line_byte_range(0, 10, 15)?;
+    ///
+    /// // Empty line "\n" at byte [20]
+    /// set_line_byte_range(1, 20, 20)?;
+    ///
+    /// // Last line "world" at bytes [25..29], no newline
+    /// set_line_byte_range(2, 25, 29)?;
+    /// ```
+    pub fn set_line_byte_range(
+        &mut self,
+        row: usize,
+        start_byte: u64,
+        end_byte: u64,
+    ) -> io::Result<()> {
+        // Defensive: Validate row index is within bounds
+        if row >= MAX_TUI_ROWS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds maximum display rows {}", row, MAX_TUI_ROWS),
+            ));
+        }
+
+        // Defensive: Validate byte range is sensible (start <= end)
+        // Empty lines have start == end, which is valid and signals "empty"
+        if start_byte > end_byte {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid line byte range: start {} > end {}",
+                    start_byte, end_byte
+                ),
+            ));
+        }
+
+        // Store the range
+        self.line_byte_start_end_position_pairs[row] = Some((start_byte, end_byte));
+
+        Ok(())
+    }
+
+    /// Retrieves the byte range for a display row
+    ///
+    /// # Purpose
+    /// Gets stored line boundaries for cursor movement logic.
+    ///
+    /// # Arguments
+    /// * `row` - Display row index (0-indexed)
+    ///
+    /// # Returns
+    /// * `Ok(Some((start, end)))` - Line exists with these byte bounds
+    /// * `Ok(None)` - Row not yet populated (empty window area)
+    /// * `Err(io::Error)` - Row index out of bounds
+    ///
+    /// # Defensive Notes
+    /// Returns error for invalid row, not silent None.
+    /// Caller must distinguish between "row not populated" (Ok(None))
+    /// and "invalid row index" (Err).
+    pub fn get_line_byte_range(&self, row: usize) -> io::Result<Option<(u64, u64)>> {
+        // Defensive: Validate row index
+        if row >= MAX_TUI_ROWS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds maximum display rows {}", row, MAX_TUI_ROWS),
+            ));
+        }
+
+        Ok(self.line_byte_start_end_position_pairs[row])
+    }
+
+    /// Checks if a file byte position is at the start of its line
+    ///
+    /// # Purpose
+    /// Detects when cursor moves to line start for wrap-around behavior.
+    /// When user presses 'h' (move left) at start of line,
+    /// cursor should wrap to end of previous line.
+    ///
+    /// # Arguments
+    /// * `row` - Current display row (0-indexed)
+    /// * `byte_position` - File byte offset to check
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Byte is at start of this line
+    /// * `Ok(false)` - Byte is NOT at line start (is middle or end)
+    /// * `Err(io::Error)` - Row index invalid or range not set
+    ///
+    /// # Logic
+    /// Checks if byte_position == line_start_byte of the row's range.
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Line "hello\n" stored as (10, 15)
+    /// is_at_line_start(0, 10)?  // true - at start
+    /// is_at_line_start(0, 12)?  // false - in middle
+    /// is_at_line_start(0, 15)?  // false - at end
+    /// ```
+    pub fn is_at_line_start(&self, row: usize, byte_position: u64) -> io::Result<bool> {
+        // Get line boundaries (defensive: propagate error if row invalid)
+        match self.get_line_byte_range(row)? {
+            Some((start_byte, _end_byte)) => {
+                // Compare byte position to line start
+                Ok(byte_position == start_byte)
+            }
+            None => {
+                // Row not populated - can't determine line start
+                // Return false (not at line start of non-existent line)
+                Ok(false)
+            }
+        }
+    }
+
+    /// Checks if a file byte position is at the end of its line
+    ///
+    /// # Purpose
+    /// Detects when cursor moves to line end for wrap-around behavior.
+    /// When user presses 'l' (move right) at end of line,
+    /// cursor should wrap to start of next line.
+    ///
+    /// # Arguments
+    /// * `row` - Current display row (0-indexed)
+    /// * `byte_position` - File byte offset to check
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Byte is at end of this line (last content byte before newline)
+    /// * `Ok(false)` - Byte is NOT at line end (is start or middle)
+    /// * `Err(io::Error)` - Row index invalid or range not set
+    ///
+    /// # Logic
+    /// Checks if byte_position == line_end_byte of the row's range.
+    /// Note: end_byte is BEFORE the newline character, so cursor can be positioned there.
+    ///
+    /// # Empty Lines
+    /// For empty line (start == end):
+    /// - Position equals both start and end
+    /// - Both `is_at_line_start()` and `is_at_line_end()` return true
+    /// - Caller must handle this ambiguity (usually treated as both start and end)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Line "hello\n" stored as (10, 15)
+    /// is_at_line_end(0, 10)?  // false - at start
+    /// is_at_line_end(0, 12)?  // false - in middle
+    /// is_at_line_end(0, 15)?  // true - at end
+    ///
+    /// // Empty line "\n" stored as (20, 20)
+    /// is_at_line_end(1, 20)?  // true - at end (also at start)
+    /// ```
+    pub fn is_at_line_end(&self, row: usize, byte_position: u64) -> io::Result<bool> {
+        // Get line boundaries (defensive: propagate error if row invalid)
+        match self.get_line_byte_range(row)? {
+            Some((_start_byte, end_byte)) => {
+                // Compare byte position to line end
+                Ok(byte_position == end_byte)
+            }
+            None => {
+                // Row not populated - can't determine line end
+                // Return false (not at line end of non-existent line)
+                Ok(false)
+            }
+        }
+    }
+
+    /// Clears all line byte range tracking
+    ///
+    /// # Purpose
+    /// Resets line boundary data when rebuilding window (e.g., after scroll).
+    /// Called at start of `build_windowmap_nowrap()`.
+    pub fn clear_line_byte_ranges(&mut self) {
+        // Defensive: explicit loop with bounds (NASA Power of 10 Rule 2)
+        for row in 0..MAX_TUI_ROWS {
+            self.line_byte_start_end_position_pairs[row] = None;
         }
     }
 }
@@ -5470,6 +5729,113 @@ impl EditorState {
 
         Ok(bytes_to_write)
     }
+
+    //
+    // Methods for byte positions of start and stop
+    // VERY under constriction, VERY not working
+    //
+
+    /// Checks if cursor is at the end of its current line
+    ///
+    /// # Purpose
+    /// Uses cursor position already in state to determine line end.
+    /// Used for move-right wrapping: when user presses 'l' at line end,
+    /// cursor wraps to start of next line.
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Cursor is at the last byte of current line
+    /// * `Ok(false)` - Cursor is NOT at line end
+    /// * `Err(LinesError)` - Cannot determine (state error or invalid position)
+    ///
+    /// # Defensive
+    /// All lookups must succeed - returns error if data missing or invalid
+    pub fn is_cursor_at_line_end(&self) -> Result<bool> {
+        // Get line byte range for current row
+        let (_start_byte, end_byte) = self.window_map.line_byte_start_end_position_pairs
+            [self.cursor.row]
+            .ok_or_else(|| {
+                let msg = format!("Line byte range not set for row {}", self.cursor.row);
+                log_error(&msg, Some("is_cursor_at_line_end"));
+                LinesError::StateError(msg)
+            })?;
+
+        // Get cursor's file byte position
+        let cursor_byte_offset = self
+            .window_map
+            .get_file_position(self.cursor.row, self.cursor.col)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Cursor at ({}, {}) maps to empty cell",
+                    self.cursor.row, self.cursor.col
+                );
+                log_error(&msg, Some("is_cursor_at_line_end"));
+                LinesError::StateError(msg)
+            })?
+            .byte_offset;
+
+        // Defensive: cursor should never exceed line end
+        if cursor_byte_offset > end_byte {
+            let msg = format!(
+                "Cursor byte {} exceeds line end {} (row {}, col {})",
+                cursor_byte_offset, end_byte, self.cursor.row, self.cursor.col
+            );
+            log_error(&msg, Some("is_cursor_at_line_end"));
+            return Err(LinesError::StateError(msg));
+        }
+
+        Ok(cursor_byte_offset == end_byte)
+    }
+
+    /// Checks if cursor is at the start of its current line
+    ///
+    /// # Purpose
+    /// Uses cursor position already in state to determine line start.
+    /// Used for move-left wrapping: when user presses 'h' at line start,
+    /// cursor wraps to end of previous line.
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Cursor is at the first byte of current line
+    /// * `Ok(false)` - Cursor is NOT at line start
+    /// * `Err(LinesError)` - Cannot determine (state error or invalid position)
+    ///
+    /// # Defensive
+    /// All lookups must succeed - returns error if data missing or invalid
+    pub fn is_cursor_at_line_start(&self) -> Result<bool> {
+        // Get line byte range for current row
+        let (start_byte, _end_byte) = self.window_map.line_byte_start_end_position_pairs
+            [self.cursor.row]
+            .ok_or_else(|| {
+                let msg = format!("Line byte range not set for row {}", self.cursor.row);
+                log_error(&msg, Some("is_cursor_at_line_start"));
+                LinesError::StateError(msg)
+            })?;
+
+        // Get cursor's file byte position
+        let cursor_byte_offset = self
+            .window_map
+            .get_file_position(self.cursor.row, self.cursor.col)?
+            .ok_or_else(|| {
+                let msg = format!(
+                    "Cursor at ({}, {}) maps to empty cell",
+                    self.cursor.row, self.cursor.col
+                );
+                log_error(&msg, Some("is_cursor_at_line_start"));
+                LinesError::StateError(msg)
+            })?
+            .byte_offset;
+
+        // Defensive: cursor should never be before line start
+        if cursor_byte_offset < start_byte {
+            let msg = format!(
+                "Cursor byte {} is before line start {} (row {}, col {})",
+                cursor_byte_offset, start_byte, self.cursor.row, self.cursor.col
+            );
+            log_error(&msg, Some("is_cursor_at_line_start"));
+            return Err(LinesError::StateError(msg));
+        }
+
+        Ok(cursor_byte_offset == start_byte)
+    }
 }
 
 /// Gets a timestamp string in yyyy_mm_dd format using only standard library
@@ -7263,6 +7629,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Defensive: Limit iterations to prevent infinite loops
             let mut iterations = 0;
 
+            /*
+            I discovered this somewhat by accident while restructuring
+            and cleaning the code:
+            this subtraction 'overflow' catch seems to work
+            as the zero-index finder and safety mechanism all in one.
+            I am not a fan of having a failure be a trigger...
+            but for MVP it looks to work.
+            */
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 // =========================
                 // position state inspection
@@ -7276,15 +7650,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.absolute_horizontal_0index_cursor_position = new_position;
                 } else {
-                    // Safe Fail
+                    // Safe "Fail"
                     /*
-                    If there are any problems with window-state
-                    then reset-state, go to start of file
-                    annoying maybe, but safe. No lost work
-                    no damage to file, no lost session.
+                    When on lin
                     */
 
-                    if lines_editor_state.cursor.row == 1 {
+                    if lines_editor_state.cursor.row <= 0 {
                         _ = execute_command(lines_editor_state, Command::GotoLineStart)?;
                     } else {
                         // Move up one line
@@ -7307,6 +7678,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 println!(
                     "MoveLeft lines_editor_state.absolute_horizontal_0index_cursor_position -> {:?}",
                     lines_editor_state.absolute_horizontal_0index_cursor_position
+                );
+                println!(
+                    "MoveLeft lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
                 );
 
                 iterations += 1;
@@ -7347,656 +7722,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        // // testing v8
-        // Command::MoveLeft(count) => {
-        //     // Vim-like behavior: move cursor left, scroll window if at edge
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-
-        //     // Defensive: Limit iterations to prevent infinite loops
-        //     let mut iterations = 0;
-
-        //     // ===================================================================
-        //     // CHECK IF PREVIOUS CHARACTER IS A NEWLINE (BEFORE MOVING)
-        //     // ===================================================================
-        //     /*
-        //     Proxy for Newline Location is Left-Edge padding size and current collumn:
-
-        //     The text editor uses a moving window, strictly not loading whole documents or whole lines into memory.
-
-        //     So the right edge of the window map is largely open-ended, it just iterates along.
-
-        //     But the move-left edge should have a known endpoint, col zero.
-
-        //     Note: currently, this could be modified perhaps, the line number is a simple system.
-        //     line number + one space is added to the TUI for that row.
-        //     so the first real character (or empty line-end newline) is the number of digits + one space from column 0
-        //     column 0 is always a line number,
-        //     column 1 is always a space or a line number,
-        //     after that it depends on what line the file is on.
-
-        //     It is a simple calculation (does in several places in the code) to see what that line's line-number-padding is.
-
-        //     if the current column is 1+ the padding width (adjusting for zero indexing etc.)
-        //     then you are at the left edge,
-        //     then follow the step that do work,
-        //     move up to the next line's end,
-        //     then move.
-        //     */
-        //     // // Position cursor AFTER line number (same as bootstrap)
-        //     // // number of digits in line number + 1 is first character
-        //     // let line_num_padding_width = calculate_line_number_width(lines_editor_state.cursor.row);
-
-        //     // // Peek backward to see if previous byte is newline
-        //     // let newline_detection_flag = if line_num_padding_width >= lines_editor_state.cursor.col
-        //     // {
-        //     //     true
-        //     // } else {
-        //     //     false // At start of file, no previous byte
-        //     // };
-
-        //     /*
-
-        //     */
-        //     let current_file_pos = match lines_editor_state
-        //         .window_map
-        //         .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-        //     {
-        //         Ok(Some(pos)) => pos.byte_offset,
-        //         Ok(None) => {
-        //             // Can't get position
-        //             println!("Can't get file position");
-        //             return Ok(true);
-        //         }
-        //         Err(_) => return Ok(true),
-        //     };
-
-        //     // Peek backward to see if previous byte is newline
-        //     // this uncommented code is horrible TODO fix this
-        //     let newline_detection_flag = if current_file_pos > 0 {
-        //         let prev_byte_pos = current_file_pos.saturating_sub(1);
-
-        //         let mut peek_buffer = [0u8; 1];
-        //         let mut peek_file = File::open(&edit_file_path)?;
-
-        //         peek_file.seek(io::SeekFrom::Start(prev_byte_pos)).ok();
-        //         match peek_file.read(&mut peek_buffer) {
-        //             Ok(1) if peek_buffer[0] == b'\n' => true,
-        //             _ => false,
-        //         }
-        //     } else {
-        //         false // At start of file, no previous byte
-        //     };
-
-        //     // ===================================================================
-        //     // IF NEWLINE BEHIND: SWITCH TO LINE NAVIGATION
-        //     // ===================================================================
-
-        //     if newline_detection_flag {
-        //         // Move up one line
-        //         execute_command(lines_editor_state, Command::MoveUp(1))?;
-
-        //         // Move to end of that line
-        //         execute_command(lines_editor_state, Command::GotoLineEnd)?;
-
-        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-        //         return Ok(true);
-        //     }
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // ===================================================================
-        //         // NORMAL LEFT MOVEMENT (EXISTING LOGIC)
-        //         // ===================================================================
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             // Cursor can move left within visible window
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             // Cursor at left edge, scroll window left
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             // At absolute left edge - can't move further
-        //             break;
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveLeft",
-        //         )));
-        //     }
-
-        //     // Only rebuild if we scrolled the window
-        //     if needs_rebuild {
-        //         // Rebuild window to show the change from read-copy file
-        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // // version ? broken?
-        // Command::MoveLeft(count) => {
-        //     let read_copy = lines_editor_state
-        //         .read_copy_path
-        //         .clone()
-        //         .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // ===================================================================
-        //         // AT COLUMN 0: Check if we should move to previous line
-        //         // ===================================================================
-
-        //         if lines_editor_state.cursor.col == 0
-        //             && lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0
-        //         {
-        //             // At absolute left edge of visible line
-        //             // Move to end of previous line
-
-        //             if lines_editor_state.cursor.row > 0 {
-        //                 // Can move up within visible window
-        //                 execute_command(lines_editor_state, Command::MoveUp(1))?;
-        //                 execute_command(lines_editor_state, Command::GotoLineEnd)?;
-        //                 remaining_moves -= 1;
-        //                 needs_rebuild = true;
-        //                 continue;
-        //             } else if lines_editor_state.line_count_at_top_of_window > 0 {
-        //                 // At top of window but not top of file - scroll up
-        //                 execute_command(lines_editor_state, Command::MoveUp(1))?;
-        //                 execute_command(lines_editor_state, Command::GotoLineEnd)?;
-        //                 remaining_moves -= 1;
-        //                 needs_rebuild = true;
-        //                 continue;
-        //             } else {
-        //                 // At absolute top-left of file - can't move further
-        //                 break;
-        //             }
-        //         }
-
-        //         // ===================================================================
-        //         // NORMAL LEFT MOVEMENT
-        //         // ===================================================================
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             // Shouldn't reach here due to check above, but defensive
-        //             break;
-        //         }
-        //     }
-
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveLeft",
-        //         )));
-        //     }
-
-        //     if needs_rebuild {
-        //         build_windowmap_nowrap(lines_editor_state, &read_copy)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // // diagnostics (broken?)
-        // Command::MoveLeft(count) => {
-        //     let read_copy = lines_editor_state
-        //         .read_copy_path
-        //         .clone()
-        //         .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // DIAGNOSTIC: Print state
-        //         eprintln!(
-        //             "MoveLeft iter {}: col={}, h_offset={}, remaining={}",
-        //             iterations,
-        //             lines_editor_state.cursor.col,
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
-        //             remaining_moves
-        //         );
-
-        //         let at_left_edge = lines_editor_state.cursor.col == 0
-        //             && lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0;
-
-        //         if at_left_edge {
-        //             eprintln!("  → At left edge, trying to move up");
-
-        //             let can_move_up = lines_editor_state.cursor.row > 0
-        //                 || lines_editor_state.line_count_at_top_of_window > 0;
-
-        //             if can_move_up {
-        //                 execute_command(lines_editor_state, Command::MoveUp(1))?;
-        //                 execute_command(lines_editor_state, Command::GotoLineEnd)?;
-        //                 remaining_moves -= 1;
-        //                 needs_rebuild = true;
-        //                 continue;
-        //             } else {
-        //                 eprintln!("  → Can't move up, breaking");
-        //                 break;
-        //             }
-        //         }
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             eprintln!("  → Moving cursor left");
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             eprintln!("  → Scrolling window left");
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             eprintln!("  → Nowhere to go, breaking");
-        //             break;
-        //         }
-        //     }
-
-        //     if needs_rebuild {
-        //         build_windowmap_nowrap(lines_editor_state, &read_copy)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // // v2 -broken?
-        // Command::MoveLeft(count) => {
-        //     // let read_copy = lines_editor_state
-        //     //     .read_copy_path
-        //     //     .clone()
-        //     //     .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     // Vim-like behavior: move cursor left, scroll window if at edge
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-
-        //     // Defensive: Limit iterations to prevent infinite loops
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // ===================================================================
-        //         // CHECK IF AT START OF LINE DATA (SAFER THAN PEEKING AT BYTES)
-        //         // ===================================================================
-        //         // Strategy: Look at position to the left in window map
-        //         // If it's None, we're at the start of line data → move to previous line
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             // Check if position to our left has file data
-        //             let left_col = lines_editor_state.cursor.col - 1;
-
-        //             match lines_editor_state
-        //                 .window_map
-        //                 .get_file_position(lines_editor_state.cursor.row, left_col)
-        //             {
-        //                 Ok(None) => {
-        //                     // Position to left is empty (no file data)
-        //                     // We're at the start of line content
-        //                     // Move to end of previous line
-
-        //                     if lines_editor_state.cursor.row > 0
-        //                         || lines_editor_state.line_count_at_top_of_window > 0
-        //                     {
-        //                         // Not at first line of file - can move up
-        //                         execute_command(lines_editor_state, Command::MoveUp(1))?;
-        //                         execute_command(lines_editor_state, Command::GotoLineEnd)?;
-        //                         remaining_moves -= 1;
-        //                         needs_rebuild = true;
-        //                         continue;
-        //                     } else {
-        //                         // At first line of file - can't go up
-        //                         break;
-        //                     }
-        //                 }
-        //                 Ok(Some(_)) => {
-        //                     // Position to left has file data - normal left movement
-        //                     // Fall through to existing movement logic below
-        //                 }
-        //                 Err(_) => {
-        //                     // Window map lookup failed - stop here
-        //                     break;
-        //                 }
-        //             }
-        //         }
-
-        // Kind of works but not stable yet...
-        // // ===================================================================
-        // // CHECK IF PREVIOUS CHARACTER IS A NEWLINE (BEFORE MOVING)
-        // // ===================================================================
-
-        // let current_file_pos = match lines_editor_state
-        //     .window_map
-        //     .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-        // {
-        //     Ok(Some(pos)) => pos.byte_offset,
-        //     Ok(None) => {
-        //         // Can't get position, just try moving left normally
-        //         break;
-        //     }
-        //     Err(_) => break,
-        // };
-
-        // // Peek backward to see if previous byte is newline
-        // let is_prev_newline = if current_file_pos > 0 {
-        //     let prev_byte_pos = current_file_pos.saturating_sub(1);
-
-        //     let mut peek_buffer = [0u8; 1];
-        //     let mut peek_file = File::open(&read_copy)?;
-
-        //     peek_file.seek(io::SeekFrom::Start(prev_byte_pos)).ok();
-        //     match peek_file.read(&mut peek_buffer) {
-        //         Ok(1) if peek_buffer[0] == b'\n' => true,
-        //         _ => false,
-        //     }
-        // } else {
-        //     false // At start of file, no previous byte
-        // };
-
-        // // ===================================================================
-        // // IF NEWLINE BEHIND: SWITCH TO LINE NAVIGATION
-        // // ===================================================================
-
-        // if is_prev_newline {
-        //     // Move up one line
-        //     execute_command(lines_editor_state, Command::MoveUp(1))?;
-
-        //     // Move to end of that line
-        //     execute_command(lines_editor_state, Command::GotoLineEnd)?;
-
-        //     remaining_moves -= 1;
-        //     needs_rebuild = true;
-        //     continue;
-        // }
-
-        // ===================================================================
-        // NORMAL LEFT MOVEMENT (EXISTING LOGIC)
-        // ===================================================================
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             // Cursor can move left within visible window
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             // Cursor at left edge, scroll window left
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             // At absolute left edge - can't move further
-        //             break;
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveLeft",
-        //         )));
-        //     }
-
-        //     // Only rebuild if we scrolled the window
-        //     if needs_rebuild {
-        //         // Rebuild window to show the change from read-copy file
-        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // // v2
-        // Command::MoveLeft(count) => {
-        //     let read_copy = lines_editor_state
-        //         .read_copy_path
-        //         .clone()
-        //         .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     let file_size = fs::metadata(&read_copy).ok().map(|m| m.len()).unwrap_or(0);
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // ===================================================================
-        //         // CHECK IF PREVIOUS CHARACTER IS A NEWLINE (BEFORE MOVING)
-        //         // ===================================================================
-
-        //         let current_file_pos = match lines_editor_state
-        //             .window_map
-        //             .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-        //         {
-        //             Ok(Some(pos)) => pos.byte_offset,
-        //             Ok(None) => {
-        //                 // Can't get position, just try moving left normally
-        //                 break;
-        //             }
-        //             Err(_) => break,
-        //         };
-
-        //         // Peek backward to see if previous byte is newline
-        //         let is_prev_newline = if current_file_pos > 0 {
-        //             let prev_byte_pos = current_file_pos.saturating_sub(1);
-
-        //             let mut peek_buffer = [0u8; 1];
-        //             let mut peek_file = File::open(&read_copy)?;
-
-        //             peek_file.seek(io::SeekFrom::Start(prev_byte_pos)).ok();
-        //             match peek_file.read(&mut peek_buffer) {
-        //                 Ok(1) if peek_buffer[0] == b'\n' => true,
-        //                 _ => false,
-        //             }
-        //         } else {
-        //             false // At start of file, no previous byte
-        //         };
-
-        //         // ===================================================================
-        //         // IF NEWLINE BEHIND: SWITCH TO LINE NAVIGATION
-        //         // ===================================================================
-
-        //         if is_prev_newline {
-        //             // Move up one line
-        //             execute_command(lines_editor_state, Command::MoveUp(1))?;
-
-        //             // Move to end of that line
-        //             execute_command(lines_editor_state, Command::GotoLineEnd)?;
-
-        //             remaining_moves -= 1;
-        //             needs_rebuild = true;
-        //             continue;
-        //         }
-
-        //         // ===================================================================
-        //         // NORMAL LEFT MOVEMENT (EXISTING LOGIC)
-        //         // ===================================================================
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             // Cursor can move left within visible window
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             // Cursor at left edge, scroll window left
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             // At absolute left edge - can't move further
-        //             break;
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveLeft",
-        //         )));
-        //     }
-
-        //     // Only rebuild if we scrolled the window
-        //     if needs_rebuild {
-        //         build_windowmap_nowrap(lines_editor_state, &read_copy)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // // v7 - broken
-        // Command::MoveLeft(count) => {
-        //     let read_copy = lines_editor_state
-        //         .read_copy_path
-        //         .clone()
-        //         .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     let file_size = fs::metadata(&read_copy).ok().map(|m| m.len()).unwrap_or(0);
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-        //     let mut iterations = 0;
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // ===================================================================
-        //         // CHECK IF PREVIOUS CHARACTER IS A NEWLINE (BEFORE MOVING)
-        //         // ===================================================================
-        //         /*
-        //         Proxy for Newline Location is Left-Edge padding size and current collumn:
-
-        //         The text editor uses a moving window, strictly not loading whole documents or whole lines into memory.
-
-        //         So the right edge of the window map is largely open-ended, it just iterates along.
-
-        //         But the move-left edge should have a known endpoint, col zero.
-
-        //         Note: currently, this could be modified perhaps, the line number is a simple system.
-        //         line number + one space is added to the TUI for that row.
-        //         so the first real character (or empty line-end newline) is the number of digits + one space from column 0
-        //         column 0 is always a line number,
-        //         column 1 is always a space or a line number,
-        //         after that it depends on what line the file is on.
-
-        //         It is a simple calculation (does in several places in the code) to see what that line's line-number-padding is.
-
-        //         if the current column is 1+ the padding width (adjusting for zero indexing etc.)
-        //         then you are at the left edge,
-        //         then follow the step that do work,
-        //         move up to the next line's end,
-        //         then move.
-        //         */
-        //         // Position cursor AFTER line number (same as bootstrap)
-        //         // number of digits in line number + 1 is first character
-        //         let line_num_padding_width =
-        //             calculate_line_number_width(lines_editor_state.cursor.row);
-
-        //         // Peek backward to see if previous byte is newline
-        //         let newline_detection_flag =
-        //             if line_num_padding_width >= lines_editor_state.cursor.col {
-        //                 true
-        //             } else {
-        //                 false // At start of file, no previous byte
-        //             };
-
-        //         // ===================================================================
-        //         // IF NEWLINE BEHIND: SWITCH TO LINE NAVIGATION
-        //         // ===================================================================
-
-        //         if newline_detection_flag {
-        //             // Move up one line
-        //             execute_command(lines_editor_state, Command::MoveUp(1))?;
-
-        //             // Move to end of that line
-        //             execute_command(lines_editor_state, Command::GotoLineEnd)?;
-
-        //             remaining_moves -= 1;
-        //             build_windowmap_nowrap(lines_editor_state, &read_copy)?;
-        //             continue;
-        //         }
-
-        //         // ===================================================================
-        //         // NORMAL LEFT MOVEMENT (EXISTING LOGIC)
-        //         // ===================================================================
-
-        //         if lines_editor_state.cursor.col > 0 {
-        //             // Cursor can move left within visible window
-        //             let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-        //             lines_editor_state.cursor.col -= cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
-        //             // Cursor at left edge, scroll window left
-        //             let scroll_amount =
-        //                 remaining_moves.min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
-        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= scroll_amount;
-        //             remaining_moves -= scroll_amount;
-        //             needs_rebuild = true;
-        //         } else {
-        //             // At absolute left edge - can't move further
-        //             break;
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveLeft",
-        //         )));
-        //     }
-
-        //     // Only rebuild if we scrolled the window
-        //     if needs_rebuild {
-        //         build_windowmap_nowrap(lines_editor_state, &read_copy)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
         // ==========
         // Move Right
         // ==========
+
+        // v7 new struct positions
         Command::MoveRight(count) => {
             // Vim-like behavior: move cursor right, scroll window if at edge
 
@@ -8022,6 +7752,26 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
+
+                // // ===================================================================
+                // // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
+                // // ===================================================================
+
+                // let is_next_newline = lines_editor_state.is_cursor_at_line_end()?;
+
+                // if is_next_newline {
+                //     // Move to start of current line
+                //     execute_command(lines_editor_state, Command::GotoLineStart)?;
+
+                //     // Move down one line
+                //     execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+                //     remaining_moves -= 1;
+                //     needs_rebuild = true;
+                //     continue;
+                // }
+
+                // ======
 
                 // Calculate space available before right edge
                 // Reserve 1 column to prevent display overflow
@@ -8077,73 +7827,35 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        // // v2 - next line (broken?)
+        // // old v1 works
         // Command::MoveRight(count) => {
-        //     let read_copy = lines_editor_state
-        //         .read_copy_path
-        //         .clone()
-        //         .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
-        //     let file_size = fs::metadata(&read_copy).ok().map(|m| m.len()).unwrap_or(0);
+        //     // Vim-like behavior: move cursor right, scroll window if at edge
 
         //     let mut remaining_moves = count;
         //     let mut needs_rebuild = false;
+
+        //     // Defensive: Limit iterations
         //     let mut iterations = 0;
+
+        //     // =========================
+        //     // position state inspection
+        //     // =========================
+        //     // update for each move
+        //     lines_editor_state.absolute_horizontal_0index_cursor_position += count;
+        //     println!(
+        //         "MoveRight lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+        //         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+        //     );
+        //     println!(
+        //         "MoveRight lines_editor_state.absolute_horizontal_0index_cursor_position -> {:?}",
+        //         lines_editor_state.absolute_horizontal_0index_cursor_position
+        //     );
 
         //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
         //         iterations += 1;
 
-        //         // ===================================================================
-        //         // CHECK IF NEXT CHARACTER IS A NEWLINE (BEFORE MOVING)
-        //         // ===================================================================
-
-        //         let current_file_pos = match lines_editor_state
-        //             .window_map
-        //             .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-        //         {
-        //             Ok(Some(pos)) => pos.byte_offset,
-        //             Ok(None) => {
-        //                 // Can't get position, just try moving right normally
-        //                 break;
-        //             }
-        //             Err(_) => break,
-        //         };
-
-        //         // Peek ahead to see if next byte is newline
-        //         let mut peek_buffer = [0u8; 1];
-        //         let mut peek_file = File::open(&read_copy)?;
-        //         let next_byte_pos = current_file_pos.saturating_add(1);
-
-        //         let is_next_newline = if next_byte_pos < file_size {
-        //             peek_file.seek(io::SeekFrom::Start(next_byte_pos)).ok();
-        //             match peek_file.read(&mut peek_buffer) {
-        //                 Ok(1) if peek_buffer[0] == b'\n' => true,
-        //                 _ => false,
-        //             }
-        //         } else {
-        //             false
-        //         };
-
-        //         // ===================================================================
-        //         // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
-        //         // ===================================================================
-
-        //         if is_next_newline {
-        //             // Move to start of current line
-        //             execute_command(lines_editor_state, Command::GotoLineStart)?;
-
-        //             // Move down one line
-        //             execute_command(lines_editor_state, Command::MoveDown(1))?;
-
-        //             remaining_moves -= 1;
-        //             needs_rebuild = true;
-        //             continue;
-        //         }
-
-        //         // ===================================================================
-        //         // NORMAL RIGHT MOVEMENT (EXISTING LOGIC)
-        //         // ===================================================================
-
+        //         // Calculate space available before right edge
+        //         // Reserve 1 column to prevent display overflow
         //         let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
         //         if lines_editor_state.cursor.col < right_edge {
@@ -8151,17 +7863,25 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         //             let space_available = right_edge - lines_editor_state.cursor.col;
         //             let cursor_moves = remaining_moves.min(space_available);
 
+        //             // inspection
+        //             println!("Inspection cursor_moves-> {:?}", &cursor_moves);
+
         //             lines_editor_state.cursor.col += cursor_moves;
         //             remaining_moves -= cursor_moves;
         //         } else {
         //             // Cursor at right edge, scroll window right
+        //             // Cap scroll to prevent excessive horizontal offset
+
         //             if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
         //                 < limits::CURSOR_MOVEMENT_STEPS
         //             {
         //                 let max_scroll = limits::CURSOR_MOVEMENT_STEPS
         //                     - lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
         //                 let scroll_amount = remaining_moves.min(max_scroll);
-        //                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += scroll_amount;
+
+        //                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset +=
+        //                     scroll_amount;
+
         //                 remaining_moves -= scroll_amount;
         //                 needs_rebuild = true;
         //             } else {
@@ -8179,9 +7899,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         //         )));
         //     }
 
-        //     // Rebuild if needed
+        //     // Only rebuild if we scrolled the window
         //     if needs_rebuild {
-        //         build_windowmap_nowrap(lines_editor_state, &read_copy)?;
+        //         // Rebuild window to show the change from read-copy file
+        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
         //     }
 
         //     Ok(true)
@@ -8790,6 +8511,35 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         Command::MoveUp(count) => {
             // Vim-like behavior: move cursor up, scroll window if at top edge
 
+            /*
+            note for backup: position available...
+            but abs state field seems to be working (mostly)
+             */
+            // // ========================================================================
+            // // STEP 1: Get file position from cursor (defensive)
+            // // ========================================================================
+
+            // let current_file_pos = match lines_editor_state
+            //     .window_map
+            //     .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            // {
+            //     Ok(Some(pos)) => pos,
+            //     Ok(None) => {
+            //         // handling None case
+            //         let _ = lines_editor_state.set_info_bar_message("gh cursor position unavailable");
+            //         return Ok(());
+            //     }
+            //     Err(e) => {
+            //         let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
+            //         log_error(
+            //             &format!("goto_line_start window_map error: {}", e),
+            //             Some("goto_line_start"),
+            //         );
+            //         return Ok(());
+            //     }
+            // };
+            // let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
+
             // =========================
             // position state inspection
             // =========================
@@ -8844,31 +8594,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
 
             let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
-
-            // // ========================================================================
-            // // STEP 1: Get file position from cursor (defensive)
-            // // ========================================================================
-
-            // let current_file_pos = match lines_editor_state
-            //     .window_map
-            //     .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-            // {
-            //     Ok(Some(pos)) => pos,
-            //     Ok(None) => {
-            //         // handling None case
-            //         let _ = lines_editor_state.set_info_bar_message("gh cursor position unavailable");
-            //         return Ok(());
-            //     }
-            //     Err(e) => {
-            //         let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
-            //         log_error(
-            //             &format!("goto_line_start window_map error: {}", e),
-            //             Some("goto_line_start"),
-            //         );
-            //         return Ok(());
-            //     }
-            // };
-            // let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
 
             // if position.. is <
             if lines_editor_state.absolute_horizontal_0index_cursor_position <= line_num_width {
