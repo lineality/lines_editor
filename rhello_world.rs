@@ -1,5 +1,6 @@
 /// // cargoComment
 fn main() {
+    /// // rhu rhou rhaggy...
     println!("Hello, world!");
 }
 

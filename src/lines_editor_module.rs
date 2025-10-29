@@ -5458,7 +5458,7 @@ impl EditorState {
 
                 // toggle
                 "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
-                // "///"
+                "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
                 // indent
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
@@ -7635,7 +7635,7 @@ pub enum Command {
     Copyank, // c,y (in a normal mood)
 
     ToggleCommentOneLine(usize),
-    // ToggleDocstringOneLine,
+    ToggleDocstringOneLine(usize),
     // IndentLine,
     // UnIndentLine,
     // IndentRange,
@@ -8974,16 +8974,20 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::ToggleCommentOneLine(line_number) => {
-            println!("line_number {line_number}");
+            // println!("line_number {line_number}");
             toggle_basic_singleline_comment(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
-        // Command::ToggleDocstringOneLine => {
-        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;        }
-        //     Ok(true)
-        //     // Save doesn't need rebuild (no content change in display)
-        // }
+        Command::ToggleDocstringOneLine(line_number) => {
+            toggle_rust_docstring_singleline_comment(
+                &edit_file_path.display().to_string(),
+                line_number,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
         // Command::Save => {
         //     save_file(lines_editor_state)?;
         //     Ok(true)
