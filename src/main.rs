@@ -9,6 +9,13 @@ use lines_editor_module::{
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
+mod toggle_comment_module;
+use toggle_comment_module::{
+    IndentError, ToggleError, indent_line, indent_range, toggle_basic_singleline_comment,
+    toggle_block_comment, toggle_multiple_basic_comments, toggle_multiple_singline_docstrings,
+    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
+};
+
 // "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};

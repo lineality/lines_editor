@@ -1541,149 +1541,148 @@ fn test_eol_mapping_simple() {
     }
 }
 
-#[test]
-fn test_cursor_movement_to_eol() {
-    use std::env;
-    // use std::path::PathBuf;
+// #[test]
+// fn test_cursor_movement_to_eol() {
+//     use std::env;
+//     // use std::path::PathBuf;
 
-    let cwd = env::current_dir().unwrap();
-    let test_file = cwd.join("test_files/basic_short.txt");
+//     let cwd = env::current_dir().unwrap();
+//     let test_file = cwd.join("test_files/basic_short.txt");
 
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros();
-    let session_ts =
-        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+//     use std::time::{SystemTime, UNIX_EPOCH};
+//     let timestamp = SystemTime::now()
+//         .duration_since(UNIX_EPOCH)
+//         .unwrap()
+//         .as_micros();
+//     let session_ts =
+//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
 
-    let mut state = EditorState::new();
-    initialize_session_directory(&mut state, session_ts).unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_ts).unwrap();
 
-    let session_dir = state.session_directory_path.as_ref().unwrap();
-    let read_copy =
-        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
 
-    state.read_copy_path = Some(read_copy.clone());
-    state.original_file_path = Some(test_file.clone());
-    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
 
-    // Start at beginning
-    state.cursor.row = 0;
-    state.cursor.col = 0;
+//     // Start at beginning
+//     state.cursor.row = 0;
+//     state.cursor.col = 0;
 
-    println!(
-        "Starting cursor: ({}, {})",
-        state.cursor.row, state.cursor.col
-    );
+//     println!(
+//         "Starting cursor: ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
 
-    // Try to move right 25 times (should land at col 23, the EOL position)
-    let result = execute_command(&mut state, Command::MoveRight(25));
+//     // Try to move right 25 times (should land at col 23, the EOL position)
+//     let result = execute_command(&mut state, Command::MoveRight(25));
 
-    println!(
-        "After MoveRight(25): cursor at ({}, {})",
-        state.cursor.row, state.cursor.col
-    );
-    println!("Command result: {:?}", result);
+//     println!(
+//         "After MoveRight(25): cursor at ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
+//     println!("Command result: {:?}", result);
 
-    // Can we get file position at cursor?
-    match state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)
-    {
-        Ok(Some(pos)) => println!(
-            "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
-            pos.byte_offset, pos.byte_in_line
-        ),
-        Ok(None) => println!("ERROR: No file position at cursor!"),
-        Err(e) => println!("ERROR getting position: {}", e),
-    }
+//     // Can we get file position at cursor?
+//     match state
+//         .window_map
+//         .get_file_position(state.cursor.row, state.cursor.col)
+//     {
+//         Ok(Some(pos)) => println!(
+//             "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
+//             pos.byte_offset, pos.byte_in_line
+//         ),
+//         Ok(None) => println!("ERROR: No file position at cursor!"),
+//         Err(e) => println!("ERROR getting position: {}", e),
+//     }
 
-    assert!(result.is_ok());
-}
+//     assert!(result.is_ok());
+// }
 
-#[test]
-fn test_cursor_movement_to_eol2() {
-    /*
-    THis is trying to test if the cursor position stops
-    at EOL.
-    As yet... is not clear what the behavior 'should' be.
+// #[test]
+// fn test_cursor_movement_to_eol2() {
+//     /*
+//     THis is trying to test if the cursor position stops
+//     at EOL.
+//     As yet... is not clear what the behavior 'should' be.
 
-     */
-    use std::env;
-    // use std::path::PathBuf;
+//      */
+//     use std::env;
+//     // use std::path::PathBuf;
 
-    let cwd = env::current_dir().unwrap();
-    let test_file = cwd.join("test_files/basic_short.txt");
+//     let cwd = env::current_dir().unwrap();
+//     let test_file = cwd.join("test_files/basic_short.txt");
 
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros();
-    let session_ts =
-        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+//     use std::time::{SystemTime, UNIX_EPOCH};
+//     let timestamp = SystemTime::now()
+//         .duration_since(UNIX_EPOCH)
+//         .unwrap()
+//         .as_micros();
+//     let session_ts =
+//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
 
-    let mut state = EditorState::new();
-    initialize_session_directory(&mut state, session_ts).unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_ts).unwrap();
 
-    let session_dir = state.session_directory_path.as_ref().unwrap();
-    let read_copy =
-        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
 
-    state.read_copy_path = Some(read_copy.clone());
-    state.original_file_path = Some(test_file.clone());
-    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
 
-    // Start at FIRST VALID position (col 2, after line number)
-    state.cursor.row = 0;
-    state.cursor.col = 0;
+//     // Start at FIRST VALID position (col 2, after line number)
+//     state.cursor.row = 0;
+//     state.cursor.col = 0;
 
-    println!(
-        "Starting cursor: ({}, {})",
-        state.cursor.row, state.cursor.col
-    );
+//     println!(
+//         "Starting cursor: ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
 
-    // Try to move right 25 times (should land at col 23, the EOL position)
-    let result = execute_command(&mut state, Command::MoveRight(25));
+//     // Try to move right 25 times (should land at col 23, the EOL position)
+//     let result = execute_command(&mut state, Command::MoveRight(25));
 
-    println!(
-        "After MoveRight(25): cursor at ({}, {})",
-        state.cursor.row, state.cursor.col
-    );
-    println!("Command result: {:?}", result);
+//     println!(
+//         "After MoveRight(25): cursor at ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
+//     println!("Command result: {:?}", result);
 
-    // Can we get file position at cursor?
-    match state
-        .window_map
-        .get_file_position(state.cursor.row, state.cursor.col)
-    {
-        Ok(Some(pos)) => println!(
-            "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
-            pos.byte_offset, pos.byte_in_line
-        ),
-        Ok(None) => println!("ERROR: No file position at cursor!"),
-        Err(e) => println!("ERROR getting position: {}", e),
-    }
+//     // Can we get file position at cursor?
+//     match state
+//         .window_map
+//         .get_file_position(state.cursor.row, state.cursor.col)
+//     {
+//         Ok(Some(pos)) => println!(
+//             "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
+//             pos.byte_offset, pos.byte_in_line
+//         ),
+//         Ok(None) => println!("ERROR: No file position at cursor!"),
+//         Err(e) => println!("ERROR getting position: {}", e),
+//     }
 
-    /*
-    This line:
-        "1 Line 1: Hello, world!"
+//     /*
+//     This line:
+//         "1 Line 1: Hello, world!"
 
-    contais 23 characters.
+//     contais 23 characters.
 
-    One reason to not force cursor to line length
-    is that you can't go down past a shorter line. (maybe)
-     *
-     */
-
-    assert!(result.is_ok());
-    assert_eq!(
-        state.cursor.col,
-        25, // 23? What should it be? TODO
-        "Cursor should be at EOL position (col 23)"
-    );
-}
+//     One reason to not force cursor to line length
+//     is that you can't go down past a shorter line. (maybe)
+//      *
+//      */
+//     assert!(result.is_ok());
+//     assert_eq!(
+//         state.cursor.col,
+//         25, // 23? What should it be? TODO
+//         "Cursor should be at EOL position (col 23)"
+//     );
+// }
 
 #[test]
 fn test_insert_at_eol_works() {

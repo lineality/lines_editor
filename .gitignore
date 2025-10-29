@@ -17,7 +17,7 @@ test_temp/
 .env
 source_crate_*
 test_analysis_report_*
-
+backup_toggle_comment_*
 code_archive.txt
 
 source_crate_lines_editor_*
