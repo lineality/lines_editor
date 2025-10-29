@@ -1087,8 +1087,8 @@ impl std::fmt::Display for ToggleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ToggleError::FileNotFound => write!(f, "File not found"),
-            ToggleError::NoExtension => write!(f, "No file extension"),
-            ToggleError::UnsupportedExtension => write!(f, "Unsupported extension"),
+            ToggleError::NoExtension => write!(f, "No file-extension-suffix"),
+            ToggleError::UnsupportedExtension => write!(f, "Unsupported file-extension-suffix"),
             ToggleError::LineNotFound {
                 requested,
                 file_lines,

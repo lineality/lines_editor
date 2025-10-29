@@ -923,6 +923,12 @@ use std::io::{self, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::toggle_comment_module::{
+    IndentError, ToggleError, indent_line, indent_range, toggle_basic_singleline_comment,
+    toggle_block_comment, toggle_multiple_basic_comments, toggle_multiple_singline_docstrings,
+    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
+};
+
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
 /// This module manages all editor state using only pre-allocated memory.
@@ -1195,6 +1201,44 @@ fn get_error_log_path() -> io::Result<PathBuf> {
     log_path.push(format!("{}.log", timestamp));
 
     Ok(log_path)
+}
+
+/// Automatic conversion from ToggleError to LinesError
+impl From<ToggleError> for LinesError {
+    fn from(err: ToggleError) -> Self {
+        // Map ToggleError variants to appropriate LinesError categories
+        match err {
+            ToggleError::FileNotFound
+            | ToggleError::NoExtension
+            | ToggleError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
+            ToggleError::LineNotFound { .. } | ToggleError::InvalidLineRange => {
+                LinesError::InvalidInput(err.to_string())
+            }
+            ToggleError::IoError(_) => {
+                LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
+            }
+            ToggleError::PathError => LinesError::StateError(err.to_string()),
+            ToggleError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+            ToggleError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
+        }
+    }
+}
+
+/// Automatic conversion from IndentError to LinesError
+impl From<IndentError> for LinesError {
+    fn from(err: IndentError) -> Self {
+        match err {
+            IndentError::FileNotFound => LinesError::InvalidInput(err.to_string()),
+            IndentError::LineNotFound { .. } | IndentError::InvalidLineRange => {
+                LinesError::InvalidInput(err.to_string())
+            }
+            IndentError::IoError(_) => {
+                LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
+            }
+            IndentError::PathError => LinesError::StateError(err.to_string()),
+            IndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+        }
+    }
 }
 
 // ============================================================================
@@ -5412,6 +5456,10 @@ impl EditorState {
                 "e" => Command::MoveWordEnd(count),
                 "b" => Command::MoveWordBack(count),
 
+                // toggle
+                "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
+                // "///"
+                // indent
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
                 // Multi-character commands
@@ -7575,7 +7623,8 @@ pub enum Command {
     // Select? up down left right byte count? or... to position?
 
     // File operations
-    Save,        // s
+    Save, // s
+    // TODO SaveAs, // sa
     Quit,        // q
     SaveAndQuit, // w (write-quit)
 
@@ -7584,6 +7633,13 @@ pub enum Command {
 
     // Cosplay for Variables
     Copyank, // c,y (in a normal mood)
+
+    ToggleCommentOneLine(usize),
+    // ToggleDocstringOneLine,
+    // IndentLine,
+    // UnIndentLine,
+    // IndentRange,
+    // UnIndentRange,
 
     // No operation
     None,
@@ -8917,12 +8973,42 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
+        Command::ToggleCommentOneLine(line_number) => {
+            println!("line_number {line_number}");
+            toggle_basic_singleline_comment(&edit_file_path.display().to_string(), line_number)?;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        // Command::ToggleDocstringOneLine => {
+        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;        }
+        //     Ok(true)
+        //     // Save doesn't need rebuild (no content change in display)
+        // }
+        // Command::Save => {
+        //     save_file(lines_editor_state)?;
+        //     Ok(true)
+        //     // Save doesn't need rebuild (no content change in display)
+        // }
+        // Command::Save => {
+        //     save_file(lines_editor_state)?;
+        //     Ok(true)
+        //     // Save doesn't need rebuild (no content change in display)
+        // }
+        // Command::Save => {
+        //     save_file(lines_editor_state)?;
+        //     Ok(true)
+        //     // Save doesn't need rebuild (no content change in display)
+        // }
+        // Command::Save => {
+        //     save_file(lines_editor_state)?;
+        //     Ok(true)
+        //     // Save doesn't need rebuild (no content change in display)
+        // }
         Command::Save => {
             save_file(lines_editor_state)?;
             Ok(true)
             // Save doesn't need rebuild (no content change in display)
         }
-
         Command::Quit => {
             // // Must-Save Mode (optional)
             // if state.is_modified {
