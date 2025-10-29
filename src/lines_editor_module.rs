@@ -5460,6 +5460,9 @@ impl EditorState {
                 "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
                 "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
                 // indent
+                "[" => Command::UnindentOneLine(self.cursor.row), // zero index
+                "]" => Command::IndentOneLine(self.cursor.row),   // zero index
+
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
                 // Multi-character commands
@@ -7634,10 +7637,10 @@ pub enum Command {
     // Cosplay for Variables
     Copyank, // c,y (in a normal mood)
 
-    ToggleCommentOneLine(usize),
-    ToggleDocstringOneLine(usize),
-    // IndentLine,
-    // UnIndentLine,
+    ToggleCommentOneLine(usize),   // current line is input:
+    ToggleDocstringOneLine(usize), // current line is input:
+    IndentOneLine(usize),          // current line is input:
+    UnindentOneLine(usize),        // current line is input:
     // IndentRange,
     // UnIndentRange,
 
@@ -8985,6 +8988,18 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 line_number,
             )?;
 
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::UnindentOneLine(line_number) => {
+            // println!("line_number {line_number}");
+            unindent_line(&edit_file_path.display().to_string(), line_number)?;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::IndentOneLine(line_number) => {
+            // println!("line_number {line_number}");
+            indent_line(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
