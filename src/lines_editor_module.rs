@@ -35,6 +35,7 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Where possible, as in legacy-mini-lines-editor, do not leave a file 'open' to read/write/append. Read what you need, when you need to, then stop reading the file, close out the read/write process so that the file is not locked or conflicted for another application or process (outside or inside of Lines).
 
 
+
 # Rust rules:
 -Always best practice.
 -Always extensive doc strings.
@@ -50,7 +51,7 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
 
 - Always defensive best practice:
-- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are common), there must always be fail-safe error handling.
+- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
 
 Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
 
@@ -92,11 +93,65 @@ For production-release code:
 assert!(
 ```
 
+e.g.
+# "Assert & Catch-Handle" 3-part System
 
-6. ? Is this about ownership of variables?
-- maybe: manage rust ownership to avoid heap or memory-bloat
+// template/example for check/assert format
+//    =================================================
+// // Debug-Assert, Test-Asset, Production-Catch-Handle
+//    =================================================
+// This is not included in production builds
+// assert: only when running in a debug-build: will panic
+debug_assert!(
+    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+    "Info bar buffer must have non-zero capacity"
+);
+// This is not included in production builds
+// assert: only when running cargo test: will panic
+#[cfg(test)]
+assert!(
+    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
+    "Info bar buffer must have non-zero capacity"
+);
+// Catch & Handle without panic in production
+// This IS included in production to safe-catch
+if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
+    // state.set_info_bar_message("Config error");
+    return Err(LinesError::GeneralAssertionCatchViolation(
+        "zero buffer size error".into(),
+    ));
+}
 
-7. manage return values:
+
+Avoid heap for error messages and for all things.
+   Is heap used because that is THE best way
+   the most secure, the most efficient, proper separate of debug testing vs. secure production code?
+   Or is heap used because "it's future dev's problem, let's party"
+   Can we use  heap in debug/test modes/builds only?
+   The lack of clarity on this is not acceptable.
+   Production software must not be a shrug punt.
+   Is debug information being included in production builds?
+   That is NOT supposed to happen.
+
+This is central to the question about testing vs. a pedantic ban on conditional compilation; not putting full traceback insecurity into production code is not a different operational process logic tree for process operations.
+
+Just like with the pedantic "a loops being bounded" rule, there is a fundamental exception: always-on loops must be the opposite.
+With conditional compilations: code NEVER to EVER be in production-builds MUST be "conditionally" excluded. This is not an OS condition or a hardware condition. This is an 'unsafe-testing or not' condition.
+
+Error messages and error outcomes in 'production' 'release' (real-use, not debug/testing) must not ever contain any information that could be a security vulnerability or attack surface. Failing to remove debugging inspection is a major category of security and hygiene problems.
+
+Security: Error messages in production must NOT contain:
+- File paths (can reveal system structure)
+- File contents
+- environment variables
+- data
+- Internal implementation details
+
+Production output following an error must be managed and defined, not not open to whatever some api or OS call wants to dump out.
+
+6. Manage ownership and borrowing
+
+7. Manage return values:
 - use null-void return values
 - check non-void-null returns
 
@@ -106,6 +161,9 @@ assert!(
 - use doc strings, use comments,
 - Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
 
+10. Use state-less operations when possible:
+- a seemingly invisibly small increase in state often completely destroys projects
+- expanding state destroys projects with unmaintainable over-reach
 
 ## code requires communication
 
@@ -2615,7 +2673,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd {}/{}//cmmnt {}[]{}rpt {}hjkl{}{}",
+        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -3255,6 +3313,7 @@ pub enum EditorMode {
     MultiCursor,
     /// Hex Edict!
     HexMode,
+    RawMode,
 }
 
 // /// Line wrap mode setting
@@ -3491,6 +3550,7 @@ pub struct EditorState {
     /// Only used when mode == EditorMode::HexMode
     pub hex_cursor: HexCursor,
 
+    // pub raw_cursor: RawCursor,
     // /// TODO: Should there be a clear-buffer method?
     // /// Pre-allocated buffer for insert mode text input
     // /// Used to capture user input before inserting into file
@@ -3559,6 +3619,7 @@ impl EditorState {
             utf8_txt_display_buffers: [[0u8; 182]; 45],
             display_utf8txt_buffer_lengths: [0usize; 45],
             hex_cursor: HexCursor::new(),
+            // raw_cursor: RawCursor::new(),s
             eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
             // total_file_lines: None,
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
@@ -5443,7 +5504,7 @@ impl EditorState {
         ```
          */
 
-        if current_mode == EditorMode::Normal {
+        if current_mode == EditorMode::Normal || current_mode == EditorMode::RawMode {
             match command_str {
                 // Single character commands
                 "h" => Command::MoveLeft(count),
@@ -5469,6 +5530,7 @@ impl EditorState {
 
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
+                "raw" | "r" => Command::EnterRawMode,
                 // Multi-character commands
                 "wq" => Command::SaveAndQuit,
                 "s" => Command::Save,
@@ -7628,6 +7690,7 @@ pub enum Command {
 
     EnterPastyClipboardMode, // pasty: clipboard et al
     EnterHexEditMode,        // Hex Edith
+    EnterRawMode,
 
     // Text editing
     InsertNewline(char), // Insert single \n at cursor's file-position
@@ -7973,10 +8036,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     let space_available = right_edge - lines_editor_state.cursor.col;
                     let cursor_moves = remaining_moves.min(space_available);
 
-                    // inspection
-                    println!("Inspection cursor_moves-> {:?}", &cursor_moves);
-
                     lines_editor_state.cursor.col += cursor_moves;
+
+                    // inspection
+                    println!(
+                        "Inspection cursor_moves-> {:?}, col:{:?}",
+                        &cursor_moves, lines_editor_state.cursor.col
+                    );
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at right edge, scroll window right
@@ -8995,7 +9061,26 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+        Command::EnterRawMode => {
+            // rebuild may not be needed here, but just in case
+            // Rebuild window to show the change from read-copy file
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            lines_editor_state.mode = EditorMode::RawMode;
 
+            // Convert current window position to file byte offset
+            if let Ok(Some(file_pos)) = lines_editor_state
+                .window_map
+                .get_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            {
+                // Start hex cursor at same file position
+                lines_editor_state.hex_cursor.byte_offset = file_pos.byte_offset as usize;
+            } else {
+                // Fallback to file start if cursor position invalid
+                lines_editor_state.hex_cursor.byte_offset = 0;
+            }
+
+            Ok(true)
+        }
         Command::ToggleCommentOneLine(line_number_0number) => {
             // println!("line_number {line_number}");
             toggle_basic_singleline_comment(
@@ -12510,6 +12595,7 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
         EditorMode::PastyMode => "PASTY",
         EditorMode::MultiCursor => "MULTI",
         EditorMode::HexMode => "HEX",
+        EditorMode::RawMode => "RAW",
     };
 
     // Get current line and column
@@ -12566,6 +12652,9 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
     Ok(info)
 }
 
+//  ======================
+//  HEX Render a Flesh TUI
+//  ======================
 /// Hex editor display state
 ///
 /// # Purpose
@@ -12818,6 +12907,235 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
     Ok(result)
 }
 
+//  =====================
+//  Sashimi Raw TUI Ramen
+//  =====================
+//  =====================
+//  RAW String TUI
+//  =====================
+//  =====================
+//  Sashimi Raw TUI Ramen
+//  =====================
+
+//  =====================
+//  RAW STRING TUI
+//  =====================
+
+/// Renders the complete TUI in RAW STRING mode
+///
+/// # Purpose
+/// Displays raw string view with escape sequences visible:
+/// 1. Top: Command legend (1 line, same as hex mode)
+/// 2. Middle: Raw string with visible escapes + interpreted text (2 lines)
+/// 3. Bottom: Info bar (1 line, shows byte offset)
+///
+/// # Layout
+/// ```text
+/// quit ins vis save undo hjkl wb /search       <- Legend
+/// H  e  l  l  o  \n W  o  r  l  d  \t A  B    <- Raw (escapes visible)
+/// H  e  l  l  o  ␊  W  o  r  l  d  ␉  A  B    <- Interpreted
+/// RAW byte 156 of 1024 doc.txt > cmd_         <- Info bar
+/// ```
+pub fn render_tui_raw(state: &EditorState) -> Result<()> {
+    // Clear screen
+    print!("\x1B[2J\x1B[H");
+    io::stdout()
+        .flush()
+        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+
+    // === TOP LINE: LEGEND (same as hex mode) ===
+    let legend = format_navigation_legend()?;
+    println!("{}", legend);
+
+    // padding
+    for _ in 0..5 {
+        println!();
+    }
+
+    // === MIDDLE: RAW + INTERPRETED DISPLAY (2 lines) ===
+    let raw_display = render_raw_row(state)?;
+    print!("{}", raw_display);
+
+    // padding
+    for _ in 0..14 {
+        println!();
+    }
+
+    // === BOTTOM LINE: INFO BAR ===
+    let info_bar = format_raw_info_bar(state)?;
+    print!("{}", info_bar);
+
+    io::stdout()
+        .flush()
+        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+
+    Ok(())
+}
+
+/// Renders one row of raw string data with interpreted view
+///
+/// # Purpose
+/// Displays 26 bytes in two formats:
+/// 1. Raw representation with escape sequences (\n, \t, etc.)
+/// 2. Interpreted character representation (same as hex mode UTF-8 line)
+///
+/// # Format
+/// ```text
+/// H  e  l  l  o  \n W  o  r  l  d  \t
+/// H  e  l  l  o  ␊  W  o  r  l  d  ␉
+/// ```
+///
+/// # Escape Sequences
+/// - Newline (0x0A) → \n
+/// - Tab (0x09) → \t
+/// - Carriage return (0x0D) → \r
+/// - Backslash (0x5C) → \\
+/// - Quote (0x22) → \"
+/// - Other non-printable → \xHH (hex escape)
+/// - Regular printable → as-is
+fn render_raw_row(state: &EditorState) -> Result<String> {
+    const BYTES_TO_DISPLAY: usize = 26;
+    const BOLD: &str = "\x1b[1m";
+    const RED: &str = "\x1b[31m";
+    const BG_WHITE: &str = "\x1b[47m";
+    const RESET: &str = "\x1b[0m";
+
+    let mut raw_line = String::with_capacity(120); // Escapes can be 2-4 chars
+    let mut interpreted_line = String::with_capacity(80);
+    let mut byte_buffer = [0u8; BYTES_TO_DISPLAY];
+
+    // Get file path from state
+    let file_path = state
+        .read_copy_path
+        .as_ref()
+        .ok_or_else(|| LinesError::StateError("No file path in raw mode".to_string()))?;
+
+    let mut file = File::open(file_path).map_err(|e| LinesError::Io(e))?;
+
+    // Calculate ROW START (same as hex)
+    let current_row = state.hex_cursor.current_row();
+    let row_start_offset = current_row * state.hex_cursor.bytes_per_row;
+
+    // Seek to START OF ROW
+    file.seek(io::SeekFrom::Start(row_start_offset as u64))
+        .map_err(|e| LinesError::Io(e))?;
+
+    let bytes_read = file.read(&mut byte_buffer).map_err(|e| LinesError::Io(e))?;
+    let cursor_col = state.hex_cursor.current_col();
+
+    // Build raw line and interpreted line simultaneously
+    for i in 0..BYTES_TO_DISPLAY {
+        if i < bytes_read {
+            let byte = byte_buffer[i];
+
+            // === RAW LINE (with escape sequences) ===
+            let raw_repr = byte_to_raw_escape(byte);
+
+            if i == cursor_col {
+                raw_line.push_str(&format!(
+                    "{}{}{}{:<3}{}", // Left-align in 3-char field
+                    BOLD, RED, BG_WHITE, raw_repr, RESET
+                ));
+            } else {
+                raw_line.push_str(&format!("{:<3}", raw_repr));
+            }
+
+            // === INTERPRETED LINE (same as hex mode) ===
+            let display_char = byte_to_display_char(byte);
+
+            if i == cursor_col {
+                interpreted_line.push_str(&format!(
+                    "{}{}{}{}{}  ",
+                    BOLD, RED, BG_WHITE, display_char, RESET
+                ));
+            } else {
+                interpreted_line.push_str(&format!("{}  ", display_char));
+            }
+        } else {
+            // Past EOF
+            raw_line.push_str("   ");
+            interpreted_line.push_str("   ");
+        }
+    }
+
+    let result = format!("{}\n{}\n", raw_line.trim_end(), interpreted_line.trim_end());
+    Ok(result)
+}
+
+/// Converts byte to raw string representation with escape sequences
+///
+/// # Arguments
+/// * `byte` - Single byte to convert
+///
+/// # Returns
+/// String representation (1-4 characters):
+/// - Regular printable ASCII → single character
+/// - Special chars → escape sequence (\n, \t, etc.)
+/// - Non-printable → hex escape (\xHH)
+///
+/// # Examples
+/// ```
+/// byte_to_raw_escape(0x0A) // "\n"
+/// byte_to_raw_escape(0x48) // "H"
+/// byte_to_raw_escape(0x00) // "\x00"
+/// ```
+fn byte_to_raw_escape(byte: u8) -> String {
+    match byte {
+        0x0A => "\\n".to_string(),  // Newline
+        0x09 => "\\t".to_string(),  // Tab
+        0x0D => "\\r".to_string(),  // Carriage return
+        0x5C => "\\\\".to_string(), // Backslash
+        0x22 => "\\\"".to_string(), // Quote
+        0x00 => "\\0".to_string(),  // Null
+        0x20..=0x7E => {
+            // Printable ASCII (space through ~)
+            if byte == 0x5C || byte == 0x22 {
+                // Already handled above
+                format!("{}", byte as char)
+            } else {
+                format!("{}", byte as char)
+            }
+        }
+        _ => {
+            // Non-printable → hex escape
+            format!("\\x{:02X}", byte)
+        }
+    }
+}
+
+/// Formats info bar for raw string mode
+///
+/// # Format
+/// ```text
+/// RAW byte 156 of 1024 doc.txt > cmd_
+/// ```
+fn format_raw_info_bar(state: &EditorState) -> Result<String> {
+    let filename = state
+        .read_copy_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Get file size (same as hex mode)
+    let file_size = if let Some(path) = &state.read_copy_path {
+        std::fs::metadata(path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    Ok(format!(
+        "RAW byte {} of {} {} > cmd_",
+        state.hex_cursor.byte_offset, file_size, filename
+    ))
+}
+
+//  =====================
+//  Sashimi Raw TUI Ramen end
+//  =====================
+//
 /// Finds the next newline byte position after current cursor
 ///
 /// # Purpose
@@ -13550,11 +13868,18 @@ pub fn full_lines_editor(
     while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
-        //  ==================
-        //  Render a Flesh TUI
-        //  ==================
         if lines_editor_state.mode == EditorMode::HexMode {
+            //  ======================
+            //  HEX Render a Flesh TUI
+            //  ======================
             render_tui_hex(&lines_editor_state).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+            })?;
+        } else if lines_editor_state.mode == EditorMode::RawMode {
+            //  =====================
+            //  Sashimi Raw TUI Ramen
+            //  =====================
+            render_tui_raw(&lines_editor_state).map_err(|e| {
                 io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
             })?;
         } else {
@@ -13580,6 +13905,12 @@ pub fn full_lines_editor(
             keep_editor_loop_running =
                 lines_editor_state.pasty_mode(&mut stdin_handle, &mut text_buffer)?;
         } else if lines_editor_state.mode == EditorMode::HexMode {
+            //  ===============
+            //  Hex Editor Mode
+            //  ===============
+            keep_editor_loop_running = lines_editor_state
+                .handle_parse_hex_mode_input_and_commands(&mut stdin_handle, &mut command_buffer)?;
+        } else if lines_editor_state.mode == EditorMode::RawMode {
             //  ===============
             //  Hex Editor Mode
             //  ===============
