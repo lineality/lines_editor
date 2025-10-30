@@ -3442,8 +3442,9 @@ pub struct EditorState {
     // pub window_start: FilePosition,
 
     /// Visual mode selection start (if in visual mode)
-    pub selection_start: Option<FilePosition>,
-
+    pub selection_start: Option<FilePosition>, // end is 'current' one
+    pub selection_rowline_start: usize, // end is 'current' one
+    // pub selection_rowline_end: usize,
     /// Path to .changelog file
     pub changelog_path: Option<PathBuf>,
 
@@ -3536,6 +3537,8 @@ impl EditorState {
             //     byte_in_line: 0,
             // },
             selection_start: None,
+            selection_rowline_start: 0,
+            // selection_rowline_end: 0,
             changelog_path: None,
             is_modified: false,
 
@@ -5459,6 +5462,7 @@ impl EditorState {
                 // toggle
                 "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
                 "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
+
                 // indent
                 "[" => Command::UnindentOneLine(self.cursor.row), // zero index
                 "]" => Command::IndentOneLine(self.cursor.row),   // zero index
@@ -5487,6 +5491,17 @@ impl EditorState {
                 "k" => Command::MoveUp(count),
                 "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
 
+                "/b" | "b/" | "/block" | "block/" => {
+                    Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row)
+                }
+
+                // // toggle RANGE
+                // "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
+                // "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
+
+                // // indent RANGE
+                // "[" => Command::UnindentOneLine(self.cursor.row), // zero index
+                // "]" => Command::IndentOneLine(self.cursor.row),   // zero index
                 "w" => Command::MoveWordForward(count),
                 "e" => Command::MoveWordEnd(count),
                 "b" => Command::MoveWordBack(count),
@@ -7637,10 +7652,11 @@ pub enum Command {
     // Cosplay for Variables
     Copyank, // c,y (in a normal mood)
 
-    ToggleCommentOneLine(usize),   // current line is input:
-    ToggleDocstringOneLine(usize), // current line is input:
-    IndentOneLine(usize),          // current line is input:
-    UnindentOneLine(usize),        // current line is input:
+    ToggleCommentOneLine(usize),       // current line is input
+    ToggleDocstringOneLine(usize),     // current line is input
+    ToggleBlockcomments(usize, usize), // start-row, stop-row
+    IndentOneLine(usize),              // current line is input
+    UnindentOneLine(usize),            // current line is input
     // IndentRange,
     // UnIndentRange,
 
@@ -8808,6 +8824,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::GotoLineStart => {
+            // maybe add set selection? TODO
             let read_copy = lines_editor_state
                 .read_copy_path
                 .clone()
@@ -8944,6 +8961,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             {
                 lines_editor_state.selection_start = Some(file_pos);
             }
+
+            // set row of cursor start
+            lines_editor_state.selection_rowline_start = lines_editor_state.cursor.row;
             Ok(true)
         }
 
@@ -8976,21 +8996,37 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        Command::ToggleCommentOneLine(line_number) => {
+        Command::ToggleCommentOneLine(line_number_0number) => {
             // println!("line_number {line_number}");
-            toggle_basic_singleline_comment(&edit_file_path.display().to_string(), line_number)?;
+            toggle_basic_singleline_comment(
+                &edit_file_path.display().to_string(),
+                line_number_0number,
+            )?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
-        Command::ToggleDocstringOneLine(line_number) => {
+        Command::ToggleDocstringOneLine(line_number_0number) => {
             toggle_rust_docstring_singleline_comment(
                 &edit_file_path.display().to_string(),
-                line_number,
+                line_number_0number,
             )?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+        Command::ToggleBlockcomments(start_row_0number, end_row_0number) => {
+            println!("start_row_0number {start_row_0number}");
+            println!("end_row_0number {end_row_0number}");
+            toggle_block_comment(
+                &edit_file_path.display().to_string(),
+                start_row_0number,
+                end_row_0number,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+
         Command::UnindentOneLine(line_number) => {
             // println!("line_number {line_number}");
             unindent_line(&edit_file_path.display().to_string(), line_number)?;
