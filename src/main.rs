@@ -17,6 +17,8 @@ use toggle_comment_indent_module::{
     unindent_range,
 };
 
+mod buttons_reversible_edit_changelog_module;
+
 // "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};

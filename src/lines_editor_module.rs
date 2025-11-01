@@ -988,6 +988,12 @@ use super::toggle_comment_indent_module::{
     unindent_range,
 };
 
+use super::buttons_reversible_edit_changelog_module::{
+    ButtonError, button_clear_all_redo_logs, button_hexeditinplace_byte_make_log_file,
+    button_undo_redo_next_inverse_changelog_pop_lifo, get_redo_changelog_directory_path,
+    get_undo_changelog_directory_path, read_single_byte_from_file,
+};
+
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
 /// This module manages all editor state using only pre-allocated memory.
@@ -1026,7 +1032,7 @@ const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 /// Towers of Hanoy
 const TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE: usize = 256;
 
-const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
+pub const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
@@ -1297,37 +1303,52 @@ impl From<ToggleIndentError> for LinesError {
     }
 }
 
-// /// Automatic conversion from ToggleError to LinesError
-// impl From<ToggleError> for LinesError {
-//     fn from(err: ToggleError) -> Self {
-//         // Map ToggleError variants to appropriate LinesError categories
-//         match err {
-//             ToggleError::FileNotFound
-//             | ToggleError::NoExtension
-//             | ToggleError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
-//             ToggleError::IoError(_) => {
-//                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
-//             }
-//             ToggleError::PathError => LinesError::StateError(err.to_string()),
-//             ToggleError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
-//             ToggleError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
-//         }
-//     }
-// }
+/// Automatic conversion from ButtonError to LinesError
+impl From<ButtonError> for LinesError {
+    fn from(err: ButtonError) -> Self {
+        match err {
+            // IO errors map directly
+            ButtonError::Io(e) => LinesError::Io(e),
 
-// /// Automatic conversion from IndentError to LinesError
-// impl From<IndentError> for LinesError {
-//     fn from(err: IndentError) -> Self {
-//         match err {
-//             IndentError::FileNotFound => LinesError::InvalidInput(err.to_string()),
-//             IndentError::IoError(_) => {
-//                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
-//             }
-//             IndentError::PathError => LinesError::StateError(err.to_string()),
-//             IndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
-//         }
-//     }
-// }
+            // Log file issues are invalid input
+            ButtonError::MalformedLog { .. } => {
+                LinesError::InvalidInput("Malformed changelog file".into())
+            }
+
+            // UTF-8 errors map to UTF-8 error category
+            ButtonError::InvalidUtf8 { .. } => {
+                LinesError::Utf8Error("Invalid UTF-8 in changelog".into())
+            }
+
+            // Directory issues are state errors
+            ButtonError::LogDirectoryError { .. } => {
+                LinesError::StateError("Changelog directory error".into())
+            }
+
+            // No logs found is a state error
+            ButtonError::NoLogsFound { .. } => {
+                LinesError::StateError("No changelog files found".into())
+            }
+
+            // Position errors are invalid input
+            ButtonError::PositionOutOfBounds { .. } => {
+                LinesError::InvalidInput("Changelog position out of bounds".into())
+            }
+
+            // Incomplete log sets are state errors
+            ButtonError::IncompleteLogSet { .. } => {
+                LinesError::StateError("Incomplete changelog set".into())
+            }
+
+            // Assertion violations map to our catch-handle error
+            ButtonError::AssertionViolation { check } => {
+                LinesError::GeneralAssertionCatchViolation(
+                    format!("Button system: {}", check).into(),
+                )
+            }
+        }
+    }
+}
 
 // ============================================================================
 // (end) ERROR HANDLING SYSTEM
@@ -3590,7 +3611,7 @@ pub struct EditorState {
     /// EOF information for the currently displayed window
     /// None = EOF not visible in current window
     /// Some((file_line_of_eof, eof_tui_display_row)) = EOF position
-    eof_fileline_tuirow_tuple: Option<(usize, usize)>,
+    pub eof_fileline_tuirow_tuple: Option<(usize, usize)>,
 
     // /// TODO is this needed?
     // /// Number of valid bytes in tofile_insert_input_chunk_buffer
@@ -4441,6 +4462,247 @@ impl EditorState {
         // Ok(keep_editor_loop_running)
     }
 
+    /// Writes a hex-edited byte and creates undo log entry
+    ///
+    /// # Project Context
+    /// When user hex-edits a byte in hex mode (types two hex digits),
+    /// this method orchestrates the full write-and-log workflow to support undo.
+    /// This is the ONLY entry point for hex editing operations that need undo support.
+    ///
+    /// # Workflow
+    /// 1. Read original byte value (for undo log) - with retries
+    /// 2. Write new byte value to file (in-place edit) - with retries
+    /// 3. Clear redo stack (user action invalidates future redo) - with retries
+    /// 4. Create undo log (inverse operation to restore original) - with retries
+    ///
+    /// # Retry Strategy
+    /// - Steps 1-2: Critical operations, 3 retries with pauses, abort if all fail
+    /// - Steps 3-4: Non-critical, 3 retries, log error and continue if all fail
+    /// - Step 2 uses 200ms pause (file may be locked by other processes)
+    /// - Steps 1,3,4 use 100ms pause
+    ///
+    /// # Arguments
+    /// * `byte_position` - 0-indexed position in file (cursor location)
+    /// * `new_byte_value` - New byte value to write (0x00-0xFF)
+    ///
+    /// # Returns
+    /// * `Result<()>` - Success or error (never panics)
+    ///
+    /// # Errors
+    /// Returns `LinesError::StateError` if:
+    /// - No file is currently open
+    ///
+    /// Returns `LinesError::Io` if:
+    /// - Cannot read original byte (3 retries exhausted)
+    /// - Cannot write new byte (3 retries exhausted)
+    /// - Position exceeds file size (checked by read_single_byte_from_file)
+    ///
+    /// Note: Redo-clear and undo-log failures are logged but don't stop operation
+    ///
+    /// # Side Effects
+    /// - Modifies file on disk
+    /// - Clears redo log directory
+    /// - Creates undo log file
+    /// - May set info bar message on non-critical errors
+    /// - Logs errors to error log file
+    ///
+    /// # Examples
+    /// ```
+    /// // User types "3F" at byte position 42 in hex mode
+    /// editor.write_n_log_hex_edit_in_place(42, 0x3F)?;
+    /// ```
+    pub fn write_n_log_hex_edit_in_place(
+        &mut self,
+        byte_position: usize,
+        new_byte_value: u8,
+    ) -> Result<()> {
+        use std::thread;
+        use std::time::Duration;
+
+        // ============================================================
+        // STEP 0: Get File Path from Editor State (CLONE IT)
+        // ============================================================
+        // Clone the path to avoid borrow checker issues later
+        // when we need to mutably borrow self for set_info_bar_message
+        let file_path = self
+            .read_copy_path
+            .clone() // ← FIXED: Clone instead of borrowing
+            .ok_or_else(|| LinesError::StateError("No file open".into()))?;
+
+        // Convert position to u128 for external API compatibility
+        let position_u128 = byte_position as u128;
+
+        // ============================================================
+        // Debug-Assert, Test-Assert, Production-Catch-Handle
+        // ============================================================
+        debug_assert!(
+            self.read_copy_path.is_some(),
+            "File path must exist before hex edit"
+        );
+        #[cfg(test)]
+        assert!(
+            self.read_copy_path.is_some(),
+            "File path must exist before hex edit"
+        );
+        if self.read_copy_path.is_none() {
+            log_error(
+                "No file path in editor state",
+                Some("write_n_log_hex_edit_in_place"),
+            );
+            return Err(LinesError::StateError("No file path".into()));
+        }
+
+        // ============================================================
+        // STEP 1: Read Original Byte Value (3 retries, 100ms pause)
+        // ============================================================
+        let mut original_byte: Option<u8> = None;
+        let mut last_read_error: Option<String> = None;
+
+        for attempt in 0..3 {
+            match read_single_byte_from_file(&file_path, position_u128) {
+                Ok(byte_val) => {
+                    original_byte = Some(byte_val);
+                    break;
+                }
+                Err(e) => {
+                    last_read_error = Some(format!("Read attempt {} failed: {}", attempt + 1, e));
+                    if attempt < 2 {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+
+        let original_byte = match original_byte {
+            Some(byte) => byte,
+            None => {
+                let error_msg = last_read_error.unwrap_or_else(|| "Unknown read error".into());
+                log_error(
+                    &format!(
+                        "Cannot read byte at position {}: {}",
+                        byte_position, error_msg
+                    ),
+                    Some("write_n_log_hex_edit_in_place:step1"),
+                );
+                let _ = self.set_info_bar_message("Read failed");
+                return Err(LinesError::Io(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Failed to read original byte after 3 attempts",
+                )));
+            }
+        };
+
+        // ============================================================
+        // STEP 2: Write New Byte to File (3 retries, 200ms pause)
+        // ============================================================
+        let mut write_success = false;
+        let mut last_write_error: Option<String> = None;
+
+        for attempt in 0..3 {
+            match replace_byte_in_place(&file_path, byte_position, new_byte_value) {
+                Ok(_) => {
+                    write_success = true;
+                    break;
+                }
+                Err(e) => {
+                    last_write_error = Some(format!("Write attempt {} failed: {}", attempt + 1, e));
+                    if attempt < 2 {
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+
+        if !write_success {
+            let error_msg = last_write_error.unwrap_or_else(|| "Unknown write error".into());
+            log_error(
+                &format!(
+                    "Cannot write byte at position {}: {}",
+                    byte_position, error_msg
+                ),
+                Some("write_n_log_hex_edit_in_place:step2"),
+            );
+            let _ = self.set_info_bar_message("Write failed");
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to write byte after 3 attempts",
+            )));
+        }
+
+        // ============================================================
+        // STEP 3: Clear Redo Stack (3 retries, 100ms pause)
+        // ============================================================
+        let mut redo_clear_success = false;
+
+        for attempt in 0..3 {
+            match button_clear_all_redo_logs(&file_path) {
+                Ok(_) => {
+                    redo_clear_success = true;
+                    break;
+                }
+                Err(_) => {
+                    if attempt < 2 {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+
+        if !redo_clear_success {
+            log_error(
+                &format!("Cannot clear redo logs for position {}", byte_position),
+                Some("write_n_log_hex_edit_in_place:step3"),
+            );
+            let _ = self.set_info_bar_message("Redo clear failed"); // ← FIXED: Now works
+        }
+
+        // ============================================================
+        // STEP 4: Create Undo Log Entry (3 retries, 100ms pause)
+        // ============================================================
+        let log_directory_path = match get_undo_changelog_directory_path(&file_path) {
+            Ok(path) => path,
+            Err(e) => {
+                log_error(
+                    &format!("Cannot get changelog directory: {}", e),
+                    Some("write_n_log_hex_edit_in_place:step4"),
+                );
+                let _ = self.set_info_bar_message("Undo log path fail");
+                return Ok(());
+            }
+        };
+
+        let mut undo_log_success = false;
+
+        for attempt in 0..3 {
+            match button_hexeditinplace_byte_make_log_file(
+                &file_path,
+                position_u128,
+                original_byte,
+                &log_directory_path,
+            ) {
+                Ok(_) => {
+                    undo_log_success = true;
+                    break;
+                }
+                Err(_) => {
+                    if attempt < 2 {
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+
+        if !undo_log_success {
+            log_error(
+                &format!("Cannot create undo log for position {}", byte_position),
+                Some("write_n_log_hex_edit_in_place:step4"),
+            );
+            let _ = self.set_info_bar_message("Undo log failed");
+        }
+
+        Ok(())
+    }
+
     /// Handles all input when the editor is in Hex mode.
     ///
     /// # Overview
@@ -4579,21 +4841,55 @@ impl EditorState {
                 let low = parse_hex_digit(bytes[1])?;
                 let byte_value = (high << 4) | low;
 
-                let file_path = self
-                    .read_copy_path
-                    .as_ref()
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
+                /* old */
+                // let file_path = self
+                //     .read_copy_path
+                //     .as_ref()
+                //     .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
 
-                if self.hex_cursor.byte_offset >= file_size {
-                    let _ = self.set_info_bar_message("Cannot edit past EOF");
-                    return Ok(true);
-                }
+                // if self.hex_cursor.byte_offset >= file_size {
+                //     let _ = self.set_info_bar_message("Cannot edit past EOF");
+                //     return Ok(true);
+                // }
 
-                replace_byte_in_place(file_path, self.hex_cursor.byte_offset, byte_value)?;
+                // replace_byte_in_place(file_path, self.hex_cursor.byte_offset, byte_value)?;
 
-                self.is_modified = true;
-                if self.hex_cursor.byte_offset + 1 < file_size {
-                    self.hex_cursor.byte_offset += 1;
+                // self.is_modified = true;
+                // if self.hex_cursor.byte_offset + 1 < file_size {
+                //     self.hex_cursor.byte_offset += 1;
+                // }
+
+                // ============================================================
+                // Call new method: Write byte + Create undo log
+                // ============================================================
+                // This method handles:
+                // - Reading original byte value
+                // - Writing new byte value
+                // - Clearing redo stack
+                // - Creating undo log entry
+                // All with retry logic and defensive error handling
+                match self.write_n_log_hex_edit_in_place(self.hex_cursor.byte_offset, byte_value) {
+                    Ok(_) => {
+                        // Success: update editor state
+                        self.is_modified = true;
+
+                        // Advance cursor if not at EOF
+                        if self.hex_cursor.byte_offset + 1 < file_size {
+                            self.hex_cursor.byte_offset += 1;
+                        }
+
+                        let _ = self.set_info_bar_message("Byte written");
+                    }
+                    Err(e) => {
+                        // Error already logged by write_n_log_hex_edit_in_place()
+                        // Just show user-friendly message
+                        let _ = self.set_info_bar_message("Edit failed");
+                        log_error(
+                            &format!("Hex edit failed: {}", e),
+                            Some("handle_parse_hex_mode_input_and_commands"),
+                        );
+                        // Continue editor loop - let user try again
+                    }
                 }
 
                 let _ = self.set_info_bar_message("Byte written");
@@ -7754,6 +8050,9 @@ pub enum Command {
     UnindentOneLine(usize),            // current line is input
     // IndentRange,
     // UnIndentRange,
+    //
+    UndoButtonsCommand,
+    RedoButtonsCommand,
 
     // No operation
     None,
@@ -9155,6 +9454,42 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             indent_line(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
+        }
+        // =============================
+        // Undo Redo Buttons all undone!
+        // =============================
+        Command::UndoButtonsCommand => {
+            let undo_path = get_undo_changelog_directory_path(&edit_file_path)?;
+
+            match button_undo_redo_next_inverse_changelog_pop_lifo(&edit_file_path, &undo_path) {
+                Ok(_) => {
+                    println!("❌ ERROR: Should have failed (no redo logs)");
+                }
+                Err(e) => {
+                    println!("✓ Operation failed as expected");
+                    println!("Error: {}", e);
+                    println!();
+                    println!("✅ CORRECT: Cannot redo because redo logs were cleared");
+                }
+            }
+            Ok(true)
+            // Save doesn't need rebuild (no content change in display)
+        }
+        Command::RedoButtonsCommand => {
+            let redo_path = get_redo_changelog_directory_path(&edit_file_path)?;
+            match button_undo_redo_next_inverse_changelog_pop_lifo(&edit_file_path, &redo_path) {
+                Ok(_) => {
+                    println!("❌ ERROR: Should have failed (no redo logs)");
+                }
+                Err(e) => {
+                    println!("✓ Operation failed as expected");
+                    println!("Error: {}", e);
+                    println!();
+                    println!("✅ CORRECT: Cannot redo because redo logs were cleared");
+                }
+            }
+            Ok(true)
+            // Save doesn't need rebuild (no content change in display)
         }
         // Command::Save => {
         //     save_file(lines_editor_state)?;

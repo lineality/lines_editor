@@ -2969,3 +2969,218 @@ mod byte_positions_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod hexedit_tests {
+    use crate::buttons_reversible_edit_changelog_module::*;
+
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    /// Helper: Creates a test file with known content
+    fn create_test_file(filename: &str, content: &[u8]) -> PathBuf {
+        let mut test_dir = std::env::current_dir().expect("Cannot get current dir");
+        test_dir.push("test_files");
+
+        fs::create_dir_all(&test_dir).expect("Cannot create test_files directory");
+
+        let mut file_path = test_dir.clone();
+        file_path.push(filename);
+
+        let mut file = fs::File::create(&file_path).expect("Cannot create test file");
+        file.write_all(content).expect("Cannot write test content");
+        file.flush().expect("Cannot flush test file");
+
+        file_path
+    }
+
+    /// Helper: Cleans up test file and associated directories
+    fn cleanup_test_file(file_path: &Path) {
+        let _ = fs::remove_file(file_path);
+
+        if let Ok(changelog_dir) = get_undo_changelog_directory_path(file_path) {
+            let _ = fs::remove_dir_all(&changelog_dir);
+        }
+
+        if let Some(parent) = file_path.parent() {
+            if let Some(filename) = file_path.file_stem() {
+                let mut redo_dir = parent.to_path_buf();
+                redo_dir.push(format!("redo_{}", filename.to_string_lossy()));
+                let _ = fs::remove_dir_all(&redo_dir);
+            }
+        }
+    }
+
+    /// Helper: Creates a minimal EditorState for testing hex edit
+    ///
+    /// # Arguments
+    /// * `file_path` - Path to file being edited
+    /// * `cursor_position` - Initial cursor byte offset
+    ///
+    /// # Returns
+    /// EditorState with minimal required fields initialized
+    /// Helper: Creates a minimal EditorState for testing hex edit
+    fn create_test_editor_state(file_path: PathBuf, cursor_position: usize) -> EditorState {
+        EditorState {
+            // ??? - Need your confirmation on which fields are required
+            // and what values they should have for hex edit tests
+            the_last_command: None,                      // ???
+            session_directory_path: None,                // ???
+            mode: EditorMode::HexMode,                   // Correct?
+            original_file_path: Some(file_path.clone()), // ???
+            read_copy_path: Some(file_path),
+            effective_rows: 40, // ??? What value?
+            effective_cols: 77, // ??? What value?
+            security_mode: false,
+            window_map: WindowMapStruct::new(),
+            cursor: WindowPosition { row: 0, col: 0 },
+            selection_start: None,
+            selection_rowline_start: 0,
+            changelog_path: None,
+            is_modified: false,
+
+            // Position tracking - all zeros OK for test?
+            line_count_at_top_of_window: 0,
+            file_position_of_topline_start: 0,
+            file_position_of_vis_select_start: 0,
+            file_position_of_vis_select_end: 0,
+            tui_window_horizontal_utf8txt_line_char_offset: 0,
+            absolute_horizontal_0index_cursor_position: 2,
+
+            // Display buffers
+            utf8_txt_display_buffers: [[0u8; 182]; 45],
+            display_utf8txt_buffer_lengths: [0usize; 45],
+
+            // Hex cursor - this is what we're testing
+            hex_cursor: HexCursor {
+                byte_offset: cursor_position,
+                // nibble_position: 0, // ??? Is this field correct?
+                bytes_per_row: 80,
+            },
+
+            eof_fileline_tuirow_tuple: None,
+            info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
+        }
+    }
+
+    /// Test 1: Happy path - hex edit creates undo log
+    #[test]
+    fn test_hex_edit_creates_undo_log() {
+        let test_content = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x42, 0x66, 0x77, 0x88, 0x99];
+        let file_path = create_test_file("test_hex_edit_undo_1.bin", &test_content);
+
+        let mut editor = create_test_editor_state(file_path.clone(), 5);
+
+        // Perform hex edit: change position 5 from 0x42 to 0x99
+        let result = editor.write_n_log_hex_edit_in_place(5, 0x99);
+
+        assert!(
+            result.is_ok(),
+            "Hex edit should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify new byte written
+        let new_byte =
+            read_single_byte_from_file(&file_path, 5).expect("Should read byte after edit");
+        assert_eq!(new_byte, 0x99, "Position 5 should contain 0x99 after edit");
+
+        // Verify undo log directory exists
+        let changelog_dir =
+            get_undo_changelog_directory_path(&file_path).expect("Should get changelog directory");
+        assert!(
+            changelog_dir.exists(),
+            "Changelog directory should exist: {:?}",
+            changelog_dir
+        );
+
+        // Verify at least one undo log file exists
+        let log_files: Vec<_> = fs::read_dir(&changelog_dir)
+            .expect("Should read changelog directory")
+            .filter_map(|entry| entry.ok())
+            .collect();
+        assert!(
+            !log_files.is_empty(),
+            "Should have at least one undo log file"
+        );
+
+        // Verify redo stack is empty
+        if let Some(parent) = file_path.parent() {
+            if let Some(filename) = file_path.file_stem() {
+                let mut redo_dir = parent.to_path_buf();
+                redo_dir.push(format!("redo_{}", filename.to_string_lossy()));
+
+                if redo_dir.exists() {
+                    let redo_files: Vec<_> = fs::read_dir(&redo_dir)
+                        .expect("Should read redo directory")
+                        .filter_map(|entry| entry.ok())
+                        .collect();
+                    assert!(
+                        redo_files.is_empty(),
+                        "Redo directory should be empty after user edit"
+                    );
+                }
+            }
+        }
+
+        cleanup_test_file(&file_path);
+    }
+
+    /// Test 2: Boundary error - edit past EOF
+    #[test]
+    fn test_hex_edit_past_eof_fails() {
+        let test_content = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99];
+        let file_path = create_test_file("test_hex_edit_undo_2.bin", &test_content);
+
+        let mut editor = create_test_editor_state(file_path.clone(), 20);
+
+        // Attempt to edit past EOF
+        let result = editor.write_n_log_hex_edit_in_place(20, 0xAA);
+
+        assert!(result.is_err(), "Editing past EOF should fail");
+
+        // Verify file unchanged
+        let byte_5 =
+            read_single_byte_from_file(&file_path, 5).expect("Should read byte from original file");
+        assert_eq!(byte_5, 0x55, "File should be unchanged after failed edit");
+
+        cleanup_test_file(&file_path);
+    }
+
+    /// Test 3: Write permission error - readonly file
+    #[test]
+    fn test_hex_edit_readonly_file_fails() {
+        let test_content = vec![0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99];
+        let file_path = create_test_file("test_hex_edit_undo_3.bin", &test_content);
+
+        // Set file to read-only
+        let mut perms = fs::metadata(&file_path)
+            .expect("Should get file metadata")
+            .permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&file_path, perms).expect("Should set read-only permissions");
+
+        let mut editor = create_test_editor_state(file_path.clone(), 5);
+
+        // Attempt to edit read-only file
+        let result = editor.write_n_log_hex_edit_in_place(5, 0xBB);
+
+        assert!(result.is_err(), "Editing read-only file should fail");
+
+        // Verify file unchanged
+        let byte_5 =
+            read_single_byte_from_file(&file_path, 5).expect("Should read byte from original file");
+        assert_eq!(byte_5, 0x55, "Read-only file should be unchanged");
+
+        // Remove read-only flag before cleanup
+        let mut perms = fs::metadata(&file_path)
+            .expect("Should get file metadata for cleanup")
+            .permissions();
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(&file_path, perms);
+
+        cleanup_test_file(&file_path);
+    }
+}
