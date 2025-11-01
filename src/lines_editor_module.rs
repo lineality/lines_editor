@@ -5844,6 +5844,9 @@ impl EditorState {
                 "k" => Command::MoveUp(count),
                 "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
 
+                "u" | "undo" => Command::UndoButtonsCommand,
+                "re" | "redo" => Command::RedoButtonsCommand,
+
                 "w" => Command::MoveWordForward(count),
                 "e" => Command::MoveWordEnd(count),
                 "b" => Command::MoveWordBack(count),
@@ -9472,6 +9475,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     println!("✅ CORRECT: Cannot redo because redo logs were cleared");
                 }
             }
+
+            // Refresh TUI / Window-Map
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+
             Ok(true)
             // Save doesn't need rebuild (no content change in display)
         }
@@ -9488,6 +9495,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     println!("✅ CORRECT: Cannot redo because redo logs were cleared");
                 }
             }
+
+            // Refresh TUI / Window-Map
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+
             Ok(true)
             // Save doesn't need rebuild (no content change in display)
         }
