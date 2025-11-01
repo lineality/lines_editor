@@ -2724,7 +2724,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}av {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
+        "{}{}q{}uit {}s{}av {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -2742,6 +2742,8 @@ fn format_navigation_legend() -> Result<String> {
         YELLOW, // RED n + YELLOW ame
         RED,
         YELLOW, // RED s + YELLOW ize
+        RED,
+        YELLOW, // RED m + YELLOW od
         RED,
         YELLOW, // RED m + YELLOW od
         RED,
@@ -8194,14 +8196,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     if lines_editor_state.cursor.row <= 0 {
                         _ = execute_command(lines_editor_state, Command::GotoLineStart)?;
                     } else {
-                        // Move up one line
-                        execute_command(lines_editor_state, Command::MoveUp(1))?;
+                        // // Move up one line
+                        // execute_command(lines_editor_state, Command::MoveUp(1))?;
 
-                        // Move to end of that line
-                        execute_command(lines_editor_state, Command::GotoLineEnd)?;
+                        // // Move to end of that line
+                        // execute_command(lines_editor_state, Command::GotoLineEnd)?;
 
-                        build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-                        // return Ok(true);
+                        // build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+                        // // return Ok(true);
                     }
                     // and don't try to go left again-again!
                     return Ok(true);
@@ -9234,7 +9236,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
             lines_editor_state.cursor.col = line_num_width;
-
+            lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
             // rebuild
@@ -9246,8 +9248,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             // reset to first real position each new GotoLineStart
-            let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
-            lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
+            // let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
             println!(
@@ -14245,6 +14247,33 @@ pub fn full_lines_editor(
     //  ///////////////////////////////
     while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
+
+        // ====
+        // Bump
+        // ====
+        // // find line text width
+        let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+        if lines_editor_state.cursor.col < line_num_width {
+            // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
+            if lines_editor_state.cursor.col == 0 {
+                lines_editor_state.cursor.col = line_num_width;
+                lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
+                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+            } else {
+                // Not at Top? If so... Bump it up!
+                // Move up one line
+                execute_command(&mut lines_editor_state, Command::MoveUp(1))?;
+
+                // Move to end of that line
+                execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
+
+                build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
+                // return Ok(true);
+
+                _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy); // rebuild
+                let _ = lines_editor_state.set_info_bar_message("start of line"); // massage
+            }
+        }
 
         if lines_editor_state.mode == EditorMode::HexMode {
             //  ======================
