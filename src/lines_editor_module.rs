@@ -2673,10 +2673,12 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}ave {}u{}ndo {}d{}el|{}n{}orm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
+        "{}{}q{}uit {}s{}av {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}cvy p{}asty|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
+        RED,
+        YELLOW, // RED b + YELLOW ack
         RED,
         YELLOW, // RED b + YELLOW ack
         RED,
@@ -13127,7 +13129,7 @@ fn format_raw_info_bar(state: &EditorState) -> Result<String> {
     };
 
     Ok(format!(
-        "RAW byte {} of {} {} > cmd_",
+        "RAW byte {} of {} {} > ",
         state.hex_cursor.byte_offset, file_size, filename
     ))
 }
