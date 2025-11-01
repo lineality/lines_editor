@@ -1,4 +1,6 @@
-//! # toggle_comment_module.rs
+//! # toggle_comment_indent_module.rs
+//!
+//! https://github.com/lineality/toggle_comment_indent
 //!
 //! A simple, safe Rust crate to toggle comment flags in source code files.
 //!
@@ -95,7 +97,7 @@
 //!
 //! ### Error Handling
 //! - **All errors returned as `Result`**: No panics in production code
-//! - **Specific error types**: `ToggleError` enum provides detailed failure reasons
+//! - **Specific error types**: `ToggleCommentError` enum provides detailed failure reasons
 //! - **I/O operation tracking**: Errors specify which operation failed (open, read, write, etc.)
 //! - **Recoverable**: Failed operations leave backups intact; original file untouched
 //!
@@ -111,37 +113,98 @@
 //! }
 //! ```
 //!
-//! ### Toggle Rust Docstring
-//! ```rust
-//! use toggle_basic_singleline_comment::toggle_rust_docstring_singleline_comment;
+//!  ## Toggle Single Line Comment
+//!  ```rust
+//!  use toggle_comment_indent_module::toggle_basic_singleline_comment;
 //!
-//! match toggle_rust_docstring_singleline_comment("./src/lib.rs", 10) {
-//!     Ok(()) => println!("Docstring toggled"),
-//!     Err(e) => eprintln!("Failed: {}", e),
-//! }
+//!  // Auto-detects `//` or `#` from file extension
+//!  toggle_basic_singleline_comment("./script.py", 5)?;   // → `// code`
+//!  toggle_basic_singleline_comment("./script.py", 3)?; // → `# code`
+//!  ```
+//!
+//!  ## Toggle Rust Docstring
+//!  ```rust
+//!  use toggle_comment_indent_module::toggle_rust_docstring_singleline_comment;
+//!
+//! // Use `///` instead of `//`
+//! toggle_rust_docstring_singleline_comment("./script.py", 10)?;
 //! ```
 //!
-//! ### Toggle Block Comment
+//! ## Toggle Block Comments
 //! ```rust
-//! use toggle_basic_singleline_comment::toggle_block_comment;
+//! use toggle_comment_indent_module::toggle_block_comment;
 //!
-//! // Toggle block markers around lines 5-10
-//! match toggle_block_comment("./src/lib.rs", 5, 10) {
-//!     Ok(()) => println!("Block comment toggled"),
-//!     Err(e) => eprintln!("Failed: {}", e),
-//! }
+//! // Automatically add/remove markers around lines 5-10
+//! // Detects: /* */ for C/Rust, """ for Python
+//! toggle_block_comment("./script.py", 5, 10)?;
 //! ```
 //!
-//! ### Batch Toggle Multiple Lines
+//! ## Batch Toggle Multiple Lines
 //! ```rust
-//! use toggle_basic_singleline_comment::toggle_multiple_basic_comments;
+//! use toggle_comment_indent_module::toggle_multiple_basic_comments;
 //!
+//! // Toggle lines 5, 10, 15, 20 in one pass
 //! let lines = [5, 10, 15, 20];
-//! match toggle_multiple_basic_comments("./src/main.rs", &lines) {
-//!     Ok(()) => println!("All 4 lines toggled in one pass"),
-//!     Err(e) => eprintln!("Failed: {}", e),
-//! }
+//! toggle_multiple_basic_comments("./script.py", &lines)?;
 //! ```
+//!
+// ## Indent Single Line
+//!
+//! Add 4 spaces to the start of a line:
+//!
+//! ```rust
+//! use toggle_comment_indent_module::indent_line;
+//!
+//! // Indent line 5 of a file
+//! indent_line("./script.py", 5)?;
+//! ```
+//!
+//! ## Unindent Single Line
+//!
+//! Remove up to 4 spaces from the start of a line:
+//!
+//!```rust
+//!use toggle_comment_indent_module::unindent_line;
+//!
+//!// Unindent line 5 of a file
+//!unindent_line("./script.py", 5)?;
+//!```
+//!
+//!## Indent Range
+//!
+//!Add 4 spaces to the start of multiple lines (inclusive range):
+//!
+//!```rust
+//!use toggle_comment_indent_module::indent_range;
+//!
+//!// Indent lines 5 through 15 (inclusive)
+//!indent_range("./script.py", 5, 15)?;
+//!```
+//!
+//!## Unindent Range
+//!
+//!Remove up to 4 spaces from the start of multiple lines (inclusive range):
+//!
+//!```rust
+//!use toggle_comment_indent_module::unindent_range;
+//!
+//!// Unindent lines 5 through 15 (inclusive)
+//!unindent_range("./script.py", 5, 15)?;
+//!```
+//!
+//!## Toggle Block Range Standard-Comment
+//!```rust
+//!use toggle_comment_indent_module::execute_range_toggle_basic;
+//!
+//!execute_range_toggle_basic(file_path, start_line, end_line)
+//!```
+//!
+//!## ~Toggle Block Rust-Docstring
+//!```rust
+//!use toggle_comment_indent_module::execute_range_toggle_docstring;
+//!
+//!execute_range_toggle_docstring(file_path, start_line, end_line)
+//!```
 //!
 //! ## Limitations & Edge Cases
 //!
@@ -186,7 +249,7 @@
 //!
 //! ## Error Handling
 //!
-//! The `ToggleError` enum provides specific error information:
+//! The `ToggleCommentError` enum provides specific error information:
 //! - `FileNotFound`: Specified file does not exist
 //! - `NoExtension`: File has no extension (cannot determine comment type)
 //! - `UnsupportedExtension`: Extension not recognized for any comment mode
@@ -195,7 +258,6 @@
 //! - `PathError`: Filesystem path manipulation failed
 //! - `LineTooLong { line_number, length }`: Line exceeds 1MB limit
 //! - `InconsistentBlockMarkers`: Only one block marker found (not both)
-//! - `InvalidLineRange`: Block range invalid (start >= end)
 //!
 //! ## Performance Characteristics
 //!
@@ -233,7 +295,7 @@ reliably in this system, not to micro-manage the rest of the universe.
 */
 
 /*
-# Example main function:
+# Sample main.rs file
 
 ```rust
 //! # main.rs
@@ -269,10 +331,11 @@ reliably in this system, not to micro-manage the rest of the universe.
 
 use std::env;
 use std::process;
-mod toggle_comment_module;
-use toggle_comment_module::{
-    IndentError, ToggleError, indent_line, indent_range, toggle_basic_singleline_comment,
+mod toggle_comment_indent_module;
+use toggle_comment_indent_module::{
+    ToggleIndentError, ToggleCommentError, indent_line, indent_range, toggle_basic_singleline_comment,
     toggle_block_comment, toggle_multiple_basic_comments, toggle_multiple_singline_docstrings,
+    toggle_range_basic_comments, toggle_range_rust_docstring,
     toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
 };
 
@@ -366,6 +429,40 @@ fn print_usage() {
     eprintln!("  8 - Line too long");
 }
 
+/// Execute range toggle - basic comments
+fn execute_range_toggle_basic(file_path: &str, start_line: usize, end_line: usize) -> i32 {
+    match toggle_range_basic_comments(file_path, start_line, end_line) {
+        Ok(()) => {
+            println!(
+                "Successfully toggled comment range (lines {}-{})",
+                start_line, end_line
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("Error toggling range {}: {}", file_path, e);
+            error_to_exit_code(e)
+        }
+    }
+}
+
+/// Execute range toggle - rust docstrings
+fn execute_range_toggle_docstring(file_path: &str, start_line: usize, end_line: usize) -> i32 {
+    match toggle_range_rust_docstring(file_path, start_line, end_line) {
+        Ok(()) => {
+            println!(
+                "Successfully toggled docstring range (lines {}-{})",
+                start_line, end_line
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("Error toggling docstring range {}: {}", file_path, e);
+            error_to_exit_code(e)
+        }
+    }
+}
+
 /// Parse a line number argument, returning error on invalid input
 ///
 /// # Arguments
@@ -428,42 +525,41 @@ fn parse_line_list(args: &[String]) -> Result<(usize, [usize; MAX_BATCH_LINES]),
     Ok((count, line_array))
 }
 
-/// Convert ToggleError to exit code
+/// Convert ToggleCommentError to exit code
 ///
 /// # Arguments
 /// * `error` - The error to convert
 ///
 /// # Returns
 /// * Exit code (2-10)
-fn error_to_exit_code(error: ToggleError) -> i32 {
+fn error_to_exit_code(error: ToggleCommentError) -> i32 {
     match error {
-        ToggleError::FileNotFound => 2,
-        ToggleError::NoExtension => 3,
-        ToggleError::UnsupportedExtension => 4,
-        ToggleError::LineNotFound { .. } => 5,
-        ToggleError::IoError(_) => 6,
-        ToggleError::PathError => 7,
-        ToggleError::LineTooLong { .. } => 8,
-        ToggleError::InconsistentBlockMarkers => 9,
-        ToggleError::InvalidLineRange => 10,
+        ToggleCommentError::FileNotFound => 2,
+        ToggleCommentError::NoExtension => 3,
+        ToggleCommentError::UnsupportedExtension => 4,
+        ToggleCommentError::LineNotFound { .. } => 5,
+        ToggleCommentError::IoError(_) => 6,
+        ToggleCommentError::PathError => 7,
+        ToggleCommentError::LineTooLong { .. } => 8,
+        ToggleCommentError::InconsistentBlockMarkers => 9,
+        ToggleCommentError::RangeTooLarge { .. } => 10,
     }
 }
 
-/// Convert IndentError to exit code
+/// Convert ToggleIndentError to exit code
 ///
 /// # Arguments
 /// * `error` - The error to convert
 ///
 /// # Returns
-/// * Exit code (2-10, same mapping as ToggleError where applicable)
-fn indent_error_to_exit_code(error: IndentError) -> i32 {
+/// * Exit code (2-10, same mapping as ToggleCommentError where applicable)
+fn indent_error_to_exit_code(error: ToggleIndentError) -> i32 {
     match error {
-        IndentError::FileNotFound => 2,
-        IndentError::LineNotFound { .. } => 5,
-        IndentError::IoError(_) => 6,
-        IndentError::PathError => 7,
-        IndentError::LineTooLong { .. } => 8,
-        IndentError::InvalidLineRange => 10,
+        ToggleIndentError::FileNotFound => 2,
+        ToggleIndentError::LineNotFound { .. } => 5,
+        ToggleIndentError::IoError(_) => 6,
+        ToggleIndentError::PathError => 7,
+        ToggleIndentError::LineTooLong { .. } => 8,
     }
 }
 
@@ -841,6 +937,67 @@ fn main() {
 
                 execute_unindent_range(file_path, start_line, end_line)
             }
+            "--toggle-range-comment-basic" => {
+// Expect: --toggle-range-comment-basic <file> <start_line> <end_line>
+                if args.len() != 5 {
+                    eprintln!(
+                        "Error: --toggle-range-comment-basic requires <file_path> <start_line> <end_line>"
+                    );
+                    eprintln!();
+                    print_usage();
+                    process::exit(1);
+                }
+
+                let file_path = &args[2];
+                let start_line = match parse_line_number(&args[3], "start_line") {
+                    Ok(n) => n,
+                    Err(_) => {
+                        print_usage();
+                        process::exit(1);
+                    }
+                };
+                let end_line = match parse_line_number(&args[4], "end_line") {
+                    Ok(n) => n,
+                    Err(_) => {
+                        print_usage();
+                        process::exit(1);
+                    }
+                };
+
+// Note: No validation needed - function auto-sorts and validates
+                execute_range_toggle_basic(file_path, start_line, end_line)
+            }
+
+            "--toggle-range-rust-docstring" => {
+// Expect: --toggle-range-rust-docstring <file> <start_line> <end_line>
+                if args.len() != 5 {
+                    eprintln!(
+                        "Error: --toggle-range-rust-docstring requires <file_path> <start_line> <end_line>"
+                    );
+                    eprintln!();
+                    print_usage();
+                    process::exit(1);
+                }
+
+                let file_path = &args[2];
+                let start_line = match parse_line_number(&args[3], "start_line") {
+                    Ok(n) => n,
+                    Err(_) => {
+                        print_usage();
+                        process::exit(1);
+                    }
+                };
+                let end_line = match parse_line_number(&args[4], "end_line") {
+                    Ok(n) => n,
+                    Err(_) => {
+                        print_usage();
+                        process::exit(1);
+                    }
+                };
+
+// Note: No validation needed - function auto-sorts and validates
+                execute_range_toggle_docstring(file_path, start_line, end_line)
+            }
             _ => {
                 eprintln!("Error: Unknown flag: {}", flag);
                 eprintln!();
@@ -872,17 +1029,14 @@ fn main() {
 // Exit with appropriate code
     process::exit(exit_code);
 }
-
 ```
-
 */
 
 /*
-
 # Rust rules:
--Always best practice.
--Always extensive doc strings.
--Always comments.
+- Always best practice.
+- Always extensive doc strings: what the code is doing with project context
+- Always clear comments.
 - Always cargo tests (where possible).
 - Never remove documentation.
 - Always clear, meaningful, unique names (e.g. variables, functions).
@@ -891,18 +1045,18 @@ fn main() {
 - Never unsafe code.
 - Never use unwrap.
 
-- Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
+- Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. increment and load only what is required pragmatically. Do not fill 'state' with every possible piece of un-used information. Do not insecurity output information broadly in the case of errors and exceptions.
 
-- Always defensive best practice:
-- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
+- Always defensive best practice
+- Always error handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
 
-Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
+Comments and docs for functions and groups of functions must include project level information: To paraphrase Jack Welch, "The most dangerous thing in the world is a flawless operation that should never have been done in the first place." For projects, functions are not pure platonic abstractions; the project has a need that the function is or is not meeting. It happens constantly that a function does the wrong thing well and so this 'bug' is never detected. Project-level documentation and logic-level documentation are two different things that must both exist such that discrepancies must be identifiable; Project-level documentation, logic-level documentation, and the code, must align and align with user-needs, real conditions, and future conditions.
+
+Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals: not ideology, aesthetics, popularity, momentum-tradition, bad habits, convenience, nihilism, lazyness, lack of impulse control, etc.
 
 ## No third party libraries (or very strictly avoid third party libraries where possible).
 
-## Every part of code will eventually fail if only due to hardware failure, power supply failures, hard radiation bit flips, security attacks, etc. Every failure must be handled smoothly: let it fail and move on.
-
-## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 and Rust):
+## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (as updated for 2025 and Rust (not narrowly 2006 c for embedded systems):
 1. no unsafe stuff:
 - no recursion
 - no goto
@@ -966,20 +1120,17 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
 }
 
 
-Avoid heap for error messages and for all things.
-   Is heap used because that is THE best way
-   the most secure, the most efficient, proper separate of debug testing vs. secure production code?
-   Or is heap used because "it's future dev's problem, let's party"
-   Can we use  heap in debug/test modes/builds only?
-   The lack of clarity on this is not acceptable.
-   Production software must not be a shrug punt.
-   Is debug information being included in production builds?
-   That is NOT supposed to happen.
+Avoid heap for error messages and for all things:
+Is heap used for error messages because that is THE best way, the most secure, the most efficient, proper separate of debug testing vs. secure production code?
+Or is heap used because of oversights and apathy: "it's future dev's problem, let's party."
+We can use heap in debug/test modes/builds only.
+Production software must not insecurely output debug diagnostics.
+Debug information must not be included in production builds: "developers accidentally left development code in the software" is a classic error (not a desired design spec) that routinely leads to security and other issues. That is NOT supposed to happen. It is not coherent to insist the open ended heap output 'must' or 'should' be in a production build.
 
 This is central to the question about testing vs. a pedantic ban on conditional compilation; not putting full traceback insecurity into production code is not a different operational process logic tree for process operations.
 
-Just like with the pedantic "a loops being bounded" rule, there is a fundamental exception: always-on loops must be the opposite.
-With conditional compilations: code NEVER to EVER be in production-builds MUST be "conditionally" excluded. This is not an OS condition or a hardware condition. This is an 'unsafe-testing or not' condition.
+Just like with the pedantic "all loops being bounded" rule, there is a fundamental exception: always-on loops must be the opposite.
+With conditional compilations: code NEVER to EVER be in production-builds MUST be always "conditionally" excluded. This is not an OS conditional compilation or a hardware conditional compilation. This is an 'unsafe-testing-only or safe-production-code' condition.
 
 Error messages and error outcomes in 'production' 'release' (real-use, not debug/testing) must not ever contain any information that could be a security vulnerability or attack surface. Failing to remove debugging inspection is a major category of security and hygiene problems.
 
@@ -987,10 +1138,16 @@ Security: Error messages in production must NOT contain:
 - File paths (can reveal system structure)
 - File contents
 - environment variables
-- data
-- Internal implementation details
+- user, file, state, data
+- internal implementation details
+- etc.
 
-Production output following an error must be managed and defined, not not open to whatever some api or OS call wants to dump out.
+All debug-prints not for production must be tagged with
+```
+#[cfg(debug_assertions)]
+```
+
+Production output following an error must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
 
 6. Manage ownership and borrowing
 
@@ -1008,6 +1165,8 @@ Production output following an error must be managed and defined, not not open t
 - a seemingly invisibly small increase in state often completely destroys projects
 - expanding state destroys projects with unmaintainable over-reach
 
+Vigilance: We should help support users and developers and the people who depend upon maintainable software. Maintainable code supports the future for us all.
+
 */
 
 use std::fs::{File, OpenOptions};
@@ -1024,12 +1183,16 @@ const IO_BUFFER_SIZE: usize = 8192;
 /// Maximum line length we'll process - safety bound
 const MAX_LINE_LENGTH: usize = 1_000_000; // 64KB per line max
 
+// ============================================================================
+// ERROR SECTION: ERROR HANDLING SYSTEM (start)
+// ============================================================================
+
 /// Errors that can occur during comment toggling operations
 ///
 /// All variants are Copy - no heap allocation, no string storage.
 /// Caller provides context (file paths, etc.) they already have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToggleError {
+pub enum ToggleCommentError {
     /// The specified file was not found
     FileNotFound,
 
@@ -1054,8 +1217,8 @@ pub enum ToggleError {
     /// Block comment markers are inconsistent (only one present)
     InconsistentBlockMarkers,
 
-    /// Invalid line range for block comment
-    InvalidLineRange,
+    /// Range exceeds maximum allowed lines (MAX_BATCH_LINES)
+    RangeTooLarge { requested: usize, max: usize },
 }
 
 /// Specific I/O operations that can fail
@@ -1083,13 +1246,13 @@ pub enum IoOperation {
     Replace,
 }
 
-impl std::fmt::Display for ToggleError {
+impl std::fmt::Display for ToggleCommentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ToggleError::FileNotFound => write!(f, "File not found"),
-            ToggleError::NoExtension => write!(f, "No file-extension-suffix"),
-            ToggleError::UnsupportedExtension => write!(f, "Unsupported file-extension-suffix"),
-            ToggleError::LineNotFound {
+            ToggleCommentError::FileNotFound => write!(f, "File not found"),
+            ToggleCommentError::NoExtension => write!(f, "No file extension"),
+            ToggleCommentError::UnsupportedExtension => write!(f, "Unsupported extension"),
+            ToggleCommentError::LineNotFound {
                 requested,
                 file_lines,
             } => {
@@ -1099,25 +1262,29 @@ impl std::fmt::Display for ToggleError {
                     requested, file_lines
                 )
             }
-            ToggleError::IoError(op) => write!(f, "IO error: {:?}", op),
-            ToggleError::PathError => write!(f, "Path error"),
-            ToggleError::LineTooLong {
+            ToggleCommentError::IoError(op) => write!(f, "IO error: {:?}", op),
+            ToggleCommentError::PathError => write!(f, "Path error"),
+            ToggleCommentError::LineTooLong {
                 line_number,
                 length,
             } => {
                 write!(f, "Line {} too long: {} bytes", line_number, length)
             }
-            ToggleError::InconsistentBlockMarkers => {
+            ToggleCommentError::InconsistentBlockMarkers => {
                 write!(f, "Inconsistent block markers (only one found)")
             }
-            ToggleError::InvalidLineRange => {
-                write!(f, "Invalid line range")
+            ToggleCommentError::RangeTooLarge { requested, max } => {
+                write!(f, "Range too large: {} lines (max {})", requested, max)
             }
         }
     }
 }
 
-impl std::error::Error for ToggleError {}
+impl std::error::Error for ToggleCommentError {}
+
+// ============================================================================
+// ERROR SECTION: ERROR HANDLING SYSTEM (end)
+// ============================================================================
 
 /// Comment flag type for different language syntaxes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1251,7 +1418,7 @@ fn should_remove_comment(line_bytes: &[u8], flag: CommentFlag) -> Option<usize> 
 ///
 /// # Returns
 /// * `Ok(())` - Comment toggled successfully
-/// * `Err(ToggleError)` - Specific error code
+/// * `Err(ToggleCommentError)` - Specific error code
 ///
 /// # Example
 /// ```no_run
@@ -1265,22 +1432,22 @@ fn should_remove_comment(line_bytes: &[u8], flag: CommentFlag) -> Option<usize> 
 pub fn toggle_rust_docstring_singleline_comment(
     file_path: &str,
     row_line_zeroindex: usize,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleError::FileNotFound);
+                return Err(ToggleCommentError::FileNotFound);
             }
-            return Err(ToggleError::PathError);
+            return Err(ToggleCommentError::PathError);
         }
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleError::PathError),
+        None => return Err(ToggleCommentError::PathError),
     };
 
     // Use TripleSlash flag (no extension lookup needed)
@@ -1292,7 +1459,7 @@ pub fn toggle_rust_docstring_singleline_comment(
 
     // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleError::IoError(IoOperation::Backup));
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
     }
 
     // Create working temp file in CWD
@@ -1309,7 +1476,7 @@ pub fn toggle_rust_docstring_singleline_comment(
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleError::IoError(IoOperation::Replace));
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp file
@@ -1402,11 +1569,11 @@ fn detect_block_mode(
     start_line: usize,
     end_line: usize,
     markers: BlockMarkers,
-) -> Result<BlockMode, ToggleError> {
+) -> Result<BlockMode, ToggleCommentError> {
     // Open file for reading
     let file = match File::open(file_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, file);
@@ -1425,14 +1592,14 @@ fn detect_block_mode(
     loop {
         // Safety: prevent unbounded loop
         if current_line > line_limit {
-            return Err(ToggleError::IoError(IoOperation::Read));
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         // End of file
@@ -1442,7 +1609,7 @@ fn detect_block_mode(
 
         // Check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleError::LineTooLong {
+            return Err(ToggleCommentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -1467,14 +1634,14 @@ fn detect_block_mode(
 
     // Verify we found both line positions
     if !found_start_line {
-        return Err(ToggleError::LineNotFound {
+        return Err(ToggleCommentError::LineNotFound {
             requested: start_line,
             file_lines: current_line,
         });
     }
 
     if !found_end_line {
-        return Err(ToggleError::LineNotFound {
+        return Err(ToggleCommentError::LineNotFound {
             requested: end_line,
             file_lines: current_line,
         });
@@ -1484,7 +1651,7 @@ fn detect_block_mode(
     match (start_is_marker, end_is_marker) {
         (true, true) => Ok(BlockMode::Remove),
         (false, false) => Ok(BlockMode::Add),
-        _ => Err(ToggleError::InconsistentBlockMarkers),
+        _ => Err(ToggleCommentError::InconsistentBlockMarkers),
     }
 }
 /// Toggle block comment around a range of lines
@@ -1512,33 +1679,31 @@ pub fn toggle_block_comment(
     file_path: &str,
     start_line: usize,
     end_line: usize,
-) -> Result<(), ToggleError> {
-    // Validate line range
-    if start_line >= end_line {
-        return Err(ToggleError::InvalidLineRange);
-    }
+) -> Result<(), ToggleCommentError> {
+    // Sort range automatically
+    let (_, _) = sort_range(start_line, end_line);
 
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleError::FileNotFound);
+                return Err(ToggleCommentError::FileNotFound);
             }
-            return Err(ToggleError::PathError);
+            return Err(ToggleCommentError::PathError);
         }
     };
 
     // Extract and validate extension
     let extension = match absolute_path.extension() {
         Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleError::NoExtension),
+        None => return Err(ToggleCommentError::NoExtension),
     };
 
     // Determine block markers from extension
     let markers = match determine_block_markers(&extension) {
         Some(m) => m,
-        None => return Err(ToggleError::UnsupportedExtension),
+        None => return Err(ToggleCommentError::UnsupportedExtension),
     };
 
     // Detect current state - are markers present AT these line positions?
@@ -1547,7 +1712,7 @@ pub fn toggle_block_comment(
     // Get filename for backup
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleError::PathError),
+        None => return Err(ToggleCommentError::PathError),
     };
 
     // Create backup path
@@ -1556,7 +1721,7 @@ pub fn toggle_block_comment(
 
     // Create backup
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleError::IoError(IoOperation::Backup));
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
@@ -1579,7 +1744,7 @@ pub fn toggle_block_comment(
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleError::IoError(IoOperation::Replace));
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp
@@ -1628,11 +1793,11 @@ fn process_block_toggle(
     end_line: usize,
     markers: BlockMarkers,
     mode: BlockMode,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Open source file
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -1645,7 +1810,7 @@ fn process_block_toggle(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -1658,14 +1823,14 @@ fn process_block_toggle(
     loop {
         // Safety check
         if current_line > line_limit {
-            return Err(ToggleError::IoError(IoOperation::Read));
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         // End of file
@@ -1675,7 +1840,7 @@ fn process_block_toggle(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleError::LineTooLong {
+            return Err(ToggleCommentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -1689,25 +1854,25 @@ fn process_block_toggle(
                 if current_line == start_line {
                     // INSERT start marker before this content line
                     if let Err(_) = writer.write_all(markers.start) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                     // Then write the content line itself
                     if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                 } else if current_line == end_line {
                     // Write the content line first
                     if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                     // Then INSERT end marker after this content line
                     if let Err(_) = writer.write_all(markers.end) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                 } else {
                     // All other lines: copy unchanged
                     if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                 }
             }
@@ -1724,7 +1889,7 @@ fn process_block_toggle(
                 } else {
                     // All other lines: copy unchanged
                     if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleError::IoError(IoOperation::Write));
+                        return Err(ToggleCommentError::IoError(IoOperation::Write));
                     }
                 }
             }
@@ -1735,7 +1900,7 @@ fn process_block_toggle(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(ToggleError::IoError(IoOperation::Flush));
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
 
     Ok(())
@@ -1744,27 +1909,6 @@ fn process_block_toggle(
 #[cfg(test)]
 mod block_comment_tests {
     use super::*;
-
-    /// Helper: create a temporary test file with given content
-    fn create_test_file(filename: &str, content: &str) -> PathBuf {
-        let path = PathBuf::from(filename);
-        let mut file = File::create(&path).expect("Failed to create test file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write test file");
-        path
-    }
-
-    /// Helper: read file content as string
-    fn read_file_content(path: &Path) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
-    }
-
-    /// Helper: cleanup test files
-    fn cleanup_files(paths: &[&Path]) {
-        for path in paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     #[test]
     fn test_block_comment_add_rust() {
@@ -1821,7 +1965,10 @@ mod block_comment_tests {
         let result = toggle_block_comment(test_file.to_str().unwrap(), 0, 1);
 
         #[cfg(test)]
-        assert!(matches!(result, Err(ToggleError::InconsistentBlockMarkers)));
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::InconsistentBlockMarkers)
+        ));
 
         cleanup_files(&[
             &test_file,
@@ -1873,7 +2020,7 @@ const MAX_BATCH_LINES: usize = 128;
 ///
 /// # Returns
 /// * `Ok(())` - All lines toggled successfully
-/// * `Err(ToggleError)` - Processing failed
+/// * `Err(ToggleCommentError)` - Processing failed
 ///
 /// # Safety
 /// - Bounded to MAX_BATCH_LINES (128 lines)
@@ -1890,7 +2037,7 @@ fn toggle_multiple_lines(
     file_path: &str,
     line_numbers: &[usize],
     comment_flag: CommentFlag,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Validate input
     if line_numbers.is_empty() {
         return Ok(()); // Nothing to do
@@ -1898,7 +2045,7 @@ fn toggle_multiple_lines(
 
     if line_numbers.len() > MAX_BATCH_LINES {
         // Too many lines - could return error or just process first N
-        return Err(ToggleError::IoError(IoOperation::Read)); // Reuse error for now
+        return Err(ToggleCommentError::IoError(IoOperation::Read)); // Reuse error for now
     }
 
     // Convert to absolute path
@@ -1906,16 +2053,16 @@ fn toggle_multiple_lines(
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleError::FileNotFound);
+                return Err(ToggleCommentError::FileNotFound);
             }
-            return Err(ToggleError::PathError);
+            return Err(ToggleCommentError::PathError);
         }
     };
 
     // Get filename for backup
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleError::PathError),
+        None => return Err(ToggleCommentError::PathError),
     };
 
     // Copy line numbers to fixed array and sort
@@ -1956,7 +2103,7 @@ fn toggle_multiple_lines(
 
     // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleError::IoError(IoOperation::Backup));
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
@@ -1977,7 +2124,7 @@ fn toggle_multiple_lines(
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleError::IoError(IoOperation::Replace));
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp
@@ -2012,17 +2159,17 @@ fn toggle_multiple_lines(
 ///
 /// # Returns
 /// * `Ok(())` - Processing succeeded
-/// * `Err(ToggleError)` - Processing failed
+/// * `Err(ToggleCommentError)` - Processing failed
 fn process_batch_toggle(
     source_path: &Path,
     dest_path: &Path,
     target_lines: &[usize], // Pre-sorted, no duplicates
     flag: CommentFlag,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Open source file
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -2035,7 +2182,7 @@ fn process_batch_toggle(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -2055,14 +2202,14 @@ fn process_batch_toggle(
     loop {
         // Safety check
         if current_line > line_limit {
-            return Err(ToggleError::IoError(IoOperation::Read));
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         // End of file
@@ -2072,7 +2219,7 @@ fn process_batch_toggle(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleError::LineTooLong {
+            return Err(ToggleCommentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -2091,7 +2238,7 @@ fn process_batch_toggle(
         } else {
             // Not a target line - copy unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleError::IoError(IoOperation::Write));
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
             }
         }
 
@@ -2100,14 +2247,14 @@ fn process_batch_toggle(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(ToggleError::IoError(IoOperation::Flush));
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
 
     // Verify we found all target lines
     if toggled_count < target_lines.len() {
         // Some target lines were beyond EOF
         let first_missing = target_lines[toggled_count];
-        return Err(ToggleError::LineNotFound {
+        return Err(ToggleCommentError::LineNotFound {
             requested: first_missing,
             file_lines: current_line,
         });
@@ -2124,7 +2271,7 @@ fn process_batch_toggle(
 ///
 /// # Returns
 /// * `Ok(())` - All lines toggled successfully
-/// * `Err(ToggleError)` - Processing failed
+/// * `Err(ToggleCommentError)` - Processing failed
 ///
 /// # Example
 /// ```no_run
@@ -2134,17 +2281,17 @@ fn process_batch_toggle(
 pub fn toggle_multiple_basic_comments(
     file_path: &str,
     line_numbers: &[usize],
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Determine comment flag from extension
     let path = Path::new(file_path);
     let extension = match path.extension() {
         Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleError::NoExtension),
+        None => return Err(ToggleCommentError::NoExtension),
     };
 
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-        None => return Err(ToggleError::UnsupportedExtension),
+        None => return Err(ToggleCommentError::UnsupportedExtension),
     };
 
     toggle_multiple_lines(file_path, line_numbers, comment_flag)
@@ -2158,7 +2305,7 @@ pub fn toggle_multiple_basic_comments(
 ///
 /// # Returns
 /// * `Ok(())` - All docstrings toggled successfully
-/// * `Err(ToggleError)` - Processing failed
+/// * `Err(ToggleCommentError)` - Processing failed
 ///
 /// # Example
 /// ```no_run
@@ -2168,34 +2315,13 @@ pub fn toggle_multiple_basic_comments(
 pub fn toggle_multiple_singline_docstrings(
     file_path: &str,
     line_numbers_list: &[usize],
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     toggle_multiple_lines(file_path, line_numbers_list, CommentFlag::TripppleSlash)
 }
 
 #[cfg(test)]
 mod batch_tests {
     use super::*;
-
-    /// Helper: create a temporary test file with given content
-    fn create_test_file(filename: &str, content: &str) -> PathBuf {
-        let path = PathBuf::from(filename);
-        let mut file = File::create(&path).expect("Failed to create test file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write test file");
-        path
-    }
-
-    /// Helper: read file content as string
-    fn read_file_content(path: &Path) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
-    }
-
-    /// Helper: cleanup test files
-    fn cleanup_files(paths: &[&Path]) {
-        for path in paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     #[test]
     fn test_batch_toggle_multiple_lines() {
@@ -2282,7 +2408,7 @@ mod batch_tests {
 ///
 /// # Returns
 /// * `Ok(())` - Comment toggled successfully
-/// * `Err(ToggleError)` - Specific error code
+/// * `Err(ToggleCommentError)` - Specific error code
 ///
 /// # Example
 /// ```no_run
@@ -2296,34 +2422,34 @@ mod batch_tests {
 pub fn toggle_basic_singleline_comment(
     file_path: &str,
     row_line_zeroindex: usize,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleError::FileNotFound);
+                return Err(ToggleCommentError::FileNotFound);
             }
-            return Err(ToggleError::PathError);
+            return Err(ToggleCommentError::PathError);
         }
     };
 
     // Extract and validate file extension
     let extension = match absolute_path.extension() {
         Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleError::NoExtension),
+        None => return Err(ToggleCommentError::NoExtension),
     };
 
     // Determine comment flag from extension
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-        None => return Err(ToggleError::UnsupportedExtension),
+        None => return Err(ToggleCommentError::UnsupportedExtension),
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleError::PathError),
+        None => return Err(ToggleCommentError::PathError),
     };
 
     // Create backup path in CWD
@@ -2332,7 +2458,7 @@ pub fn toggle_basic_singleline_comment(
 
     // Create backup copy of original file
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleError::IoError(IoOperation::Backup));
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
     }
 
     // Create working temp file in CWD
@@ -2350,7 +2476,7 @@ pub fn toggle_basic_singleline_comment(
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 // Failed to replace - clean up and error
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleError::IoError(IoOperation::Replace));
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp file
@@ -2380,7 +2506,7 @@ pub fn toggle_basic_singleline_comment(
 ///
 /// # Returns
 /// * `Ok(())` - Processing succeeded, target line was found and toggled
-/// * `Err(ToggleError)` - Processing failed
+/// * `Err(ToggleCommentError)` - Processing failed
 ///
 /// # Safety
 /// - Pre-allocated buffers only
@@ -2391,11 +2517,11 @@ fn process_file_toggle(
     dest_path: &Path,
     target_line: usize,
     flag: CommentFlag,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Open source file for reading
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
     // Create buffered reader with pre-allocated buffer
@@ -2409,7 +2535,7 @@ fn process_file_toggle(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(ToggleError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
     };
 
     // Create buffered writer with pre-allocated buffer
@@ -2431,7 +2557,7 @@ fn process_file_toggle(
     loop {
         // Safety check: prevent unbounded loop
         if current_line > line_limit {
-            return Err(ToggleError::IoError(IoOperation::Read));
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
         // Clear buffer for reuse
@@ -2440,7 +2566,7 @@ fn process_file_toggle(
         // Read next line into pre-allocated buffer
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         // End of file reached
@@ -2450,7 +2576,7 @@ fn process_file_toggle(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleError::LineTooLong {
+            return Err(ToggleCommentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -2467,7 +2593,7 @@ fn process_file_toggle(
         } else {
             // Copy line unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleError::IoError(IoOperation::Write));
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
             }
         }
 
@@ -2476,12 +2602,12 @@ fn process_file_toggle(
 
     // Flush writer to ensure all data written
     if let Err(_) = writer.flush() {
-        return Err(ToggleError::IoError(IoOperation::Flush));
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
 
     // Check if we found the target line
     if !found_target {
-        return Err(ToggleError::LineNotFound {
+        return Err(ToggleCommentError::LineNotFound {
             requested: target_line,
             file_lines: current_line,
         });
@@ -2499,7 +2625,7 @@ fn process_file_toggle(
 ///
 /// # Returns
 /// * `Ok(())` - Line written successfully
-/// * `Err(ToggleError)` - Write failed
+/// * `Err(ToggleCommentError)` - Write failed
 ///
 /// # Logic
 /// - Extract line content (without trailing newline)
@@ -2511,7 +2637,7 @@ fn toggle_line(
     writer: &mut BufWriter<File>,
     line_buffer: &[u8],
     flag: CommentFlag,
-) -> Result<(), ToggleError> {
+) -> Result<(), ToggleCommentError> {
     // Separate line content from newline
     let (content, newline) = if line_buffer.ends_with(b"\r\n") {
         (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
@@ -2526,25 +2652,25 @@ fn toggle_line(
     if let Some(skip_count) = should_remove_comment(content, flag) {
         // REMOVE mode: write content skipping flag+space
         if let Err(_) = writer.write_all(&content[skip_count..]) {
-            return Err(ToggleError::IoError(IoOperation::Write));
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
     } else {
         // ADD mode: write flag+space, then content
         let flag_with_space = format!("{} ", flag.as_str());
 
         if let Err(_) = writer.write_all(flag_with_space.as_bytes()) {
-            return Err(ToggleError::IoError(IoOperation::Write));
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
 
         if let Err(_) = writer.write_all(content) {
-            return Err(ToggleError::IoError(IoOperation::Write));
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
     }
 
     // Write newline back (preserve original line ending)
     if !newline.is_empty() {
         if let Err(_) = writer.write_all(newline) {
-            return Err(ToggleError::IoError(IoOperation::Write));
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
     }
 
@@ -2554,32 +2680,37 @@ fn toggle_line(
 // ============================================================================
 // TESTS
 // ============================================================================
+#[cfg(test)]
+/// Helper: create a temporary test file with given content
+fn create_test_file(filename: &str, content: &str) -> PathBuf {
+    use std::io::Write;
+    // Create tests directory if it doesn't exist
+    let tests_dir = PathBuf::from("./tests");
+    std::fs::create_dir_all(&tests_dir).expect("Failed to create tests directory");
+
+    // Create file path within tests directory
+    let path = tests_dir.join(filename);
+    let mut file = File::create(&path).expect("Failed to create test file");
+    file.write_all(content.as_bytes())
+        .expect("Failed to write test file");
+    path
+}
+#[cfg(test)]
+/// Helper: read file content as string
+fn read_file_content(path: &Path) -> String {
+    std::fs::read_to_string(path).expect("Failed to read file")
+}
+#[cfg(test)]
+/// Helper: cleanup test files
+fn cleanup_files(paths: &[&Path]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 #[cfg(test)]
 mod toggle_comment_tests {
     use super::*;
-    use std::io::Write;
-
-    /// Helper: create a temporary test file with given content
-    fn create_test_file(filename: &str, content: &str) -> PathBuf {
-        let path = PathBuf::from(filename);
-        let mut file = File::create(&path).expect("Failed to create test file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write test file");
-        path
-    }
-
-    /// Helper: read file content as string
-    fn read_file_content(path: &Path) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
-    }
-
-    /// Helper: cleanup test files
-    fn cleanup_files(paths: &[&Path]) {
-        for path in paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     #[test]
     fn test_determine_comment_flag() {
@@ -2732,7 +2863,10 @@ mod toggle_comment_tests {
         let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 10);
 
         #[cfg(test)]
-        assert!(matches!(result, Err(ToggleError::LineNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::LineNotFound { .. })
+        ));
 
         // Cleanup
         cleanup_files(&[
@@ -2748,7 +2882,7 @@ mod toggle_comment_tests {
         let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
 
         #[cfg(test)]
-        assert!(matches!(result, Err(ToggleError::NoExtension)));
+        assert!(matches!(result, Err(ToggleCommentError::NoExtension)));
 
         // Cleanup
         cleanup_files(&[&test_file]);
@@ -2761,7 +2895,10 @@ mod toggle_comment_tests {
         let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
 
         #[cfg(test)]
-        assert!(matches!(result, Err(ToggleError::UnsupportedExtension)));
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::UnsupportedExtension)
+        ));
 
         // Cleanup
         cleanup_files(&[&test_file]);
@@ -2961,7 +3098,7 @@ mod toggle_comment_tests {
     #[test]
     fn test_file_not_found() {
         let result = toggle_basic_singleline_comment("/nonexistent/path/file.rs", 0);
-        assert!(matches!(result, Err(ToggleError::FileNotFound)));
+        assert!(matches!(result, Err(ToggleCommentError::FileNotFound)));
     }
     #[test]
     fn test_extension_case_insensitive() {
@@ -2987,7 +3124,10 @@ mod toggle_comment_tests {
         let test_file = create_test_file("test_batch_oob.rs", "line 0\n");
         let lines = [100]; // Way beyond file
         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-        assert!(matches!(result, Err(ToggleError::LineNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::LineNotFound { .. })
+        ));
         cleanup_files(&[
             &test_file,
             &PathBuf::from("backup_toggle_batch_test_batch_oob.rs"),
@@ -3046,12 +3186,16 @@ Two functionalities:
 /// Number of spaces to add/remove for indent/unindent operations
 const INDENT_SPACES: usize = 4;
 
+// ============================================================================
+// ERROR SECTION: ERROR HANDLING SYSTEM (start)
+// ============================================================================
+
 /// Errors that can occur during indent/unindent operations
 ///
 /// All variants are Copy - no heap allocation, no string storage.
-/// Reuses same design pattern as ToggleError for consistency.
+/// Reuses same design pattern as ToggleCommentError for consistency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IndentError {
+pub enum ToggleIndentError {
     /// The specified file was not found
     FileNotFound,
 
@@ -3066,16 +3210,13 @@ pub enum IndentError {
 
     /// Line exceeds maximum safe length
     LineTooLong { line_number: usize, length: usize },
-
-    /// Invalid line range (start >= end)
-    InvalidLineRange,
 }
 
-impl std::fmt::Display for IndentError {
+impl std::fmt::Display for ToggleIndentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IndentError::FileNotFound => write!(f, "File not found"),
-            IndentError::LineNotFound {
+            ToggleIndentError::FileNotFound => write!(f, "File not found"),
+            ToggleIndentError::LineNotFound {
                 requested,
                 file_lines,
             } => {
@@ -3085,22 +3226,23 @@ impl std::fmt::Display for IndentError {
                     requested, file_lines
                 )
             }
-            IndentError::IoError(op) => write!(f, "IO error: {:?}", op),
-            IndentError::PathError => write!(f, "Path error"),
-            IndentError::LineTooLong {
+            ToggleIndentError::IoError(op) => write!(f, "IO error: {:?}", op),
+            ToggleIndentError::PathError => write!(f, "Path error"),
+            ToggleIndentError::LineTooLong {
                 line_number,
                 length,
             } => {
                 write!(f, "Line {} too long: {} bytes", line_number, length)
             }
-            IndentError::InvalidLineRange => {
-                write!(f, "Invalid line range (start must be < end)")
-            }
         }
     }
 }
 
-impl std::error::Error for IndentError {}
+impl std::error::Error for ToggleIndentError {}
+
+// ============================================================================
+// ERROR SECTION: ERROR HANDLING SYSTEM (end)
+// ============================================================================
 
 /// Add 4 spaces to the start of a specific line
 ///
@@ -3114,7 +3256,7 @@ impl std::error::Error for IndentError {}
 ///
 /// # Returns
 /// * `Ok(())` - Line indented successfully
-/// * `Err(IndentError)` - Specific error code
+/// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Safety
 /// - Uses same backup system as toggle_comment
@@ -3124,7 +3266,7 @@ impl std::error::Error for IndentError {}
 ///
 /// # Example
 /// ```no_run
-/// use toggle_comment_module::indent_line;
+/// use toggle_comment_indent_module::indent_line;
 ///
 /// match indent_line("./src/main.rs", 5) {
 ///     Ok(()) => println!("Line indented"),
@@ -3140,22 +3282,22 @@ impl std::error::Error for IndentError {}
 /// Before: "  code"  (already indented 2 spaces)
 /// After:  "      code"  (now indented 6 spaces)
 /// ```
-pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentError> {
+pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIndentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(IndentError::FileNotFound);
+                return Err(ToggleIndentError::FileNotFound);
             }
-            return Err(IndentError::PathError);
+            return Err(ToggleIndentError::PathError);
         }
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(IndentError::PathError),
+        None => return Err(ToggleIndentError::PathError),
     };
 
     // Create backup path in CWD (reuse same backup name as toggle_comment)
@@ -3164,7 +3306,7 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentErro
 
     // Create backup copy of original file
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(IndentError::IoError(IoOperation::Backup));
+        return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
     // Create working temp file in CWD
@@ -3180,7 +3322,7 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentErro
             // Success: replace original with temp file
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(IndentError::IoError(IoOperation::Replace));
+                return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp file
@@ -3212,7 +3354,7 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentErro
 ///
 /// # Returns
 /// * `Ok(())` - Line unindented successfully (even if no spaces removed)
-/// * `Err(IndentError)` - Specific error code
+/// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Safety
 /// - Uses same backup system as toggle_comment
@@ -3222,7 +3364,7 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentErro
 ///
 /// # Example
 /// ```no_run
-/// use toggle_comment_module::unindent_line;
+/// use toggle_comment_indent_module::unindent_line;
 ///
 /// match unindent_line("./src/main.rs", 5) {
 ///     Ok(()) => println!("Line unindented"),
@@ -3244,22 +3386,22 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), IndentErro
 /// Before: "\tcode"    (tab, not spaces)
 /// After:  "\tcode"    (unchanged - only removes spaces)
 /// ```
-pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), IndentError> {
+pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIndentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(IndentError::FileNotFound);
+                return Err(ToggleIndentError::FileNotFound);
             }
-            return Err(IndentError::PathError);
+            return Err(ToggleIndentError::PathError);
         }
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(IndentError::PathError),
+        None => return Err(ToggleIndentError::PathError),
     };
 
     // Create backup path in CWD
@@ -3268,7 +3410,7 @@ pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), IndentEr
 
     // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(IndentError::IoError(IoOperation::Backup));
+        return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
@@ -3284,7 +3426,7 @@ pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), IndentEr
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(IndentError::IoError(IoOperation::Replace));
+                return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp
@@ -3311,7 +3453,7 @@ pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), IndentEr
 ///
 /// # Returns
 /// * `Ok(())` - Processing succeeded, target line was found and indented
-/// * `Err(IndentError)` - Processing failed
+/// * `Err(ToggleIndentError)` - Processing failed
 ///
 /// # Safety
 /// - Pre-allocated buffers only
@@ -3321,11 +3463,11 @@ fn process_file_indent(
     source_path: &Path,
     dest_path: &Path,
     target_line: usize,
-) -> Result<(), IndentError> {
+) -> Result<(), ToggleIndentError> {
     // Open source file for reading
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -3338,7 +3480,7 @@ fn process_file_indent(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -3357,14 +3499,14 @@ fn process_file_indent(
     loop {
         // Safety check: prevent unbounded loop
         if current_line > line_limit {
-            return Err(IndentError::IoError(IoOperation::Read));
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(IndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
         };
 
         // End of file reached
@@ -3374,7 +3516,7 @@ fn process_file_indent(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(IndentError::LineTooLong {
+            return Err(ToggleIndentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -3391,7 +3533,7 @@ fn process_file_indent(
         } else {
             // Copy line unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(IndentError::IoError(IoOperation::Write));
+                return Err(ToggleIndentError::IoError(IoOperation::Write));
             }
         }
 
@@ -3400,12 +3542,12 @@ fn process_file_indent(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(IndentError::IoError(IoOperation::Flush));
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
     }
 
     // Check if we found the target line
     if !found_target {
-        return Err(IndentError::LineNotFound {
+        return Err(ToggleIndentError::LineNotFound {
             requested: target_line,
             file_lines: current_line,
         });
@@ -3423,16 +3565,16 @@ fn process_file_indent(
 ///
 /// # Returns
 /// * `Ok(())` - Processing succeeded, target line was found and unindented
-/// * `Err(IndentError)` - Processing failed
+/// * `Err(ToggleIndentError)` - Processing failed
 fn process_file_unindent(
     source_path: &Path,
     dest_path: &Path,
     target_line: usize,
-) -> Result<(), IndentError> {
+) -> Result<(), ToggleIndentError> {
     // Open source file
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -3445,7 +3587,7 @@ fn process_file_unindent(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -3461,14 +3603,14 @@ fn process_file_unindent(
     loop {
         // Safety check
         if current_line > line_limit {
-            return Err(IndentError::IoError(IoOperation::Read));
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(IndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
         };
 
         if bytes_read == 0 {
@@ -3477,7 +3619,7 @@ fn process_file_unindent(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(IndentError::LineTooLong {
+            return Err(ToggleIndentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -3494,7 +3636,7 @@ fn process_file_unindent(
         } else {
             // Copy unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(IndentError::IoError(IoOperation::Write));
+                return Err(ToggleIndentError::IoError(IoOperation::Write));
             }
         }
 
@@ -3503,12 +3645,12 @@ fn process_file_unindent(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(IndentError::IoError(IoOperation::Flush));
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
     }
 
     // Check if we found target
     if !found_target {
-        return Err(IndentError::LineNotFound {
+        return Err(ToggleIndentError::LineNotFound {
             requested: target_line,
             file_lines: current_line,
         });
@@ -3525,7 +3667,7 @@ fn process_file_unindent(
 ///
 /// # Returns
 /// * `Ok(())` - Line written successfully
-/// * `Err(IndentError)` - Write failed
+/// * `Err(ToggleIndentError)` - Write failed
 ///
 /// # Logic
 /// - Separate line content from trailing newline
@@ -3535,7 +3677,7 @@ fn process_file_unindent(
 pub fn indent_single_line(
     writer: &mut BufWriter<File>,
     line_buffer: &[u8],
-) -> Result<(), IndentError> {
+) -> Result<(), ToggleIndentError> {
     // Separate content from newline
     let (content, newline) = if line_buffer.ends_with(b"\r\n") {
         (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
@@ -3548,18 +3690,18 @@ pub fn indent_single_line(
 
     // Write 4 spaces
     if let Err(_) = writer.write_all(b"    ") {
-        return Err(IndentError::IoError(IoOperation::Write));
+        return Err(ToggleIndentError::IoError(IoOperation::Write));
     }
 
     // Write original content
     if let Err(_) = writer.write_all(content) {
-        return Err(IndentError::IoError(IoOperation::Write));
+        return Err(ToggleIndentError::IoError(IoOperation::Write));
     }
 
     // Write newline
     if !newline.is_empty() {
         if let Err(_) = writer.write_all(newline) {
-            return Err(IndentError::IoError(IoOperation::Write));
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
         }
     }
 
@@ -3574,7 +3716,7 @@ pub fn indent_single_line(
 ///
 /// # Returns
 /// * `Ok(())` - Line written successfully
-/// * `Err(IndentError)` - Write failed
+/// * `Err(ToggleIndentError)` - Write failed
 ///
 /// # Logic
 /// - Separate content from newline
@@ -3584,7 +3726,7 @@ pub fn indent_single_line(
 pub fn unindent_single_line(
     writer: &mut BufWriter<File>,
     line_buffer: &[u8],
-) -> Result<(), IndentError> {
+) -> Result<(), ToggleIndentError> {
     // Separate content from newline
     let (content, newline) = if line_buffer.ends_with(b"\r\n") {
         (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
@@ -3606,13 +3748,13 @@ pub fn unindent_single_line(
 
     // Write content starting after the spaces we're removing
     if let Err(_) = writer.write_all(&content[spaces_to_remove..]) {
-        return Err(IndentError::IoError(IoOperation::Write));
+        return Err(ToggleIndentError::IoError(IoOperation::Write));
     }
 
     // Write newline
     if !newline.is_empty() {
         if let Err(_) = writer.write_all(newline) {
-            return Err(IndentError::IoError(IoOperation::Write));
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
         }
     }
 
@@ -3626,27 +3768,6 @@ pub fn unindent_single_line(
 #[cfg(test)]
 mod indent_tests {
     use super::*;
-
-    /// Helper: create a temporary test file with given content
-    fn create_test_file(filename: &str, content: &str) -> PathBuf {
-        let path = PathBuf::from(filename);
-        let mut file = File::create(&path).expect("Failed to create test file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write test file");
-        path
-    }
-
-    /// Helper: read file content as string
-    fn read_file_content(path: &Path) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
-    }
-
-    /// Helper: cleanup test files
-    fn cleanup_files(paths: &[&Path]) {
-        for path in paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     // ========================================
     // Indent Tests
@@ -3735,7 +3856,10 @@ mod indent_tests {
     fn test_indent_line_not_found() {
         let test_file = create_test_file("test_indent_notfound.txt", "code\n");
         let result = indent_line(test_file.to_str().unwrap(), 10);
-        assert!(matches!(result, Err(IndentError::LineNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(ToggleIndentError::LineNotFound { .. })
+        ));
         cleanup_files(&[
             &test_file,
             &PathBuf::from("backup_toggle_comment_test_indent_notfound.txt"),
@@ -3745,7 +3869,7 @@ mod indent_tests {
     #[test]
     fn test_indent_line_file_not_found() {
         let result = indent_line("/nonexistent/file.txt", 0);
-        assert!(matches!(result, Err(IndentError::FileNotFound)));
+        assert!(matches!(result, Err(ToggleIndentError::FileNotFound)));
     }
 
     // ========================================
@@ -3907,6 +4031,49 @@ mod indent_tests {
 }
 
 // ============================================================================
+// RANGE UTILITIES
+// ============================================================================
+
+/// Sort and validate a line range to ensure start ≤ end
+///
+/// # Overview
+/// Universal helper for all range-based operations. Always returns a valid
+/// sorted tuple where the first value is ≤ the second value.
+///
+/// # Arguments
+/// * `from` - First line number (may be larger than `to`)
+/// * `to` - Second line number (may be smaller than `from`)
+///
+/// # Returns
+/// * `(start, end)` - Sorted tuple where start ≤ end
+///
+/// # Behavior
+/// ```text
+/// Input: (5, 10) → Output: (5, 10)  [already sorted]
+/// Input: (10, 5) → Output: (5, 10)  [flipped]
+/// Input: (7, 7)  → Output: (7, 7)   [single line, valid]
+/// ```
+///
+/// # Usage
+/// ```rust
+/// let (start, end) = sort_range(user_input_from, user_input_to);
+/// // Now guaranteed: start <= end
+/// ```
+///
+/// # Safety
+/// - Always succeeds (no Result needed)
+/// - No allocations
+/// - Copy semantics only
+/// - Works for any usize values (no overflow - uses min/max)
+fn sort_range(from: usize, to: usize) -> (usize, usize) {
+    // Use built-in min/max for clarity and safety
+    let start = std::cmp::min(from, to);
+    let end = std::cmp::max(from, to);
+
+    (start, end)
+}
+
+// ============================================================================
 // INDENT/UNINDENT RANGE FUNCTIONS
 // ============================================================================
 
@@ -3915,70 +4082,48 @@ mod indent_tests {
 /// # Overview
 /// Adds exactly 4 spaces at the beginning of each line in the specified range.
 /// Both start_line and end_line are included in the operation.
+/// **Range is automatically sorted** - order of arguments doesn't matter.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
-/// * `start_line` - Zero-indexed first line to indent (inclusive)
-/// * `end_line` - Zero-indexed last line to indent (inclusive)
+/// * `start_line` - First line to indent (will be sorted with end_line)
+/// * `end_line` - Last line to indent (will be sorted with start_line)
 ///
 /// # Returns
 /// * `Ok(())` - Lines indented successfully
-/// * `Err(IndentError)` - Specific error code
-///
-/// # Safety
-/// - Uses same backup system as toggle_comment
-/// - Atomic file operations
-/// - No heap allocation during processing
-/// - Preserves line endings (LF/CRLF/none)
+/// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
 /// ```no_run
-/// use toggle_comment_module::indent_range;
+/// use toggle_comment_indent_module::indent_range;
 ///
-/// // Indent lines 5 through 10 (inclusive)
-/// match indent_range("./src/main.rs", 5, 10) {
-///     Ok(()) => println!("Lines indented"),
-///     Err(e) => eprintln!("Failed: {:?}", e),
-/// }
-/// ```
-///
-/// # Behavior
-/// ```text
-/// Input (lines 0-2):
-/// line 0
-/// line 1
-/// line 2
-///
-/// After indent_range(path, 0, 2):
-///     line 0
-///     line 1
-///     line 2
+/// // Both calls equivalent (auto-sorted):
+/// indent_range("./src/main.rs", 5, 10)?;
+/// indent_range("./src/main.rs", 10, 5)?;  // Same result
 /// ```
 pub fn indent_range(
     file_path: &str,
     start_line: usize,
     end_line: usize,
-) -> Result<(), IndentError> {
-    // Validate range
-    if start_line > end_line {
-        return Err(IndentError::InvalidLineRange);
-    }
+) -> Result<(), ToggleIndentError> {
+    // Sort range automatically - no validation needed
+    let (start, end) = sort_range(start_line, end_line);
 
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(IndentError::FileNotFound);
+                return Err(ToggleIndentError::FileNotFound);
             }
-            return Err(IndentError::PathError);
+            return Err(ToggleIndentError::PathError);
         }
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(IndentError::PathError),
+        None => return Err(ToggleIndentError::PathError),
     };
 
     // Create backup path in CWD
@@ -3987,16 +4132,15 @@ pub fn indent_range(
 
     // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(IndentError::IoError(IoOperation::Backup));
+        return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
     let temp_filename = format!("temp_indent_range_{}_{}", std::process::id(), filename);
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and indent range
-    let process_result =
-        process_file_indent_range(&absolute_path, &temp_path, start_line, end_line);
+    // Process file and indent range (using sorted values)
+    let process_result = process_file_indent_range(&absolute_path, &temp_path, start, end);
 
     // Handle result
     match process_result {
@@ -4004,7 +4148,7 @@ pub fn indent_range(
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(IndentError::IoError(IoOperation::Replace));
+                return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp
@@ -4027,70 +4171,48 @@ pub fn indent_range(
 /// # Overview
 /// Removes up to 4 leading spaces from each line in the specified range.
 /// Both start_line and end_line are included in the operation.
+/// **Range is automatically sorted** - order of arguments doesn't matter.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
-/// * `start_line` - Zero-indexed first line to unindent (inclusive)
-/// * `end_line` - Zero-indexed last line to unindent (inclusive)
+/// * `start_line` - First line to unindent (will be sorted with end_line)
+/// * `end_line` - Last line to unindent (will be sorted with start_line)
 ///
 /// # Returns
 /// * `Ok(())` - Lines unindented successfully
-/// * `Err(IndentError)` - Specific error code
-///
-/// # Safety
-/// - Uses same backup system as toggle_comment
-/// - Atomic file operations
-/// - No heap allocation during processing
-/// - Preserves line endings (LF/CRLF/none)
+/// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
 /// ```no_run
-/// use toggle_comment_module::unindent_range;
+/// use toggle_comment_indent_module::unindent_range;
 ///
-/// // Unindent lines 5 through 10 (inclusive)
-/// match unindent_range("./src/main.rs", 5, 10) {
-///     Ok(()) => println!("Lines unindented"),
-///     Err(e) => eprintln!("Failed: {:?}", e),
-/// }
-/// ```
-///
-/// # Behavior
-/// ```text
-/// Input (lines 0-2):
-///     line 0
-///     line 1
-///     line 2
-///
-/// After unindent_range(path, 0, 2):
-/// line 0
-/// line 1
-/// line 2
+/// // Both calls equivalent (auto-sorted):
+/// unindent_range("./src/main.rs", 5, 10)?;
+/// unindent_range("./src/main.rs", 10, 5)?;  // Same result
 /// ```
 pub fn unindent_range(
     file_path: &str,
     start_line: usize,
     end_line: usize,
-) -> Result<(), IndentError> {
-    // Validate range
-    if start_line > end_line {
-        return Err(IndentError::InvalidLineRange);
-    }
+) -> Result<(), ToggleIndentError> {
+    // Sort range automatically - no validation needed
+    let (start, end) = sort_range(start_line, end_line);
 
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(IndentError::FileNotFound);
+                return Err(ToggleIndentError::FileNotFound);
             }
-            return Err(IndentError::PathError);
+            return Err(ToggleIndentError::PathError);
         }
     };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(IndentError::PathError),
+        None => return Err(ToggleIndentError::PathError),
     };
 
     // Create backup path in CWD
@@ -4099,16 +4221,15 @@ pub fn unindent_range(
 
     // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(IndentError::IoError(IoOperation::Backup));
+        return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
     let temp_filename = format!("temp_unindent_range_{}_{}", std::process::id(), filename);
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and unindent range
-    let process_result =
-        process_file_unindent_range(&absolute_path, &temp_path, start_line, end_line);
+    // Process file and unindent range (using sorted values)
+    let process_result = process_file_unindent_range(&absolute_path, &temp_path, start, end);
 
     // Handle result
     match process_result {
@@ -4116,7 +4237,7 @@ pub fn unindent_range(
             // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
-                return Err(IndentError::IoError(IoOperation::Replace));
+                return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp
@@ -4134,32 +4255,50 @@ pub fn unindent_range(
     }
 }
 
-/// Process file line-by-line, adding 4 spaces to lines in range
+// ============================================================================
+// RANGE COMMENT TOGGLE FUNCTIONALITY
+// ============================================================================
+
+/// Process file toggling comments on a range of lines
+///
+/// # Overview
+/// Internal function that performs single-pass file processing to toggle
+/// comment flags on all lines within the specified range. Each line is
+/// toggled independently based on its current state.
 ///
 /// # Arguments
 /// * `source_path` - Original file to read from
 /// * `dest_path` - Temporary file to write modified content to
-/// * `start_line` - First line to indent (inclusive)
-/// * `end_line` - Last line to indent (inclusive)
+/// * `start_line` - First line to toggle (inclusive, zero-indexed)
+/// * `end_line` - Last line to toggle (inclusive, zero-indexed)
+/// * `flag` - Comment flag to use (DoubleSlash, Hash, or TripppleSlash)
 ///
 /// # Returns
-/// * `Ok(())` - Processing succeeded, all lines in range indented
-/// * `Err(IndentError)` - Processing failed
+/// * `Ok(())` - Processing succeeded, all lines in range toggled
+/// * `Err(ToggleCommentError)` - Processing failed
 ///
 /// # Safety
 /// - Pre-allocated buffers only
 /// - Bounded line length checks
 /// - No dynamic allocation during loop
-fn process_file_indent_range(
+/// - Single file pass (efficient)
+///
+/// # Toggle Logic Per Line
+/// Each line in range is toggled independently:
+/// - If line has `{spaces}{flag}{space}` pattern → remove comment
+/// - If line doesn't match pattern → add comment
+/// - Lines outside range → copied unchanged
+fn process_range_toggle(
     source_path: &Path,
     dest_path: &Path,
     start_line: usize,
     end_line: usize,
-) -> Result<(), IndentError> {
-    // Open source file
+    flag: CommentFlag,
+) -> Result<(), ToggleCommentError> {
+    // Open source file for reading
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -4172,7 +4311,829 @@ fn process_file_indent_range(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
+    };
+
+    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+
+    // Pre-allocate line buffer
+    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
+
+    // Track current line number
+    let mut current_line: usize = 0;
+    let mut found_end_line = false;
+
+    // Safety limit for loop
+    let line_limit = end_line.saturating_add(1000000);
+
+    // Process file line by line
+    loop {
+        // Safety check: prevent unbounded loop
+        if current_line > line_limit {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        line_buffer.clear();
+
+        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        // End of file reached
+        if bytes_read == 0 {
+            break;
+        }
+
+        // Safety: check line length
+        if line_buffer.len() > MAX_LINE_LENGTH {
+            return Err(ToggleCommentError::LineTooLong {
+                line_number: current_line,
+                length: line_buffer.len(),
+            });
+        }
+
+        // Check if this line is in our target range
+        if current_line >= start_line && current_line <= end_line {
+            // This line is in range - toggle it
+            if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
+                return Err(e);
+            }
+
+            // Track if we've seen the end line
+            if current_line == end_line {
+                found_end_line = true;
+            }
+        } else {
+            // Not in range - copy unchanged
+            if let Err(_) = writer.write_all(&line_buffer) {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+        }
+
+        current_line += 1;
+    }
+
+    // Flush writer
+    if let Err(_) = writer.flush() {
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
+    }
+
+    // Verify we found the end line
+    if !found_end_line {
+        return Err(ToggleCommentError::LineNotFound {
+            requested: end_line,
+            file_lines: current_line,
+        });
+    }
+
+    Ok(())
+}
+
+/// Toggle basic comments on a range of lines (extension-based)
+///
+/// # Overview
+/// Toggles comment flags (`//` or `#`) on all lines within the specified range.
+/// Comment type is automatically determined from file extension. Each line is
+/// toggled independently based on its current state.
+///
+/// **Range is automatically sorted** - argument order doesn't matter.
+///
+/// # Arguments
+/// * `file_path` - Path to the source file
+/// * `from_line` - First line to toggle (will be sorted with to_line)
+/// * `to_line` - Last line to toggle (will be sorted with from_line)
+///
+/// # Returns
+/// * `Ok(())` - All lines in range toggled successfully
+/// * `Err(ToggleCommentError)` - Specific error code
+///
+/// # Limits
+/// - Maximum range: 128 lines (enforced)
+/// - Returns `RangeTooLarge` error if exceeded
+///
+/// # Behavior
+/// Each line toggled independently:
+/// ```text
+/// Input range [0-2]:
+/// line 0          →  // line 0
+/// // line 1       →  line 1
+/// line 2          →  // line 2
+/// ```
+///
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::toggle_range_basic_comments;
+///
+/// // Toggle lines 5-10 (both inclusive)
+/// match toggle_range_basic_comments("./src/main.rs", 5, 10) {
+///     Ok(()) => println!("Range toggled"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+///
+/// // Order doesn't matter - same result:
+/// toggle_range_basic_comments("./src/main.rs", 10, 5)?;
+/// ```
+///
+/// # Supported Extensions
+/// - `//` : rs, c, cpp, cc, cxx, h, hpp, js, ts, java, go, swift
+/// - `#`  : py, sh, bash, toml, yaml, yml, rb, pl, r
+pub fn toggle_range_basic_comments(
+    file_path: &str,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), ToggleCommentError> {
+    // Sort range automatically
+    let (start, end) = sort_range(from_line, to_line);
+
+    // Validate range size (end - start + 1 because inclusive)
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > MAX_BATCH_LINES {
+        return Err(ToggleCommentError::RangeTooLarge {
+            requested: range_size,
+            max: MAX_BATCH_LINES,
+        });
+    }
+
+    // Convert to absolute path
+    let absolute_path = match Path::new(file_path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(ToggleCommentError::FileNotFound);
+            }
+            return Err(ToggleCommentError::PathError);
+        }
+    };
+
+    // Extract and validate file extension
+    let extension = match absolute_path.extension() {
+        Some(ext) => ext.to_string_lossy().to_string(),
+        None => return Err(ToggleCommentError::NoExtension),
+    };
+
+    // Determine comment flag from extension
+    let comment_flag = match determine_comment_flag(&extension) {
+        Some(flag) => flag,
+        None => return Err(ToggleCommentError::UnsupportedExtension),
+    };
+
+    // Get filename for backup naming
+    let filename = match absolute_path.file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => return Err(ToggleCommentError::PathError),
+    };
+
+    // Create backup path in CWD
+    let backup_filename = format!("backup_toggle_comment_{}", filename);
+    let backup_path = PathBuf::from(&backup_filename);
+
+    // Create backup copy
+    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
+    }
+
+    // Create temp file
+    let temp_filename = format!(
+        "temp_toggle_range_basic_{}_{}",
+        std::process::id(),
+        filename
+    );
+    let temp_path = PathBuf::from(&temp_filename);
+
+    // Process file and toggle range
+    let process_result = process_range_toggle(&absolute_path, &temp_path, start, end, comment_flag);
+
+    // Handle result
+    match process_result {
+        Ok(()) => {
+            // Success: replace original
+            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // Clean up temp
+            if let Err(_) = std::fs::remove_file(&temp_path) {
+                #[cfg(debug_assertions)]
+                eprintln!("Warning: Failed to clean up temp file");
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            Err(e)
+        }
+    }
+}
+
+/// Toggle Rust documentation comments on a range of lines (///)
+///
+/// # Overview
+/// Toggles Rust doc comment markers (`///`) on all lines within the specified
+/// range. Each line is toggled independently based on its current state.
+///
+/// **Range is automatically sorted** - argument order doesn't matter.
+///
+/// # Arguments
+/// * `file_path` - Path to the source file
+/// * `from_line` - First line to toggle (will be sorted with to_line)
+/// * `to_line` - Last line to toggle (will be sorted with from_line)
+///
+/// # Returns
+/// * `Ok(())` - All lines in range toggled successfully
+/// * `Err(ToggleCommentError)` - Specific error code
+///
+/// # Limits
+/// - Maximum range: 128 lines (enforced)
+/// - Returns `RangeTooLarge` error if exceeded
+///
+/// # Behavior
+/// Each line toggled independently:
+/// ```text
+/// Input range [0-2]:
+/// Some docs       →  /// Some docs
+/// /// More docs   →  More docs
+/// Final line      →  /// Final line
+/// ```
+///
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::toggle_range_rust_docstring;
+///
+/// // Toggle docstrings on lines 5-10 (both inclusive)
+/// match toggle_range_rust_docstring("./src/lib.rs", 5, 10) {
+///     Ok(()) => println!("Docstring range toggled"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+///
+/// // Order doesn't matter - same result:
+/// toggle_range_rust_docstring("./src/lib.rs", 10, 5)?;
+/// ```
+///
+/// # Note
+/// No file extension validation - works on any file type.
+/// Caller responsible for using on appropriate files.
+pub fn toggle_range_rust_docstring(
+    file_path: &str,
+    from_line: usize,
+    to_line: usize,
+) -> Result<(), ToggleCommentError> {
+    // Sort range automatically
+    let (start, end) = sort_range(from_line, to_line);
+
+    // Validate range size (end - start + 1 because inclusive)
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > MAX_BATCH_LINES {
+        return Err(ToggleCommentError::RangeTooLarge {
+            requested: range_size,
+            max: MAX_BATCH_LINES,
+        });
+    }
+
+    // Convert to absolute path
+    let absolute_path = match Path::new(file_path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(ToggleCommentError::FileNotFound);
+            }
+            return Err(ToggleCommentError::PathError);
+        }
+    };
+
+    // Use TripleSlash flag (no extension check needed)
+    let comment_flag = CommentFlag::TripppleSlash;
+
+    // Get filename for backup naming
+    let filename = match absolute_path.file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => return Err(ToggleCommentError::PathError),
+    };
+
+    // Create backup path in CWD
+    let backup_filename = format!("backup_toggle_comment_{}", filename);
+    let backup_path = PathBuf::from(&backup_filename);
+
+    // Create backup copy
+    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
+    }
+
+    // Create temp file
+    let temp_filename = format!(
+        "temp_toggle_range_docstring_{}_{}",
+        std::process::id(),
+        filename
+    );
+    let temp_path = PathBuf::from(&temp_filename);
+
+    // Process file and toggle range
+    let process_result = process_range_toggle(&absolute_path, &temp_path, start, end, comment_flag);
+
+    // Handle result
+    match process_result {
+        Ok(()) => {
+            // Success: replace original
+            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // Clean up temp
+            if let Err(_) = std::fs::remove_file(&temp_path) {
+                #[cfg(debug_assertions)]
+                eprintln!("Warning: Failed to clean up temp file");
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp_path);
+            Err(e)
+        }
+    }
+}
+
+// ============================================================================
+// TESTS - Range Comment Toggle
+// ============================================================================
+
+#[cfg(test)]
+mod range_toggle_tests {
+    use super::*;
+
+    // ========================================
+    // sort_range() Tests
+    // ========================================
+
+    #[test]
+    fn test_sort_range_already_sorted() {
+        let (start, end) = sort_range(5, 10);
+        assert_eq!(start, 5);
+        assert_eq!(end, 10);
+    }
+
+    #[test]
+    fn test_sort_range_reversed() {
+        let (start, end) = sort_range(10, 5);
+        assert_eq!(start, 5);
+        assert_eq!(end, 10);
+    }
+
+    #[test]
+    fn test_sort_range_same_value() {
+        let (start, end) = sort_range(7, 7);
+        assert_eq!(start, 7);
+        assert_eq!(end, 7);
+    }
+
+    #[test]
+    fn test_sort_range_zero() {
+        let (start, end) = sort_range(5, 0);
+        assert_eq!(start, 0);
+        assert_eq!(end, 5);
+    }
+
+    // ========================================
+    // toggle_range_basic_comments() Tests
+    // ========================================
+
+    #[test]
+    fn test_toggle_range_basic_sorted_input() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_basic_sorted.rs", content);
+
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n// line 1\n// line 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_sorted.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_reversed_input() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_basic_reversed.rs", content);
+
+        // Reversed input: 2, 1 (should auto-correct to 1, 2)
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 2, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n// line 1\n// line 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_reversed.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_single_line() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_basic_single.rs", content);
+
+        // Range of one line (1, 1)
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n// line 1\nline 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_single.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_mixed_state() {
+        let content = "line 0\n// line 1\nline 2\n// line 3\n";
+        let test_file = create_test_file("test_range_basic_mixed.rs", content);
+
+        // Toggle range with mixed commented/uncommented
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        // Each line toggled independently
+        assert_eq!(new_content, "line 0\nline 1\n// line 2\n// line 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_mixed.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_full_file() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_basic_full.rs", content);
+
+        // Toggle entire file
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "// line 0\n// line 1\n// line 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_full.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_python() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_basic_python.py", content);
+
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "# line 0\n# line 1\nline 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_python.py"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_exceeds_128_lines() {
+        let content = "line\n".repeat(150);
+        let test_file = create_test_file("test_range_basic_too_large.rs", &content);
+
+        // Try to toggle 129 lines (0 to 128 inclusive)
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 128);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::RangeTooLarge {
+                requested: 129,
+                max: 128
+            })
+        ));
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_exactly_128_lines() {
+        let content = "line\n".repeat(128);
+        let test_file = create_test_file("test_range_basic_max.rs", &content);
+
+        // Exactly 128 lines should succeed
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 127);
+        assert!(result.is_ok());
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_max.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_beyond_eof() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_range_basic_eof.rs", content);
+
+        // Range beyond file
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 10);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::LineNotFound { .. })
+        ));
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_eof.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_roundtrip() {
+        let original = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_basic_roundtrip.rs", original);
+
+        // Toggle on
+        let result1 = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
+        assert!(result1.is_ok());
+
+        let content1 = read_file_content(&test_file);
+        assert_eq!(content1, "// line 0\n// line 1\n// line 2\n");
+
+        // Toggle off
+        let result2 = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
+        assert!(result2.is_ok());
+
+        let content2 = read_file_content(&test_file);
+        assert_eq!(content2, original);
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_roundtrip.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_preserves_outside() {
+        let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
+        let test_file = create_test_file("test_range_basic_preserve.rs", content);
+
+        // Toggle only middle lines
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 3);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(
+            new_content,
+            "line 0\n// line 1\n// line 2\n// line 3\nline 4\n"
+        );
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_basic_preserve.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_no_extension() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_range_basic_noext", content);
+
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
+        assert!(matches!(result, Err(ToggleCommentError::NoExtension)));
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_toggle_range_basic_unsupported_extension() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_range_basic_unsupported.txt", content);
+
+        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::UnsupportedExtension)
+        ));
+
+        cleanup_files(&[&test_file]);
+    }
+
+    // ========================================
+    // toggle_range_rust_docstring() Tests
+    // ========================================
+
+    #[test]
+    fn test_toggle_range_docstring_sorted_input() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_doc_sorted.rs", content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n/// line 1\n/// line 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_sorted.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_reversed_input() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_doc_reversed.rs", content);
+
+        // Reversed input
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 2, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n/// line 1\n/// line 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_reversed.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_single_line() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_doc_single.rs", content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n/// line 1\nline 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_single.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_mixed_state() {
+        let content = "line 0\n/// line 1\nline 2\n/// line 3\n";
+        let test_file = create_test_file("test_range_doc_mixed.rs", content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        // Each line toggled independently
+        assert_eq!(new_content, "line 0\nline 1\n/// line 2\n/// line 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_mixed.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_exceeds_128_lines() {
+        let content = "line\n".repeat(150);
+        let test_file = create_test_file("test_range_doc_too_large.rs", &content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 128);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::RangeTooLarge {
+                requested: 129,
+                max: 128
+            })
+        ));
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_exactly_128_lines() {
+        let content = "line\n".repeat(128);
+        let test_file = create_test_file("test_range_doc_max.rs", &content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 127);
+        assert!(result.is_ok());
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_max.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_roundtrip() {
+        let original = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_doc_roundtrip.rs", original);
+
+        // Toggle on
+        let result1 = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
+        assert!(result1.is_ok());
+
+        let content1 = read_file_content(&test_file);
+        assert_eq!(content1, "/// line 0\n/// line 1\n/// line 2\n");
+
+        // Toggle off
+        let result2 = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
+        assert!(result2.is_ok());
+
+        let content2 = read_file_content(&test_file);
+        assert_eq!(content2, original);
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_roundtrip.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_no_extension_check() {
+        // Docstring function should work on any file (no extension validation)
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_range_doc_anyfile.txt", content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "/// line 0\n/// line 1\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_anyfile.txt"),
+        ]);
+    }
+
+    #[test]
+    fn test_toggle_range_docstring_preserves_line_endings() {
+        let content = "line 0\r\nline 1\r\nline 2\r\n";
+        let test_file = create_test_file("test_range_doc_crlf.rs", content);
+
+        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "/// line 0\r\n/// line 1\r\n/// line 2\r\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_doc_crlf.rs"),
+        ]);
+    }
+}
+
+/// Process file line-by-line, adding 4 spaces to lines in range
+///
+/// # Arguments
+/// * `source_path` - Original file to read from
+/// * `dest_path` - Temporary file to write modified content to
+/// * `start_line` - First line to indent (inclusive)
+/// * `end_line` - Last line to indent (inclusive)
+///
+/// # Returns
+/// * `Ok(())` - Processing succeeded, all lines in range indented
+/// * `Err(ToggleIndentError)` - Processing failed
+///
+/// # Safety
+/// - Pre-allocated buffers only
+/// - Bounded line length checks
+/// - No dynamic allocation during loop
+fn process_file_indent_range(
+    source_path: &Path,
+    dest_path: &Path,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(), ToggleIndentError> {
+    // Open source file
+    let source_file = match File::open(source_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+    };
+
+    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
+
+    // Create destination file
+    let dest_file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dest_path)
+    {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -4188,14 +5149,14 @@ fn process_file_indent_range(
     loop {
         // Safety check
         if current_line > line_limit {
-            return Err(IndentError::IoError(IoOperation::Read));
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(IndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
         };
 
         if bytes_read == 0 {
@@ -4204,7 +5165,7 @@ fn process_file_indent_range(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(IndentError::LineTooLong {
+            return Err(ToggleIndentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -4224,7 +5185,7 @@ fn process_file_indent_range(
         } else {
             // Not in range - copy unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(IndentError::IoError(IoOperation::Write));
+                return Err(ToggleIndentError::IoError(IoOperation::Write));
             }
         }
 
@@ -4233,12 +5194,12 @@ fn process_file_indent_range(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(IndentError::IoError(IoOperation::Flush));
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
     }
 
     // Verify we found the end line
     if !found_end_line {
-        return Err(IndentError::LineNotFound {
+        return Err(ToggleIndentError::LineNotFound {
             requested: end_line,
             file_lines: current_line,
         });
@@ -4257,17 +5218,17 @@ fn process_file_indent_range(
 ///
 /// # Returns
 /// * `Ok(())` - Processing succeeded, all lines in range unindented
-/// * `Err(IndentError)` - Processing failed
+/// * `Err(ToggleIndentError)` - Processing failed
 fn process_file_unindent_range(
     source_path: &Path,
     dest_path: &Path,
     start_line: usize,
     end_line: usize,
-) -> Result<(), IndentError> {
+) -> Result<(), ToggleIndentError> {
     // Open source file
     let source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
     };
 
     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
@@ -4280,7 +5241,7 @@ fn process_file_unindent_range(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(IndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
@@ -4296,14 +5257,14 @@ fn process_file_unindent_range(
     loop {
         // Safety check
         if current_line > line_limit {
-            return Err(IndentError::IoError(IoOperation::Read));
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
         }
 
         line_buffer.clear();
 
         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
             Ok(n) => n,
-            Err(_) => return Err(IndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
         };
 
         if bytes_read == 0 {
@@ -4312,7 +5273,7 @@ fn process_file_unindent_range(
 
         // Safety: check line length
         if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(IndentError::LineTooLong {
+            return Err(ToggleIndentError::LineTooLong {
                 line_number: current_line,
                 length: line_buffer.len(),
             });
@@ -4332,7 +5293,7 @@ fn process_file_unindent_range(
         } else {
             // Not in range - copy unchanged
             if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(IndentError::IoError(IoOperation::Write));
+                return Err(ToggleIndentError::IoError(IoOperation::Write));
             }
         }
 
@@ -4341,12 +5302,12 @@ fn process_file_unindent_range(
 
     // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(IndentError::IoError(IoOperation::Flush));
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
     }
 
     // Verify we found the end line
     if !found_end_line {
-        return Err(IndentError::LineNotFound {
+        return Err(ToggleIndentError::LineNotFound {
             requested: end_line,
             file_lines: current_line,
         });
@@ -4362,27 +5323,6 @@ fn process_file_unindent_range(
 #[cfg(test)]
 mod indent_range_tests {
     use super::*;
-
-    /// Helper: create a temporary test file with given content
-    fn create_test_file(filename: &str, content: &str) -> PathBuf {
-        let path = PathBuf::from(filename);
-        let mut file = File::create(&path).expect("Failed to create test file");
-        file.write_all(content.as_bytes())
-            .expect("Failed to write test file");
-        path
-    }
-
-    /// Helper: read file content as string
-    fn read_file_content(path: &Path) -> String {
-        std::fs::read_to_string(path).expect("Failed to read file")
-    }
-
-    /// Helper: cleanup test files
-    fn cleanup_files(paths: &[&Path]) {
-        for path in paths {
-            let _ = std::fs::remove_file(path);
-        }
-    }
 
     // ========================================
     // Indent Range Tests
@@ -4441,25 +5381,16 @@ mod indent_range_tests {
     }
 
     #[test]
-    fn test_indent_range_invalid_range() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_indent_range_invalid.txt", content);
-
-        // start > end
-        let result = indent_range(test_file.to_str().unwrap(), 2, 1);
-        assert!(matches!(result, Err(IndentError::InvalidLineRange)));
-
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
     fn test_indent_range_beyond_eof() {
         let content = "line 0\nline 1\n";
         let test_file = create_test_file("test_indent_range_eof.txt", content);
 
         // end_line beyond file
         let result = indent_range(test_file.to_str().unwrap(), 0, 10);
-        assert!(matches!(result, Err(IndentError::LineNotFound { .. })));
+        assert!(matches!(
+            result,
+            Err(ToggleIndentError::LineNotFound { .. })
+        ));
 
         cleanup_files(&[
             &test_file,
@@ -4559,18 +5490,6 @@ mod indent_range_tests {
             &test_file,
             &PathBuf::from("backup_toggle_comment_test_unindent_range_single.txt"),
         ]);
-    }
-
-    #[test]
-    fn test_unindent_range_invalid_range() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_unindent_range_invalid.txt", content);
-
-        // start > end
-        let result = unindent_range(test_file.to_str().unwrap(), 2, 1);
-        assert!(matches!(result, Err(IndentError::InvalidLineRange)));
-
-        cleanup_files(&[&test_file]);
     }
 
     // ========================================

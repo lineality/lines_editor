@@ -981,10 +981,11 @@ use std::io::{self, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::toggle_comment_module::{
-    IndentError, ToggleError, indent_line, indent_range, toggle_basic_singleline_comment,
-    toggle_block_comment, toggle_multiple_basic_comments, toggle_multiple_singline_docstrings,
-    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
+use super::toggle_comment_indent_module::{
+    ToggleCommentError, ToggleIndentError, indent_line, indent_range,
+    toggle_basic_singleline_comment, toggle_block_comment, toggle_multiple_basic_comments,
+    toggle_multiple_singline_docstrings, toggle_rust_docstring_singleline_comment, unindent_line,
+    unindent_range,
 };
 
 /// state.rs - Core editor state management with pre-allocated buffers
@@ -1261,43 +1262,72 @@ fn get_error_log_path() -> io::Result<PathBuf> {
     Ok(log_path)
 }
 
-/// Automatic conversion from ToggleError to LinesError
-impl From<ToggleError> for LinesError {
-    fn from(err: ToggleError) -> Self {
-        // Map ToggleError variants to appropriate LinesError categories
+/// Automatic conversion from ToggleCommentError to LinesError
+impl From<ToggleCommentError> for LinesError {
+    fn from(err: ToggleCommentError) -> Self {
+        // Map ToggleCommentError variants to appropriate LinesError categories
         match err {
-            ToggleError::FileNotFound
-            | ToggleError::NoExtension
-            | ToggleError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
-            ToggleError::LineNotFound { .. } | ToggleError::InvalidLineRange => {
-                LinesError::InvalidInput(err.to_string())
-            }
-            ToggleError::IoError(_) => {
+            ToggleCommentError::FileNotFound
+            | ToggleCommentError::NoExtension
+            | ToggleCommentError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
+            ToggleCommentError::LineNotFound { .. } => LinesError::InvalidInput(err.to_string()),
+            ToggleCommentError::IoError(_) => {
                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
             }
-            ToggleError::PathError => LinesError::StateError(err.to_string()),
-            ToggleError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
-            ToggleError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
+            ToggleCommentError::PathError => LinesError::StateError(err.to_string()),
+            ToggleCommentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+            ToggleCommentError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
+            ToggleCommentError::RangeTooLarge { .. } => LinesError::InvalidInput(err.to_string()),
         }
     }
 }
 
-/// Automatic conversion from IndentError to LinesError
-impl From<IndentError> for LinesError {
-    fn from(err: IndentError) -> Self {
+/// Automatic conversion from ToggleIndentError to LinesError
+impl From<ToggleIndentError> for LinesError {
+    fn from(err: ToggleIndentError) -> Self {
         match err {
-            IndentError::FileNotFound => LinesError::InvalidInput(err.to_string()),
-            IndentError::LineNotFound { .. } | IndentError::InvalidLineRange => {
-                LinesError::InvalidInput(err.to_string())
-            }
-            IndentError::IoError(_) => {
+            ToggleIndentError::FileNotFound => LinesError::InvalidInput(err.to_string()),
+            ToggleIndentError::LineNotFound { .. } => LinesError::InvalidInput(err.to_string()),
+            ToggleIndentError::IoError(_) => {
                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
             }
-            IndentError::PathError => LinesError::StateError(err.to_string()),
-            IndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+            ToggleIndentError::PathError => LinesError::StateError(err.to_string()),
+            ToggleIndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
         }
     }
 }
+
+// /// Automatic conversion from ToggleError to LinesError
+// impl From<ToggleError> for LinesError {
+//     fn from(err: ToggleError) -> Self {
+//         // Map ToggleError variants to appropriate LinesError categories
+//         match err {
+//             ToggleError::FileNotFound
+//             | ToggleError::NoExtension
+//             | ToggleError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
+//             ToggleError::IoError(_) => {
+//                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
+//             }
+//             ToggleError::PathError => LinesError::StateError(err.to_string()),
+//             ToggleError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+//             ToggleError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
+//         }
+//     }
+// }
+
+// /// Automatic conversion from IndentError to LinesError
+// impl From<IndentError> for LinesError {
+//     fn from(err: IndentError) -> Self {
+//         match err {
+//             IndentError::FileNotFound => LinesError::InvalidInput(err.to_string()),
+//             IndentError::IoError(_) => {
+//                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
+//             }
+//             IndentError::PathError => LinesError::StateError(err.to_string()),
+//             IndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
+//         }
+//     }
+// }
 
 // ============================================================================
 // (end) ERROR HANDLING SYSTEM
