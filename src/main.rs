@@ -9,19 +9,13 @@ use lines_editor_module::{
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
-mod toggle_comment_indent_module;
-use toggle_comment_indent_module::{
-    ToggleCommentError, ToggleIndentError, indent_line, indent_range,
-    toggle_basic_singleline_comment, toggle_block_comment, toggle_multiple_basic_comments,
-    toggle_multiple_singline_docstrings, toggle_rust_docstring_singleline_comment, unindent_line,
-    unindent_range,
-};
-
 mod buttons_reversible_edit_changelog_module;
+mod toggle_comment_indent_module;
 
 // "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
+
 // Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
@@ -34,6 +28,14 @@ const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new(
         "src/lines_editor_module.rs",
         include_str!("lines_editor_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/buttons_reversible_edit_changelog_module.rs",
+        include_str!("buttons_reversible_edit_changelog_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/toggle_comment_indent_module.rs",
+        include_str!("toggle_comment_indent_module.rs"),
     ),
     // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
     SourcedFile::new("README.md", include_str!("../README.md")),
