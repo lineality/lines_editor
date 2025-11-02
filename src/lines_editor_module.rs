@@ -989,9 +989,11 @@ use super::toggle_comment_indent_module::{
 };
 
 use super::buttons_reversible_edit_changelog_module::{
-    ButtonError, button_clear_all_redo_logs, button_hexeditinplace_byte_make_log_file,
-    button_undo_redo_next_inverse_changelog_pop_lifo, get_redo_changelog_directory_path,
-    get_undo_changelog_directory_path, read_single_byte_from_file,
+    ButtonError, EditType, button_clear_all_redo_logs, button_hexeditinplace_byte_make_log_file,
+    button_make_changeloge_from_user_character_action_level,
+    button_undo_redo_next_inverse_changelog_pop_lifo, detect_utf8_byte_count,
+    get_redo_changelog_directory_path, get_undo_changelog_directory_path,
+    read_single_byte_from_file,
 };
 
 /// state.rs - Core editor state management with pre-allocated buffers
@@ -3685,6 +3687,331 @@ impl EditorState {
         }
     }
 
+    // /// Handles user input in Pasty mode using bucket-brigade accumulation
+    // ///
+    // /// # Purpose
+    // /// Reads user input from stdin (which may be longer than buffer size), accumulates
+    // /// it using bucket-brigade technique, and parses it into a PastyInputPathOrCommand.
+    // ///
+    // /// # Differences from Insert Mode Input Handler
+    // /// **Similarities:**
+    // /// - Uses bucket-brigade for inputs larger than buffer
+    // /// - Uses pre-allocated buffers only (no heap)
+    // /// - Bounded iteration loops for safety
+    // /// - Defensive error handling
+    // ///
+    // /// **Key Differences:**
+    // /// - **Single-line only**: No multi-line content processing (paths are single line)
+    // /// - **Simpler delimiter handling**: Final `\n` is ALWAYS stdin delimiter, never content
+    // /// - **No immediate processing**: Accumulate ALL chunks first, THEN parse complete string
+    // /// - **Accumulates to state buffer**: Uses `state_file_tui_window_map_buffer` for accumulation
+    // ///
+    // /// # Bucket Brigade for Pasty Mode
+    // ///
+    // /// Since file paths can exceed 256 bytes (TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE),
+    // /// we use bucket-brigade to accumulate input:
+    // ///
+    // /// 1. Clear `state_file_tui_window_map_buffer` (8192 bytes available)
+    // /// 2. Read chunks from stdin into `text_buffer` (256 bytes)
+    // /// 3. Copy each chunk into accumulation buffer
+    // /// 4. Continue until: delimiter found, EOF, buffer full, or iteration limit
+    // /// 5. Parse complete accumulated string
+    // ///
+    // /// **Why this works for Pasty:**
+    // /// - `state_file_tui_window_map_buffer` gets cleared on every TUI render
+    // /// - Pasty mode doesn't conflict with file window rendering
+    // /// - 8192 bytes is plenty for any reasonable filesystem path
+    // ///
+    // /// # Input Parsing Priority (Fixed Order)
+    // ///
+    // /// After accumulation completes, input is parsed in this EXACT order:
+    // ///
+    // /// 1. **Empty input** → `Empty` (select most recent clipboard item)
+    // /// 2. **Explicit commands** (checked first, take absolute priority):
+    // ///    - "b" → `Back`
+    // ///    - "k" or "up" → `PageUp`
+    // ///    - "j" or "down" → `PageDown`
+    // ///    - "clear" → `ClearAll`
+    // ///    - "clearN" (where N is digits) → `ClearRank(N)`
+    // /// 3. **Number parsing** → Try `parse::<usize>()` → If success → `SelectRank(n)`
+    // /// 4. **Fallback** → Treat as filepath → `SelectPath(PathBuf::from(input))`
+    // ///
+    // /// **Important:** Commands take absolute priority. User CANNOT select files
+    // /// literally named "b", "clear", "k", etc. This is acceptable tradeoff for
+    // /// command clarity.
+    // ///
+    // /// # Error Handling Policy
+    // ///
+    // /// Per project guidelines, this function does NOT return error variants in the enum.
+    // /// All failures return `Err(io::Error)`:
+    // ///
+    // /// * **Input too long** (exceeds 8192 bytes) → `Err(io::Error::new(InvalidInput, "input too long"))`
+    // /// * **Invalid UTF-8** → `Err(io::Error::new(InvalidData, "invalid UTF-8"))`
+    // /// * **Stdin read failure** → `Err(io::Error)` (propagated from read)
+    // /// * **Any unexpected failure** → `Err(io::Error::new(Other, "operation failed"))`
+    // ///
+    // /// Caller is responsible for:
+    // /// - Catching errors
+    // /// - Setting info bar message
+    // /// - Returning to stable state (typically stay in Pasty mode loop, re-prompt user)
+    // ///
+    // /// # Return Value
+    // ///
+    // /// * `Ok(PastyInputPathOrCommand)` - Successfully parsed valid input
+    // /// * `Err(io::Error)` - Input invalid, too long, or read failure occurred
+    // ///
+    // /// # Arguments
+    // ///
+    // /// * `stdin_handle` - Locked stdin for reading (mutable to read)
+    // /// * `text_buffer` - Pre-allocated chunk buffer (256 bytes, reused per chunk)
+    // ///
+    // /// # Safety Bounds
+    // ///
+    // /// * **Bucket brigade iterations**: Limited to `limits::TEXT_INPUT_CHUNKS`
+    // /// * **Accumulation buffer size**: Limited to `FILE_TUI_WINDOW_MAP_BUFFER_SIZE` (8192 bytes)
+    // /// * **Input validation**: All strings validated before PathBuf creation
+    // ///
+    // /// # Example Usage
+    // ///
+    // /// ```ignore
+    // /// // In pasty_mode() loop:
+    // /// match self.handle_pasty_mode_input(&mut stdin_handle, &mut text_buffer) {
+    // ///     Ok(PastyInputPathOrCommand::Back) => {
+    // ///         // Exit Pasty mode
+    // ///         return Ok(true);
+    // ///     }
+    // ///     Ok(PastyInputPathOrCommand::SelectPath(path)) => {
+    // ///         // Insert file at cursor
+    // ///         insert_file_at_cursor(self, &path)?;
+    // ///         return Ok(true);
+    // ///     }
+    // ///     Ok(other_command) => {
+    // ///         // Handle pagination, clear, etc.
+    // ///         // Stay in loop
+    // ///     }
+    // ///     Err(e) => {
+    // ///         self.set_info_bar_message("invalid input");
+    // ///         // Stay in loop, re-prompt user
+    // ///     }
+    // /// }
+    // /// ```
+    // ///
+    // /// # Edge Cases
+    // ///
+    // /// **Empty input (just Enter key):**
+    // /// - Returns `Ok(Empty)` to select most recent clipboard item
+    // ///
+    // /// **Whitespace-only input:**
+    // /// - Treated same as empty after trim()
+    // ///
+    // /// **Input exactly equals buffer size:**
+    // /// - Not overflow, processed normally
+    // ///
+    // /// **Path with spaces:**
+    // /// - Spaces preserved, treated as filepath
+    // /// - Example: "my file.txt" → `SelectPath("my file.txt")`
+    // ///
+    // /// **Ambiguous input like "123":**
+    // /// - Parsed as number first → `SelectRank(123)`
+    // /// - To force filepath interpretation, not currently supported
+    // /// - Future: could require prefix like "/" or "./" for paths
+    // ///
+    // /// **Files named after commands:**
+    // /// - Commands take priority
+    // /// - File named "b" cannot be selected (command "b" matches first)
+    // /// - This is acceptable tradeoff for command simplicity
+    // ///
+    // /// # Buffer Reuse Safety
+    // ///
+    // /// This method reuses `state_file_tui_window_map_buffer` which is also used by TUI rendering.
+    // /// This is safe because:
+    // /// - Buffer is cleared at start of this function
+    // /// - Buffer is cleared on every TUI render (which happens AFTER we return)
+    // /// - Pasty mode doesn't display file content (no conflict with window map)
+    // /// - Buffer size (8192) is sufficient for both uses
+    // ///
+    // /// # Defensive Programming
+    // ///
+    // /// - Pre-allocated buffers only (no dynamic allocation)
+    // /// - Bounded iteration loops (prevent infinite loops)
+    // /// - Explicit buffer overflow checks
+    // /// - All strings validated before use
+    // /// - No unwrap() or panic!() calls
+    // /// - Early returns on error conditions
+    // /// - Clear documentation of assumptions
+    // ///
+    // /// # Future Enhancements
+    // ///
+    // /// Possible improvements (out of current scope):
+    // /// - Path prefix requirement (`/` or `./`) to disambiguate from numbers/commands
+    // /// - Tab completion for file paths
+    // /// - History of recently used paths
+    // /// - Validation that path exists (currently accepted without validation)
+    // fn handle_pasty_mode_input(
+    //     &mut self,
+    //     stdin_handle: &mut StdinLock,
+    //     text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
+    // ) -> io::Result<PastyInputPathOrCommand> {
+    //     // // Clear accumulation buffer before use
+    //     // // (Defensive: ensure no stale data from previous operations)
+    //     // for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+    //     //     self.state_file_tui_window_map_buffer[i] = 0;
+    //     // }
+
+    //     // Create local accumulation buffer on stack
+    //     // Buffer name matches FILE_TUI_WINDOW_MAP_BUFFER_SIZE constant
+    //     // No clearing needed - accumulated_bytes bounds valid data
+    //     let mut file_tui_windowmap_buffer = [0u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE];
+
+    //     // to force-reset manually clear overwrite buffers
+    //     if self.security_mode {
+    //         // Clear buffer before reading
+    //         for i in 0..FILE_TUI_WINDOW_MAP_BUFFER_SIZE {
+    //             file_tui_windowmap_buffer[i] = 0;
+    //         }
+    //     }
+
+    //     let mut accumulated_bytes: usize = 0;
+    //     let mut found_delimiter = false;
+    //     let mut chunk_count = 0;
+
+    //     //  ///////////////////
+    //     //  Bucket Brigade Loop
+    //     //  ///////////////////
+
+    //     loop {
+    //         chunk_count += 1;
+
+    //         // Safety bound: prevent infinite loops from malformed stdin
+    //         if chunk_count > limits::TEXT_INPUT_CHUNKS {
+    //             return Err(io::Error::new(
+    //                 io::ErrorKind::InvalidInput,
+    //                 "input too long (iteration limit)",
+    //             ));
+    //         }
+
+    //         // Clear chunk buffer before reading
+    //         for i in 0..TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE {
+    //             text_buffer[i] = 0;
+    //         }
+
+    //         // Read next chunk from stdin
+    //         let bytes_read = stdin_handle.read(text_buffer)?;
+
+    //         // EOF detected
+    //         if bytes_read == 0 {
+    //             break;
+    //         }
+
+    //         // Check if this chunk contains the delimiter (newline)
+    //         // In Pasty mode, final \n is ALWAYS the stdin delimiter, never content
+    //         if text_buffer[..bytes_read].contains(&b'\n') {
+    //             found_delimiter = true;
+    //         }
+
+    //         // Calculate how much we can safely copy to accumulation buffer
+    //         let space_remaining = FILE_TUI_WINDOW_MAP_BUFFER_SIZE - accumulated_bytes;
+
+    //         // Check for buffer overflow
+    //         if space_remaining == 0 {
+    //             return Err(io::Error::new(
+    //                 io::ErrorKind::InvalidInput,
+    //                 "input too long (buffer full)",
+    //             ));
+    //         }
+
+    //         let copy_len = bytes_read.min(space_remaining);
+
+    //         // Copy chunk into accumulation buffer
+    //         for i in 0..copy_len {
+    //             file_tui_windowmap_buffer[accumulated_bytes + i] = text_buffer[i];
+    //         }
+
+    //         accumulated_bytes += copy_len;
+
+    //         // Check if we've copied less than read (buffer full)
+    //         if copy_len < bytes_read {
+    //             return Err(io::Error::new(
+    //                 io::ErrorKind::InvalidInput,
+    //                 "input too long (truncated)",
+    //             ));
+    //         }
+
+    //         // Stop accumulating if:
+    //         // 1. Delimiter found (complete input received)
+    //         // 2. Buffer full (no more space)
+    //         // 3. Partial read (stdin has no more immediate data)
+    //         if found_delimiter
+    //             || accumulated_bytes >= FILE_TUI_WINDOW_MAP_BUFFER_SIZE
+    //             || bytes_read < TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE
+    //         {
+    //             break;
+    //         }
+    //     }
+
+    //     //  ////////////////////////////
+    //     //  Parse Accumulated Input
+    //     //  ////////////////////////////
+
+    //     // Convert bytes to UTF-8 string
+    //     // Only process valid bytes [0..accumulated_bytes], rest is unused
+    //     let input_str = std::str::from_utf8(&file_tui_windowmap_buffer[..accumulated_bytes])
+    //         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
+    //     // Trim whitespace and newline delimiter
+    //     let trimmed = input_str.trim();
+
+    //     //  ////////////////////////////
+    //     //  Parse with Priority Order:
+    //     //  1. Empty
+    //     //  2. Explicit commands
+    //     //  3. Numbers (rank selection)
+    //     //  4. Paths (fallback)
+    //     //  ////////////////////////////
+
+    //     // 1. Empty input → Select most recent clipboard item
+    //     if trimmed.is_empty() {
+    //         return Ok(PastyInputPathOrCommand::EmptyEnterFirstItem);
+    //     }
+
+    //     // 2. Explicit commands (take absolute priority)
+
+    //     if trimmed == "b" || trimmed == "q" || trimmed == "n" || trimmed == "\x1b" {
+    //         return Ok(PastyInputPathOrCommand::Back);
+    //     }
+
+    //     if trimmed == "k" || trimmed == "up" || trimmed == "\x1b[A" {
+    //         return Ok(PastyInputPathOrCommand::PageUp);
+    //     }
+
+    //     if trimmed == "j" || trimmed == "down" || trimmed == "\x1b[B" {
+    //         return Ok(PastyInputPathOrCommand::PageDown);
+    //     }
+
+    //     if trimmed == "clear" {
+    //         return Ok(PastyInputPathOrCommand::ClearAll);
+    //     }
+
+    //     // Check for "clearN" pattern (e.g., "clear3")
+    //     if trimmed.starts_with("clear") && trimmed.len() > 5 {
+    //         let num_str = &trimmed[5..];
+    //         if let Ok(rank) = num_str.parse::<usize>() {
+    //             return Ok(PastyInputPathOrCommand::ClearRank(rank));
+    //         }
+    //         // If parse fails, fall through to path handling
+    //         // (maybe they want a file named "clearxyz")
+    //     }
+
+    //     // 3. Try parsing as rank number
+    //     if let Ok(rank) = trimmed.parse::<usize>() {
+    //         return Ok(PastyInputPathOrCommand::SelectRank(rank));
+    //     }
+
+    //     // 4. Fallback: treat as filepath
+    //     // Note: No validation that path exists - caller's responsibility
+    //     // Note: Relative paths accepted - conversion to absolute happens elsewhere
+    //     Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
+    // }
+
     /// Handles user input in Pasty mode using bucket-brigade accumulation
     ///
     /// # Purpose
@@ -4364,10 +4691,9 @@ impl EditorState {
         // Loop iteration counter (defensive bounds)
         let mut pasty_iteration = 0;
 
-        //  /////////////////
+        //  ===============
         //  Pasty Mode Loop
-        //  /////////////////
-
+        //  ===============
         loop {
             pasty_iteration += 1;
 
@@ -4378,10 +4704,9 @@ impl EditorState {
                 return Ok(true); // Exit gracefully, return to normal mode
             }
 
-            //  ///////////////////
+            //  ===================
             //  Get Clipboard Files
-            //  ///////////////////
-
+            //  ===================
             // Fresh scan each iteration (defensive: no stale cached list)
             let sorted_files = match read_and_sort_pasty_clipboard(&clipboard_dir) {
                 Ok(files) => files,
@@ -4400,37 +4725,34 @@ impl EditorState {
                 offset = total_count.saturating_sub(items_per_page).max(0);
             }
 
-            //  //////////////////
+            //  ================
             //  Render Pasty TUI
-            //  //////////////////
-
+            //  ================
             if let Err(_) = render_pasty_tui(self, &sorted_files, offset, items_per_page) {
                 let _ = self.set_info_bar_message("display error");
                 // Try to continue anyway
             }
 
-            //  ////////////////////
+            //  ==============
             //  Get User Input
-            //  ////////////////////
-
+            //  ==============
             let input_result = self.handle_pasty_mode_input(stdin_handle, text_buffer);
 
-            //  ////////////////////
+            //  =============
             //  Process Input
-            //  ////////////////////
-
+            //  =============
             match input_result {
-                //  ////////
+                //  ==============================
                 //  Back Command - Exit Pasty Mode
-                //  ////////
+                //  ==============================
                 Ok(PastyInputPathOrCommand::Back) => {
                     let _ = self.set_info_bar_message(""); // Clear any error messages
                     return Ok(true); // Exit Pasty mode, back to editor
                 }
 
-                //  ////////
-                //  Empty Input - Select Most Recent (Rank 1)
-                //  ////////
+                //  ==========================================
+                //  Empty Input -> Select Most Recent (Rank 1)
+                //  ==========================================
                 Ok(PastyInputPathOrCommand::EmptyEnterFirstItem) => {
                     if sorted_files.is_empty() {
                         let _ = self.set_info_bar_message("*clipboard empty*");
@@ -4450,9 +4772,9 @@ impl EditorState {
                     return Ok(true); // Exit Pasty mode
                 }
 
-                //  ////////
+                //  =====================
                 //  Select by Rank Number
-                //  ////////
+                //  =====================
                 Ok(PastyInputPathOrCommand::SelectRank(rank)) => {
                     // Validate rank is in range (1-indexed display, 0-indexed array)
                     if rank == 0 || rank > total_count {
@@ -4473,9 +4795,9 @@ impl EditorState {
                     return Ok(true); // Exit Pasty mode
                 }
 
-                //  ////////
+                //  ==============
                 //  Select by Path
-                //  ////////
+                //  ==============
                 Ok(PastyInputPathOrCommand::SelectPath(path)) => {
                     // Convert to absolute path (defensive)
                     let absolute_path = if path.is_absolute() {
@@ -4501,18 +4823,18 @@ impl EditorState {
                     return Ok(true); // Exit Pasty mode
                 }
 
-                //  ////////
+                //  =======
                 //  Page Up
-                //  ////////
+                //  =======
                 Ok(PastyInputPathOrCommand::PageUp) => {
                     offset = offset.saturating_sub(items_per_page);
                     let _ = self.set_info_bar_message(""); // Clear any previous messages
                     continue; // Stay in loop, refresh display
                 }
 
-                //  ////////
+                //  =========
                 //  Page Down
-                //  ////////
+                //  =========
                 Ok(PastyInputPathOrCommand::PageDown) => {
                     let new_offset = offset + items_per_page;
                     // Only advance if there are more items to show
@@ -4523,9 +4845,9 @@ impl EditorState {
                     continue; // Stay in loop, refresh display
                 }
 
-                //  ////////
+                //  ===================
                 //  Clear All Clipboard
-                //  ////////
+                //  ===================
                 Ok(PastyInputPathOrCommand::ClearAll) => {
                     if let Err(_) = clear_pasty_file_clipboard(&clipboard_dir) {
                         let _ = self.set_info_bar_message("*clear failed*");
@@ -4537,9 +4859,9 @@ impl EditorState {
                     continue; // Stay in loop, refresh display
                 }
 
-                //  ////////
+                //  ===================
                 //  Clear Specific Rank
-                //  ////////
+                //  ===================
                 Ok(PastyInputPathOrCommand::ClearRank(rank)) => {
                     // Validate rank is in range
                     if rank == 0 || rank > total_count {
@@ -4565,16 +4887,15 @@ impl EditorState {
                     continue; // Stay in loop, refresh display
                 }
 
-                //  ////////
+                //  ==============================================
                 //  Input Error (invalid, too long, parse failure)
-                //  ////////
+                //  ==============================================
                 Err(_) => {
                     let _ = self.set_info_bar_message("invalid input");
                     continue; // Stay in loop, re-prompt user
                 }
             }
         }
-        // Ok(keep_editor_loop_running)
     }
 
     /// Writes a hex-edited byte and creates undo log entry
@@ -11219,6 +11540,563 @@ fn insert_newline_at_cursor_chunked(
 // FILE INSERTION AT CURSOR
 // ============================================================================
 
+// /// Inserts entire source file at cursor position, then removes final byte
+// ///
+// /// # Overview
+// ///
+// /// This function reads a source file chunk-by-chunk and inserts it at the current
+// /// cursor position in the target file. After all chunks are inserted, it removes
+// /// the final byte (typically a trailing newline per POSIX convention).
+// ///
+// /// # Design Philosophy: Byte Offset Math, Not Cursor Tracking
+// ///
+// /// **Problem with cursor tracking:**
+// /// During multi-line insertion, cursor position becomes ambiguous. After inserting
+// /// "hello\nworld", where is the cursor? Line 2, column 5? But what if windowmap
+// /// hasn't rebuilt yet? What if horizontal scrolling occurred? Cursor state becomes
+// /// unreliable mid-operation.
+// ///
+// /// **Solution: Pure byte offset arithmetic:**
+// /// - Read cursor position ONCE at start → get starting byte offset
+// /// - Calculate each chunk's position: `start_offset + bytes_already_written`
+// /// - Track total bytes written as simple integer counter
+// /// - Delete final byte at known position: `start_offset + total_bytes - 1`
+// ///
+// /// This eliminates state synchronization issues. No cursor updates during insertion.
+// /// Windowmap rebuilt once at end when all data is in place.
+// ///
+// /// # Memory Safety - Stack Allocation Only
+// ///
+// /// **Heap allocations in this function (unavoidable):**
+// /// - `PathBuf` for file paths (Rust stdlib requirement)
+// /// - Error message strings via `format!()` (logging only)
+// ///
+// /// **Critical buffers are stack-allocated:**
+// /// - Source file read buffer: `[0u8; 256]` - 256 bytes on stack
+// /// - Shift buffer in helper functions: `[0u8; 8192]` - 8KB on stack
+// /// - No Vec, no String for data processing
+// /// - No dynamic allocation during bucket brigade
+// ///
+// /// **Per NASA Rule 3 (pre-allocate memory):**
+// /// All working buffers are fixed-size arrays allocated at function scope.
+// /// No runtime memory allocation for data processing occurs.
+// ///
+// /// # Bucket Brigade Pattern
+// ///
+// /// Named after firefighting bucket brigades where buckets pass hand-to-hand:
+// /// 1. Read 256-byte chunk from source file
+// /// 2. Calculate insertion position for this chunk
+// /// 3. Insert chunk at calculated position
+// /// 4. Update total bytes written counter
+// /// 5. Repeat until EOF (bytes_read == 0)
+// ///
+// /// **Iteration safety:** Limited to MAX_CHUNKS (16,777,216) to prevent infinite
+// /// loops from filesystem corruption or cosmic ray bit flips.
+// ///
+// /// # File Operations
+// ///
+// /// **Source file:**
+// /// - Opened read-only
+// /// - Read sequentially chunk-by-chunk
+// /// - Never loaded entirely into memory
+// /// - Automatically closed when function exits (RAII)
+// ///
+// /// **Target file (read_copy):**
+// /// - Modified via position-based insertion
+// /// - Each chunk insertion shifts subsequent bytes right
+// /// - Final byte deletion shifts bytes left by 1
+// /// - File operations are atomic per-chunk (but not transactional overall)
+// ///
+// /// # Why Remove Final Byte?
+// ///
+// /// Most text files end with `\n` per POSIX convention. When inserting file contents
+// /// at cursor position (middle of existing content), that trailing newline would
+// /// create an unwanted blank line. Solution: remove it after insertion completes.
+// ///
+// /// **Examples:**
+// /// - Inserting "hello\nworld\n" → We want "hello\nworld" (no trailing blank line)
+// /// - Inserting "hello" → We remove 'o', resulting in "hell" (edge case, but consistent)
+// /// - Inserting empty file → Nothing inserted, nothing deleted
+// ///
+// /// # Workflow
+// ///
+// /// ```text
+// /// 1. Validate source file path (absolute path, exists, is file not directory)
+// /// 2. Get target file path from editor state
+// /// 3. Get starting byte position from cursor (only cursor access in entire function)
+// /// 4. Open source file read-only
+// /// 5. Initialize counters and safety limits
+// /// 6. Bucket brigade loop:
+// ///    a. Read up to 256 bytes into stack buffer
+// ///    b. If EOF (bytes_read == 0): exit loop
+// ///    c. Calculate insertion position: start + total_written
+// ///    d. Call insert_bytes_at_position() to insert chunk
+// ///    e. Increment total_bytes_written counter
+// ///    f. Increment chunk counter, check MAX_CHUNKS limit
+// ///    g. Repeat
+// /// 7. If any bytes were written:
+// ///    a. Calculate last byte position: start + total - 1
+// ///    b. Call delete_byte_at_position() to remove it
+// /// 8. Mark editor state as modified
+// /// 9. Rebuild windowmap once to reflect all changes
+// /// 10. Set success message in info bar
+// /// 11. Return Ok(())
+// /// ```
+// ///
+// /// # Arguments
+// ///
+// /// * `state` - Editor state
+// ///   - Used to read: cursor position, read_copy_path, security_mode
+// ///   - Used to modify: is_modified flag, info bar message
+// /// * `source_file_path` - Absolute or relative path to source file
+// ///   - Converted to absolute path if relative
+// ///   - Must exist, must be a file (not directory)
+// ///
+// /// # Returns
+// ///
+// /// * `Ok(())` - Entire file inserted successfully, final byte removed, windowmap rebuilt
+// /// * `Err(io::Error)` - Operation failed at some stage, partial insert may remain
+// ///
+// /// # Error Conditions
+// ///
+// /// Sets info bar message and returns Err if:
+// /// - Cannot get current working directory → "cannot get cwd"
+// /// - Source file doesn't exist → "file not found"
+// /// - Source path is directory, not file → "not a file"
+// /// - read_copy_path not set in state → "no target file"
+// /// - Cannot get byte position from cursor → "invalid cursor position"
+// /// - Source file can't be opened → "cannot read file"
+// /// - Read fails mid-file → "read error chunk N"
+// /// - Insert operation fails → propagates error from insert_bytes_at_position()
+// /// - Delete operation fails → propagates error from delete_byte_at_position()
+// /// - Iteration limit exceeded → "file too large"
+// /// - Windowmap rebuild fails → propagates error from build_windowmap_nowrap()
+// ///
+// /// # Safety Limits
+// ///
+// /// **Maximum chunks:** 16,777,216 (allows ~4GB at 256-byte chunks)
+// /// - Per NASA Rule 2: upper bound on all loops
+// /// - Prevents infinite loops from:
+// ///   - Filesystem corruption returning garbage data
+// ///   - Cosmic ray bit flips in file size metadata
+// ///   - Malicious or malformed files
+// ///
+// /// **Chunk size:** 256 bytes
+// /// - Balance between I/O efficiency and memory usage
+// /// - Small enough for stack allocation safety
+// /// - Large enough to minimize syscall overhead
+// ///
+// /// # Edge Cases
+// ///
+// /// **Empty source file:**
+// /// - First read returns 0 bytes
+// /// - Loop exits immediately
+// /// - total_bytes_written == 0
+// /// - No deletion attempted (if-guard protects)
+// /// - Info bar shows "inserted 0 bytes"
+// /// - Returns Ok(()) - valid operation
+// ///
+// /// **Single-byte file:**
+// /// - Inserts 1 byte
+// /// - Deletes that byte
+// /// - Result: nothing inserted
+// /// - Edge case but consistent with "remove final byte" policy
+// ///
+// /// **File with no trailing newline:**
+// /// - Inserts entire file content
+// /// - Deletes last character (whatever it is)
+// /// - User loses one character
+// /// - Documented behavior - "removes final byte", not "final newline"
+// ///
+// /// **Very large file (triggers MAX_CHUNKS):**
+// /// - Insertion stops at chunk limit
+// /// - Partial file inserted
+// /// - Error returned with "file too large" message
+// /// - No automatic rollback
+// ///
+// /// **Binary file:**
+// /// - Works correctly - byte-level operations
+// /// - No UTF-8 assumptions
+// /// - No text processing
+// /// - Final byte still removed (might corrupt binary format)
+// ///
+// /// **Source same as target:**
+// /// - Not checked - caller's responsibility
+// /// - Would likely cause undefined behavior
+// /// - File modified while being read
+// /// - Defensive programming note: should be checked at caller level
+// ///
+// /// **Multi-byte UTF-8 character at chunk boundary:**
+// /// - Not handled specially
+// /// - Chunk-based insertion preserves byte sequence
+// /// - UTF-8 sequences stay intact (inserted as-is)
+// /// - Final byte deletion might split UTF-8 character if file ends mid-character
+// ///
+// /// **Cursor at EOF:**
+// /// - Valid insertion point (appends to file)
+// /// - Works correctly - start_byte_position points past last byte
+// /// - Subsequent bytes shifted from that position (none exist)
+// /// - Final byte deletion removes last byte of inserted content
+// ///
+// /// # Defensive Programming
+// ///
+// /// - **Path validation:** Converts relative to absolute, checks existence, checks is_file
+// /// - **Buffer clearing:** In security_mode, manually zeros buffers before use
+// /// - **Assertion:** bytes_read never exceeds buffer size (detects memory corruption)
+// /// - **Bounded loops:** MAX_CHUNKS prevents infinite loops
+// /// - **Fail-fast:** Returns error immediately on first failure
+// /// - **No unwrap:** All Result types explicitly handled
+// /// - **No panic:** Assertion is only check that would panic (memory corruption case)
+// /// - **No unsafe:** Pure safe Rust
+// /// - **Logging:** All errors logged with context before returning
+// /// - **User feedback:** Info bar updated with success/error messages
+// ///
+// /// # Performance Characteristics
+// ///
+// /// **Time complexity:**
+// /// - O(N * M) where N = file size, M = average bytes after insertion point
+// /// - Each chunk insertion shifts M bytes
+// /// - Worst case: inserting at start of large file
+// /// - Not optimized for performance - correctness prioritized
+// ///
+// /// **Space complexity:**
+// /// - O(1) - fixed-size stack buffers only
+// /// - No growth with file size
+// /// - 256-byte read buffer + 8KB shift buffer = ~8.3KB max stack usage
+// ///
+// /// **I/O operations:**
+// /// - Read: N/256 sequential reads from source (where N = file size)
+// /// - Write: N/256 * 2 writes to target (insert + shift for each chunk)
+// /// - Seek: N/256 * 2 seeks (position for read + position for write)
+// /// - Final deletion: 1 read, 1 write, 1 seek, 1 truncate
+// /// - Total: ~(N/256) * 5 + 4 I/O operations
+// ///
+// /// # Policy Notes
+// ///
+// /// - **No rollback on error:** Follows Lines policy - user controls undo, not automatic
+// /// - **No progress bar:** Follows Lines policy - simplicity over features
+// /// - **Disk space not optimized:** In-place shifting is inefficient but simple
+// /// - **Absolute paths preferred:** Defensive programming policy
+// /// - **Immediate windowmap rebuild:** Happens once at end, not per-chunk
+// /// - **Position-based insertion:** Avoids cursor state management complexity
+// ///
+// /// # Example Usage
+// ///
+// /// ```ignore
+// /// // Insert another file at current cursor position
+// /// let source = Path::new("/home/user/snippet.txt");
+// /// match insert_file_at_cursor(&mut state, source) {
+// ///     Ok(()) => {
+// ///         // File inserted, final byte removed
+// ///         // Windowmap updated, ready for next operation
+// ///         println!("File inserted successfully");
+// ///     }
+// ///     Err(e) => {
+// ///         // Error logged, info bar shows message
+// ///         // Partial insert may remain (no rollback)
+// ///         eprintln!("Insert failed: {}", e);
+// ///     }
+// /// }
+// /// ```
+// ///
+// /// # Comparison to Other Insertion Methods
+// ///
+// /// **vs. insert_text_chunk_at_cursor_position():**
+// /// - That function updates cursor after each insert
+// /// - This function bypasses cursor entirely
+// /// - That function for single chunks, this for entire files
+// ///
+// /// **vs. handle_utf8txt_insert_mode_input():**
+// /// - That function processes stdin with delimiter detection
+// /// - This function reads files with no delimiter ambiguity
+// /// - That function has complex newline handling logic
+// /// - This function uses simple "remove final byte" strategy
+// ///
+// /// # See Also
+// ///
+// /// * `insert_bytes_at_position()` - Helper function for chunk insertion
+// /// * `delete_byte_at_position()` - Helper function for final byte removal
+// /// * `build_windowmap_nowrap()` - Called once at end to update display
+// /// * `handle_utf8txt_insert_mode_input()` - Parallel implementation for stdin (more complex)
+// ///
+// /// # Testing Considerations
+// ///
+// /// Test with files containing:
+// /// - Empty file (0 bytes)
+// /// - Single byte ('a')
+// /// - Single line with newline ("hello\n")
+// /// - Single line without newline ("hello")
+// /// - Multiple lines ("hello\nworld\n")
+// /// - Only newlines ("\n\n\n")
+// /// - Binary data (null bytes, non-UTF-8)
+// /// - File size exactly 256 bytes (one chunk)
+// /// - File size 257 bytes (two chunks, second has 1 byte)
+// /// - Large file (multiple chunks, test performance)
+// /// - Very large file (trigger MAX_CHUNKS limit)
+// pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> Result<()> {
+//     // ============================================
+//     // Phase 1: Path Validation and Normalization
+//     // ============================================
+//     // Defensive: Convert relative paths to absolute
+//     // Relative paths depend on cwd which can change during execution
+
+//     let source_path = if source_file_path.is_absolute() {
+//         source_file_path.to_path_buf()
+//     } else {
+//         // Convert relative path to absolute path
+//         match std::env::current_dir() {
+//             Ok(cwd) => cwd.join(source_file_path),
+//             Err(e) => {
+//                 let _ = state.set_info_bar_message("cannot get cwd");
+//                 log_error(
+//                     &format!("Cannot get current directory: {}", e),
+//                     Some("insert_file_at_cursor"),
+//                 );
+//                 return Err(LinesError::Io(e));
+//             }
+//         }
+//     };
+
+//     // Defensive: Check source file exists before attempting to open
+//     // Fail fast with clear error message
+//     if !source_path.exists() {
+//         let _ = state.set_info_bar_message("file not found");
+//         log_error(
+//             &format!("Source file does not exist: {}", source_path.display()),
+//             Some("insert_file_at_cursor"),
+//         );
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             format!("File not found: {}", source_path.display()),
+//         )));
+//     }
+
+//     // Defensive: Check source path is a file (not directory)
+//     // Attempting to read a directory would cause confusing errors later
+//     if !source_path.is_file() {
+//         let _ = state.set_info_bar_message("not a file");
+//         log_error(
+//             &format!("Source path is not a file: {}", source_path.display()),
+//             Some("insert_file_at_cursor"),
+//         );
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             format!("Not a file: {}", source_path.display()),
+//         )));
+//     }
+
+//     // ============================================
+//     // Phase 2: Get Target File and Starting Position
+//     // ============================================
+//     // This is the ONLY place we read cursor position
+//     // After this, all operations use byte offset arithmetic
+
+//     let target_file_path = state.read_copy_path.clone().ok_or_else(|| {
+//         let _ = state.set_info_bar_message("no target file");
+//         log_error(
+//             "read_copy_path not set in editor state",
+//             Some("insert_file_at_cursor"),
+//         );
+//         io::Error::new(io::ErrorKind::Other, "No read copy path")
+//     })?;
+
+//     // Get starting byte position from cursor
+//     // This is the insertion point for the first chunk
+//     // Subsequent chunks insert at: start_position + bytes_already_written
+//     let start_byte_position = match state
+//         .window_map
+//         .get_row_col_file_position(state.cursor.row, state.cursor.col)
+//     {
+//         Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
+//         Ok(None) => {
+//             let _ = state.set_info_bar_message("invalid cursor position");
+//             log_error(
+//                 "Cannot get byte position from cursor",
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(LinesError::Io(io::Error::new(
+//                 io::ErrorKind::Other,
+//                 "Invalid cursor position",
+//             )));
+//         }
+//         Err(e) => {
+//             let _ = state.set_info_bar_message("cursor position error");
+//             log_error(
+//                 &format!("Error getting cursor position: {}", e),
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(LinesError::Io(e));
+//         }
+//     };
+
+//     // ============================================
+//     // Phase 3: Open Source File
+//     // ============================================
+//     // File opened read-only
+//     // Automatically closed when function exits (RAII pattern)
+
+//     let mut source_file = match File::open(&source_path) {
+//         Ok(file) => file,
+//         Err(e) => {
+//             let _ = state.set_info_bar_message("cannot read file");
+//             log_error(
+//                 &format!("Cannot open source file: {} - {}", source_path.display(), e),
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(LinesError::Io(e));
+//         }
+//     };
+
+//     // ============================================
+//     // Phase 4: Initialize Bucket Brigade
+//     // ============================================
+//     // Counters and constants for the insertion loop
+
+//     const CHUNK_SIZE: usize = 256;
+//     const MAX_CHUNKS: usize = 16_777_216; // Allows ~4GB at 256-byte chunks
+
+//     let mut chunk_counter: usize = 0;
+//     let mut total_bytes_written: u64 = 0;
+
+//     // ============================================
+//     // Phase 5: Bucket Brigade Loop
+//     // ============================================
+//     // Read chunks from source, insert at calculated positions
+//     // Loop bounded by MAX_CHUNKS for safety (NASA Rule 2)
+
+//     loop {
+//         // Defensive: Prevent infinite loop from filesystem corruption
+//         // Cosmic ray bit flips in file metadata could cause endless reads
+//         if chunk_counter >= MAX_CHUNKS {
+//             let _ = state.set_info_bar_message("file too large");
+//             log_error(
+//                 &format!("Maximum chunk limit reached: {}", MAX_CHUNKS),
+//                 Some("insert_file_at_cursor"),
+//             );
+//             return Err(LinesError::Io(io::Error::new(
+//                 io::ErrorKind::Other,
+//                 "File too large",
+//             )));
+//         }
+
+//         // Pre-allocated buffer on stack (NASA Rule 3: no dynamic allocation)
+//         // This buffer is reused for each chunk - no per-iteration allocation
+//         let mut buffer = [0u8; CHUNK_SIZE];
+
+//         // Security mode: manually clear buffer before use
+//         // Prevents data leakage between chunks if read fails mid-buffer
+//         if state.security_mode {
+//             for i in 0..CHUNK_SIZE {
+//                 buffer[i] = 0;
+//             }
+//         }
+
+//         // Read next chunk from source file
+//         // Returns Ok(n) where n = bytes read (0 = EOF)
+//         let bytes_read = match source_file.read(&mut buffer) {
+//             Ok(n) => n,
+//             Err(e) => {
+//                 let _ = state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
+//                 log_error(
+//                     &format!("Read error at chunk {}: {}", chunk_counter, e),
+//                     Some("insert_file_at_cursor"),
+//                 );
+//                 return Err(LinesError::Io(e));
+//             }
+//         };
+
+//         // Defensive assertion: bytes_read should never exceed buffer size
+//         //
+//         //    =================================================
+//         // // Debug-Assert, Test-Asset, Production-Catch-Handle
+//         //    =================================================
+//         // This is not included in production builds
+//         // assert: only when running in a debug-build: will panic
+//         debug_assert!(
+//             bytes_read <= CHUNK_SIZE,
+//             "bytes_read ({}) exceeded buffer size ({})",
+//             bytes_read,
+//             CHUNK_SIZE
+//         );
+//         // Defensive assertion: bytes_read should never exceed buffer size
+//         // If it does, indicates memory corruption or cosmic ray bit flip
+//         // This is the only panic point - for catastrophic failure only
+//         #[cfg(test)]
+//         assert!(
+//             bytes_read <= CHUNK_SIZE,
+//             "bytes_read ({}) exceeded buffer size ({})",
+//             bytes_read,
+//             CHUNK_SIZE
+//         );
+//         // Catch & Handle without panic in production
+//         // This IS included in production to safe-catch
+//         if !bytes_read <= CHUNK_SIZE {
+//             // state.set_info_bar_message("Config error");
+//             return Err(LinesError::GeneralAssertionCatchViolation(
+//                 "zero buffer size error".into(),
+//             ));
+//         }
+
+//         // EOF detection: bytes_read == 0 reliably signals end of file
+//         // Unlike stdin, file EOF is deterministic and unambiguous
+//         if bytes_read == 0 {
+//             // Success - entire file read, exit loop normally
+//             break;
+//         }
+
+//         chunk_counter += 1;
+
+//         // Calculate insertion position for this chunk
+//         // Math: start_offset + sum_of_previous_chunks
+//         // This is why we don't need cursor - pure arithmetic
+//         let insert_position = start_byte_position + total_bytes_written;
+
+//         // Insert this chunk at calculated position
+//         // Helper function handles: read-after-point, seek, write, shift, flush
+//         insert_bytes_at_position(&target_file_path, insert_position, &buffer[..bytes_read])?;
+
+//         // Update counter for next iteration's calculation
+//         total_bytes_written += bytes_read as u64;
+
+//         // Continue to next chunk
+//         // Loop will exit when bytes_read == 0 (EOF) or chunk_counter >= MAX_CHUNKS
+//     }
+
+//     // ============================================
+//     // Phase 7: Update Editor State
+//     // ============================================
+//     // Mark file as modified and rebuild display
+
+//     state.is_modified = true;
+
+//     // Rebuild windowmap to reflect all insertions
+//     // This updates line numbering, cursor constraints, display mapping
+//     // Done once at end, not per-chunk (efficiency and simplicity)
+//     build_windowmap_nowrap(state, &target_file_path)?;
+
+//     // Set success message in info bar
+//     // Shows total bytes (after final byte deletion)
+//     // state.set_info_bar_message(&format!(
+//     //     "inserted {} bytes",
+//     //     total_bytes_written.saturating_sub(1) // -1 because we deleted final byte
+//     // ));
+
+//     // Set success message in info bar
+//     // If it fails, continue operation (message display is non-critical)
+//     let _ = state
+//         .set_info_bar_message(&format!(
+//             "inserted {} bytes",
+//             total_bytes_written.saturating_sub(1)
+//         ))
+//         .or_else(|e| {
+//             // Log error but don't propagate (message is cosmetic)
+//             eprintln!("Warning: Failed to set info bar message: {}", e);
+//             Ok::<(), LinesError>(()) // Convert to Ok to discard error
+//         });
+
+//     Ok(())
+// }
+
 /// Inserts entire source file at cursor position, then removes final byte
 ///
 /// # Overview
@@ -11742,7 +12620,320 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     }
 
     // ============================================
-    // Phase 7: Update Editor State
+    // Phase 6: Create Inverse Changelog Entries
+    // ============================================
+    // Re-iterate through source file to create undo logs
+    // Same chunk-based pattern as Phase 5, but for logging not insertion
+    //
+    // Purpose: Generate inverse operation logs so user can undo the insertion
+    // User action: Add (inserted file) → Inverse log: Rmv (remove those bytes)
+    //
+    // Important: This happens AFTER insertion completes successfully
+    // If logging fails, insertion has already succeeded (non-critical failure)
+
+    // Get changelog directory path
+    let log_directory_path = match get_undo_changelog_directory_path(&target_file_path) {
+        Ok(path) => path,
+        Err(e) => {
+            // Non-critical: Log error but don't fail the insertion operation
+            log_error(
+                &format!("Cannot get changelog directory: {}", e),
+                Some("insert_file_at_cursor:phase6"),
+            );
+            let _ = state.set_info_bar_message("undo log path failed");
+            // Continue to Phase 7 - insertion succeeded, logging is optional
+            state.is_modified = true;
+            build_windowmap_nowrap(state, &target_file_path)?;
+            let _ = state.set_info_bar_message(&format!(
+                "inserted {} bytes (undo disabled)",
+                total_bytes_written
+            ));
+            return Ok(());
+        }
+    };
+
+    // Re-open source file for logging iteration
+    // We don't reuse the previous file handle - it's at EOF
+    let mut source_file_for_logging = match File::open(&source_path) {
+        Ok(file) => file,
+        Err(e) => {
+            // Non-critical: File was already inserted successfully
+            log_error(
+                &format!(
+                    "Cannot reopen source for logging: {} - {}",
+                    source_path.display(),
+                    e
+                ),
+                Some("insert_file_at_cursor:phase6"),
+            );
+            let _ = state.set_info_bar_message("undo log failed");
+            // Continue to Phase 7
+            state.is_modified = true;
+            build_windowmap_nowrap(state, &target_file_path)?;
+            let _ = state.set_info_bar_message(&format!(
+                "inserted {} bytes (undo disabled)",
+                total_bytes_written
+            ));
+            return Ok(());
+        }
+    };
+
+    // Initialize logging iteration state
+    let mut logging_chunk_counter: usize = 0;
+    let mut byte_offset_in_insertion: u64 = 0; // Tracks position within inserted content
+    let mut carry_over_bytes: [u8; 4] = [0; 4]; // Max UTF-8 char is 4 bytes
+    let mut carry_over_count: usize = 0;
+    let mut logging_error_count: usize = 0;
+    const MAX_LOGGING_ERRORS: usize = 100; // Stop logging after too many failures
+
+    // ============================================
+    // Logging Bucket Brigade Loop
+    // ============================================
+    // Same pattern as Phase 5, but creates logs instead of inserting
+
+    loop {
+        // Safety limit: Same as insertion loop
+        if logging_chunk_counter >= MAX_CHUNKS {
+            log_error(
+                "Logging iteration exceeded MAX_CHUNKS",
+                Some("insert_file_at_cursor:phase6"),
+            );
+            let _ = state.set_info_bar_message("undo log incomplete");
+            break; // Exit loop, continue to Phase 7
+        }
+
+        // Stop logging if too many errors (fail-safe)
+        if logging_error_count >= MAX_LOGGING_ERRORS {
+            log_error(
+                &format!("Logging stopped after {} errors", MAX_LOGGING_ERRORS),
+                Some("insert_file_at_cursor:phase6"),
+            );
+            let _ = state.set_info_bar_message("undo log incomplete");
+            break;
+        }
+
+        // Stack-allocated read buffer (NASA Rule 3: pre-allocated)
+        let mut buffer = [0u8; CHUNK_SIZE];
+
+        // Security mode: clear buffer before use
+        if state.security_mode {
+            for i in 0..CHUNK_SIZE {
+                buffer[i] = 0;
+            }
+        }
+
+        // Read next chunk
+        let bytes_read = match source_file_for_logging.read(&mut buffer) {
+            Ok(n) => n,
+            Err(e) => {
+                log_error(
+                    &format!(
+                        "Read error during logging at chunk {}: {}",
+                        logging_chunk_counter, e
+                    ),
+                    Some("insert_file_at_cursor:phase6"),
+                );
+                logging_error_count += 1;
+                continue; // Skip this chunk, try next
+            }
+        };
+
+        // EOF detection
+        if bytes_read == 0 && carry_over_count == 0 {
+            break; // Normal completion
+        }
+
+        logging_chunk_counter += 1;
+
+        // Process bytes in this chunk
+        let mut buffer_index: usize = 0;
+
+        // If we have carry-over bytes from previous chunk, process them first
+        if carry_over_count > 0 {
+            // We need more bytes to complete the UTF-8 character
+            let bytes_needed = detect_utf8_byte_count(carry_over_bytes[0])
+                .unwrap_or(1)
+                .saturating_sub(carry_over_count);
+
+            if bytes_needed > 0 && bytes_needed <= bytes_read {
+                // Complete the character with bytes from current chunk
+                for i in 0..bytes_needed {
+                    carry_over_bytes[carry_over_count + i] = buffer[i];
+                }
+                buffer_index += bytes_needed;
+
+                let full_char_bytes = &carry_over_bytes[0..(carry_over_count + bytes_needed)];
+
+                // Try to decode as UTF-8 character
+                match std::str::from_utf8(full_char_bytes) {
+                    Ok(s) => {
+                        if let Some(ch) = s.chars().next() {
+                            // Calculate absolute position in file
+                            // converting from u64
+                            let char_position_u64: u64 =
+                                start_byte_position + byte_offset_in_insertion;
+                            // converting to u128
+                            let char_position_u128 = char_position_u64 as u128;
+
+                            // Create inverse log entry (with retry)
+                            for retry_attempt in 0..3 {
+                                match button_make_changeloge_from_user_character_action_level(
+                                    &target_file_path,
+                                    Some(ch),
+                                    char_position_u128,
+                                    EditType::Add, // User added, inverse is remove
+                                    &log_directory_path,
+                                ) {
+                                    Ok(_) => break, // Success
+                                    Err(e) => {
+                                        if retry_attempt == 2 {
+                                            // Final retry failed
+                                            log_error(
+                                                &format!(
+                                                    "Failed to log char at position {}: {}",
+                                                    char_position_u128, e
+                                                ),
+                                                Some("insert_file_at_cursor:phase6"),
+                                            );
+                                            logging_error_count += 1;
+                                        } else {
+                                            // Retry after brief pause
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                50,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            byte_offset_in_insertion += full_char_bytes.len() as u64;
+                        }
+                    }
+                    Err(_) => {
+                        // Invalid UTF-8, skip these bytes
+                        log_error(
+                            &format!(
+                                "Invalid UTF-8 in carry-over at offset {}",
+                                byte_offset_in_insertion
+                            ),
+                            Some("insert_file_at_cursor:phase6"),
+                        );
+                        byte_offset_in_insertion += full_char_bytes.len() as u64;
+                    }
+                }
+
+                carry_over_count = 0; // Clear carry-over
+            }
+        }
+
+        // Process remaining bytes in buffer
+        while buffer_index < bytes_read {
+            let byte = buffer[buffer_index];
+
+            // Detect UTF-8 character length
+            let char_len = match detect_utf8_byte_count(byte) {
+                Ok(len) => len,
+                Err(_) => {
+                    // Invalid UTF-8 start byte, skip it
+                    log_error(
+                        &format!(
+                            "Invalid UTF-8 start byte at offset {}",
+                            byte_offset_in_insertion
+                        ),
+                        Some("insert_file_at_cursor:phase6"),
+                    );
+                    buffer_index += 1;
+                    byte_offset_in_insertion += 1;
+                    continue;
+                }
+            };
+
+            // Check if complete character is in buffer
+            if buffer_index + char_len <= bytes_read {
+                // Complete character available
+                let char_bytes = &buffer[buffer_index..(buffer_index + char_len)];
+
+                // Decode UTF-8 character
+                match std::str::from_utf8(char_bytes) {
+                    Ok(s) => {
+                        if let Some(ch) = s.chars().next() {
+                            // converting from u64
+                            // Calculate absolute position
+                            let char_position_u64: u64 =
+                                start_byte_position + byte_offset_in_insertion;
+                            // converting to u128
+                            let char_position_u128 = char_position_u64 as u128;
+
+                            // Create inverse log entry (with retry)
+                            for retry_attempt in 0..3 {
+                                match button_make_changeloge_from_user_character_action_level(
+                                    &target_file_path,
+                                    Some(ch),
+                                    char_position_u128,
+                                    EditType::Add, // User added, inverse is remove
+                                    &log_directory_path,
+                                ) {
+                                    Ok(_) => break, // Success
+                                    Err(e) => {
+                                        if retry_attempt == 2 {
+                                            // TODO: no heap or data in prod
+                                            // Final retry failed
+                                            log_error(
+                                                &format!(
+                                                    "Failed to log char at position {}: {}",
+                                                    char_position_u128, e
+                                                ),
+                                                Some("insert_file_at_cursor:phase6"),
+                                            );
+                                            logging_error_count += 1;
+                                        } else {
+                                            // Retry after brief pause
+                                            std::thread::sleep(std::time::Duration::from_millis(
+                                                50,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            byte_offset_in_insertion += char_len as u64;
+                        }
+                    }
+                    Err(_) => {
+                        // Invalid UTF-8 sequence
+                        log_error(
+                            &format!(
+                                "Invalid UTF-8 sequence at offset {}",
+                                byte_offset_in_insertion
+                            ),
+                            Some("insert_file_at_cursor:phase6"),
+                        );
+                        byte_offset_in_insertion += char_len as u64;
+                    }
+                }
+
+                buffer_index += char_len;
+            } else {
+                // Incomplete character at end of chunk - carry over to next iteration
+                carry_over_count = bytes_read - buffer_index;
+                for i in 0..carry_over_count {
+                    carry_over_bytes[i] = buffer[buffer_index + i];
+                }
+                break; // Process carry-over in next iteration
+            }
+        }
+    }
+
+    // Check if logging completed reasonably successfully
+    if logging_error_count > 0 {
+        log_error(
+            &format!("Logging completed with {} errors", logging_error_count),
+            Some("insert_file_at_cursor:phase6"),
+        );
+    }
+
+    // ============================================
+    // Phase 8: Update Editor State
     // ============================================
     // Mark file as modified and rebuild display
 
@@ -11773,6 +12964,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             Ok::<(), LinesError>(()) // Convert to Ok to discard error
         });
 
+    // "Finis"
     Ok(())
 }
 
