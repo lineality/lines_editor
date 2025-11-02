@@ -470,7 +470,7 @@ mod build_window_tests4 {
         assert_eq!(first_row[0], b'1', "Should start with line number 1");
         assert_eq!(first_row[1], b' ', "Should have space after line number");
 
-        let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+        let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
         assert!(map_entry.is_some(), "Character position should be mapped");
     }
 }
@@ -532,7 +532,7 @@ mod build_window_tests3 {
         assert_eq!(first_row[1], b' ', "Should have space after line number");
 
         // Verify WindowMap has been populated
-        let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+        let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
         assert!(map_entry.is_some(), "Character position should be mapped");
     }
 }
@@ -788,7 +788,7 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
     assert_eq!(first_row[1], b' ', "Should have space after line number");
 
     // Verify WindowMap has been populated
-    let map_entry = state.window_map.get_file_position(0, 2).unwrap();
+    let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
     assert!(map_entry.is_some(), "Character position should be mapped");
 
     Ok(())
@@ -902,7 +902,7 @@ mod revised_critical_distinction_tests {
 //     //     for row in 0..3 {
 //     //         if state.display_utf8txt_buffer_lengths[row] > 0 {
 //     //             // Check that we can get file positions from the map
-//     //             let pos = state.window_map.get_file_position(row, 5)?;
+//     //             let pos = state.window_map.get_row_col_file_position(row, 5)?;
 //     //             assert!(
 //     //                 pos.is_some() || row >= lines_processed,
 //     //                 "Row {} col 5 should have file position or be empty",
@@ -1382,7 +1382,7 @@ mod test_parse_movement {
 //     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
 
 //     // Test 1: Can we get position at start of line 1?
-//     let pos_start = state.window_map.get_file_position(0, 0).unwrap();
+//     let pos_start = state.window_map.get_row_col_file_position(0, 0).unwrap();
 //     println!("Position at (0,0): {:?}", pos_start);
 //     assert!(pos_start.is_some(), "Should have position at line start");
 
@@ -1397,14 +1397,14 @@ mod test_parse_movement {
 
 //     let pos_last_char = state
 //         .window_map
-//         .get_file_position(0, last_char_col)
+//         .get_row_col_file_position(0, last_char_col)
 //         .unwrap();
 //     println!(
 //         "Position at last char (0,{}): {:?}",
 //         last_char_col, pos_last_char
 //     );
 
-//     let pos_eol = state.window_map.get_file_position(0, eol_col).unwrap();
+//     let pos_eol = state.window_map.get_row_col_file_position(0, eol_col).unwrap();
 //     println!("Position at EOL (0,{}): {:?}", eol_col, pos_eol);
 
 //     // This will tell us if EOL mapping is working
@@ -1443,7 +1443,7 @@ mod test_parse_movement {
 //     // Check we can get file position at cursor
 //     let pos = state
 //         .window_map
-//         .get_file_position(state.cursor.row, state.cursor.col);
+//         .get_row_col_file_position(state.cursor.row, state.cursor.col);
 //     println!("File position at cursor: {:?}", pos);
 
 //     assert!(result.is_ok(), "Move command should succeed");
@@ -1530,10 +1530,10 @@ fn test_eol_mapping_simple() {
 
     // Line 1 is "Line 1: Hello, world!" - check what columns are mapped
     for col in 0..30 {
-        match state.window_map.get_file_position(0, col) {
+        match state.window_map.get_row_col_file_position(0, col) {
             Ok(Some(pos)) => println!(
-                "Col {} -> byte_offset: {}, byte_in_line: {}",
-                col, pos.byte_offset, pos.byte_in_line
+                "Col {} -> byte_offset_linear_file_absolute_position: {}, byte_in_line: {}",
+                col, pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
             ),
             Ok(None) => println!("Col {} -> None (unmapped)", col),
             Err(e) => println!("Col {} -> Error: {}", col, e),
@@ -1589,11 +1589,11 @@ fn test_eol_mapping_simple() {
 //     // Can we get file position at cursor?
 //     match state
 //         .window_map
-//         .get_file_position(state.cursor.row, state.cursor.col)
+//         .get_row_col_file_position(state.cursor.row, state.cursor.col)
 //     {
 //         Ok(Some(pos)) => println!(
-//             "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
-//             pos.byte_offset, pos.byte_in_line
+//             "SUCCESS: File position at cursor: byte_offset_linear_file_absolute_position={}, byte_in_line={}",
+//             pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
 //         ),
 //         Ok(None) => println!("ERROR: No file position at cursor!"),
 //         Err(e) => println!("ERROR getting position: {}", e),
@@ -1656,11 +1656,11 @@ fn test_eol_mapping_simple() {
 //     // Can we get file position at cursor?
 //     match state
 //         .window_map
-//         .get_file_position(state.cursor.row, state.cursor.col)
+//         .get_row_col_file_position(state.cursor.row, state.cursor.col)
 //     {
 //         Ok(Some(pos)) => println!(
-//             "SUCCESS: File position at cursor: byte_offset={}, byte_in_line={}",
-//             pos.byte_offset, pos.byte_in_line
+//             "SUCCESS: File position at cursor: byte_offset_linear_file_absolute_position={}, byte_in_line={}",
+//             pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
 //         ),
 //         Ok(None) => println!("ERROR: No file position at cursor!"),
 //         Err(e) => println!("ERROR getting position: {}", e),
@@ -2079,22 +2079,22 @@ mod hex_display_tests {
         assert_eq!(cursor.current_col(), 0);
 
         // First row, middle
-        cursor.byte_offset = 13;
+        cursor.byte_offset_linear_file_absolute_position = 13;
         assert_eq!(cursor.current_row(), 0);
         assert_eq!(cursor.current_col(), 13);
 
         // First row, last column (25)
-        cursor.byte_offset = 25;
+        cursor.byte_offset_linear_file_absolute_position = 25;
         assert_eq!(cursor.current_row(), 0);
         assert_eq!(cursor.current_col(), 25);
 
         // Second row, first column
-        cursor.byte_offset = 26;
+        cursor.byte_offset_linear_file_absolute_position = 26;
         assert_eq!(cursor.current_row(), 1);
         assert_eq!(cursor.current_col(), 0);
 
         // Second row, middle
-        cursor.byte_offset = 39;
+        cursor.byte_offset_linear_file_absolute_position = 39;
         assert_eq!(cursor.current_row(), 1);
         assert_eq!(cursor.current_col(), 13);
     }
@@ -2106,12 +2106,12 @@ mod hex_display_tests {
 
         // Verify constants
         assert_eq!(cursor.bytes_per_row, 26);
-        assert_eq!(cursor.byte_offset, 0);
+        assert_eq!(cursor.byte_offset_linear_file_absolute_position, 0);
 
         // Column should never exceed bytes_per_row - 1
         let test_offset = 1000;
         let test_cursor = HexCursor {
-            byte_offset: test_offset,
+            byte_offset_linear_file_absolute_position: test_offset,
             bytes_per_row: 26,
         };
         assert!(test_cursor.current_col() < 26);
@@ -3047,7 +3047,7 @@ mod hexedit_tests {
             file_position_of_vis_select_start: 0,
             file_position_of_vis_select_end: 0,
             tui_window_horizontal_utf8txt_line_char_offset: 0,
-            absolute_horizontal_0index_cursor_position: 2,
+            in_row_abs_horizontal_0_index_cursor_position: 2,
 
             // Display buffers
             utf8_txt_display_buffers: [[0u8; 182]; 45],
@@ -3055,7 +3055,7 @@ mod hexedit_tests {
 
             // Hex cursor - this is what we're testing
             hex_cursor: HexCursor {
-                byte_offset: cursor_position,
+                byte_offset_linear_file_absolute_position: cursor_position,
                 // nibble_position: 0, // ??? Is this field correct?
                 bytes_per_row: 80,
             },
