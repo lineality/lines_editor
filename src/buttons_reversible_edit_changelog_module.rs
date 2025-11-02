@@ -11580,3 +11580,263 @@ pub fn insert_text_chunk_at_cursor_position(
     Ok(())
 }
 */
+
+/*
+# Intergration example:
+// newlines
+/// Inserts a newline character at cursor position WITHOUT loading whole file
+///
+/// # Purpose
+/// Chunked implementation of newline insertion following NASA Power of 10 rules.
+/// Uses pre-allocated buffers and bounded iterations.
+///
+/// # Algorithm
+/// 1. Get cursor byte position
+/// 2. Create temporary file
+/// 3. Copy bytes [0..cursor) from source to temp (chunked)
+/// 4. Write '\n' to temp
+/// 5. Copy bytes [cursor..EOF) from source to temp (chunked)
+/// 6. Replace source with temp
+///
+/// # Arguments
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy)
+///
+/// # Returns
+/// * `Ok(())` - Newline inserted successfully
+/// * `Err(io::Error)` - File operations failed
+///
+/// # Memory
+/// - Uses 8KB pre-allocated buffer
+/// - Never loads whole file
+/// - Bounded iteration counts
+fn insert_newline_at_cursor_chunked(
+    lines_editor_state: &mut EditorState,
+    file_path: &Path,
+) -> io::Result<()> {
+    // Step 1: Get file position at/of/where  cursor (with graceful error handling)
+    let file_pos = match lines_editor_state
+        .window_map
+        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+    {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
+            eprintln!("Warning: Cannot insert - cursor not on valid file position");
+            log_error(
+                "Insert newline failed: cursor not on valid file position",
+                Some("insert_newline_at_cursor_chunked"),
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            eprintln!("Warning: Cannot get cursor position: {}", e);
+            log_error(
+                &format!("Insert newline failed: {}", e),
+                Some("insert_newline_at_cursor_chunked"),
+            );
+            return Ok(());
+        }
+    };
+
+    let insert_position = file_pos.byte_offset_linear_file_absolute_position;
+
+    // Step 2: Create temporary file
+    let temp_path = file_path.with_extension("tmp_insert");
+
+    // Step 3: Open source and destination files
+    let mut source = File::open(file_path)?;
+    let mut dest = File::create(&temp_path)?;
+
+    // TODO this should not be be allocating MORE memory
+    // this should use a standard modular buffer
+    // Pre-allocated 8KB buffer
+    const CHUNK_SIZE: usize = 8192;
+    let mut buffer = [0u8; CHUNK_SIZE];
+
+    // ...general_use_256_buffer
+    //
+    // state.clear_general_256_buffer;
+
+    // Step 4: Copy bytes before insertion point
+    let mut bytes_copied = 0u64;
+    let mut iterations = 0;
+
+    while bytes_copied < insert_position && iterations < limits::FILE_SEEK_BYTES {
+        iterations += 1;
+
+        let to_read = ((insert_position - bytes_copied) as usize).min(CHUNK_SIZE);
+
+        // TODO use state buffer
+        // let n = source.read(state.general_use_256_buffer[..to_read])?;
+        let n = source.read(&mut buffer[..to_read])?;
+
+        if n == 0 {
+            // EOF before insert position - this is an error
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Insert position {} exceeds file length {}",
+                    insert_position, bytes_copied
+                ),
+            ));
+        }
+
+        dest.write_all(&buffer[..n])?;
+        bytes_copied += n as u64;
+    }
+
+    // Defensive: Check iteration limit
+    if iterations >= limits::FILE_SEEK_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Max iterations exceeded copying before insert point",
+        ));
+    }
+
+    // Step 5: Write the newline character
+    dest.write_all(b"\n")?;
+
+    // Step 6: Copy remaining bytes (from insert position to EOF)
+    // Source is already positioned at insert_position from previous reads
+    iterations = 0;
+
+    loop {
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations exceeded copying after insert point",
+            ));
+        }
+        iterations += 1;
+
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break; // EOF reached
+        }
+
+        dest.write_all(&buffer[..n])?;
+    }
+
+    // Step 7: Flush and close files
+    dest.flush()?;
+    drop(dest);
+    drop(source);
+
+    // Step 8: Replace original with modified temp file
+    fs::rename(&temp_path, file_path)?;
+
+    // Step 9: Mark file as modified
+    lines_editor_state.is_modified = true;
+
+    // Step 10: Log the edit
+    lines_editor_state.log_edit(&format!(
+        "INSERT_NEWLINE line:{} byte:{}",
+        file_pos.line_number, file_pos.byte_offset_linear_file_absolute_position
+    ))?;
+
+    // // Step 11: Update cursor - move to start of new line
+    // lines_editor_state.cursor.row += 1;
+    // lines_editor_state.cursor.col = 0;
+
+    // Step 11: Update cursor - move to start of new line
+    lines_editor_state.cursor.row += 1;
+
+    // Calculate where the text starts after the line number
+    let new_line_number =
+        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row;
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
+        new_line_number + 1,
+        lines_editor_state.effective_rows,
+    ); // +1 for 1-indexed display
+
+    lines_editor_state.cursor.col = line_num_width; // Position cursor after line number
+
+    // ============================================
+    // Step 5.5: Create Inverse Changelog Entry
+    // ============================================
+    // Create undo log for newline insertion
+    // Single character, no iteration needed
+    //
+    // User action: Add '\n' → Inverse log: Rmv '\n'
+    // This is non-critical - if it fails, insertion still succeeded
+
+    let log_directory_path = match get_undo_changelog_directory_path(file_path) {
+        Ok(path) => Some(path), // ← Wrap in Some to match the None below
+        Err(_e) => {
+            // Non-critical: Log error but don't fail the insertion
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Cannot get changelog directory: {}", _e),
+                Some("insert_newline_at_cursor_chunked:changelog"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot get changelog directory",
+                Some("insert_newline_at_cursor_chunked:changelog"),
+            );
+
+            // Continue without undo support - insertion succeeded
+            None
+        }
+    };
+
+    // Create log entry if directory path was obtained
+    if let Some(log_dir) = log_directory_path {
+        // Retry logic: 3 attempts with 50ms pause
+        let mut log_success = false;
+
+        for retry_attempt in 0..3 {
+            // Convert u64 position to u128 for API compatibility
+            let position_u128 = insert_position as u128;
+
+            match button_make_changeloge_from_user_character_action_level(
+                file_path,
+                Some('\n'), // Character being added
+                position_u128,
+                EditType::Add, // User added, inverse is remove
+                &log_dir,
+            ) {
+                Ok(_) => {
+                    log_success = true;
+                    break; // Success
+                }
+                Err(_e) => {
+                    if retry_attempt == 2 {
+                        // Final retry failed - log but don't fail operation
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!(
+                                "Failed to log newline at position {}: {}",
+                                position_u128, _e
+                            ),
+                            Some("insert_newline_at_cursor_chunked:changelog"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "Failed to log newline",
+                            Some("insert_newline_at_cursor_chunked:changelog"),
+                        );
+                    } else {
+                        // Retry after brief pause
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+
+        // Optional: Set info bar if logging failed (non-intrusive)
+        if !log_success {
+            let _ = lines_editor_state.set_info_bar_message("undo disabled");
+        }
+    }
+
+    // Note: We don't update line_count_at_top_of_window here
+    // The window rebuild will handle proper positioning
+
+    Ok(())
+}
+
+*/

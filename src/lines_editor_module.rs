@@ -10694,6 +10694,87 @@ fn insert_newline_at_cursor_chunked(
 
     lines_editor_state.cursor.col = line_num_width; // Position cursor after line number
 
+    // ============================================
+    // Step 5.5: Create Inverse Changelog Entry
+    // ============================================
+    // Create undo log for newline insertion
+    // Single character, no iteration needed
+    //
+    // User action: Add '\n' → Inverse log: Rmv '\n'
+    // This is non-critical - if it fails, insertion still succeeded
+
+    let log_directory_path = match get_undo_changelog_directory_path(file_path) {
+        Ok(path) => Some(path), // ← Wrap in Some to match the None below
+        Err(_e) => {
+            // Non-critical: Log error but don't fail the insertion
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Cannot get changelog directory: {}", _e),
+                Some("insert_newline_at_cursor_chunked:changelog"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot get changelog directory",
+                Some("insert_newline_at_cursor_chunked:changelog"),
+            );
+
+            // Continue without undo support - insertion succeeded
+            None
+        }
+    };
+
+    // Create log entry if directory path was obtained
+    if let Some(log_dir) = log_directory_path {
+        // Retry logic: 3 attempts with 50ms pause
+        let mut log_success = false;
+
+        for retry_attempt in 0..3 {
+            // Convert u64 position to u128 for API compatibility
+            let position_u128 = insert_position as u128;
+
+            match button_make_changeloge_from_user_character_action_level(
+                file_path,
+                Some('\n'), // Character being added
+                position_u128,
+                EditType::Add, // User added, inverse is remove
+                &log_dir,
+            ) {
+                Ok(_) => {
+                    log_success = true;
+                    break; // Success
+                }
+                Err(_e) => {
+                    if retry_attempt == 2 {
+                        // Final retry failed - log but don't fail operation
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!(
+                                "Failed to log newline at position {}: {}",
+                                position_u128, _e
+                            ),
+                            Some("insert_newline_at_cursor_chunked:changelog"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "Failed to log newline",
+                            Some("insert_newline_at_cursor_chunked:changelog"),
+                        );
+                    } else {
+                        // Retry after brief pause
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+
+        // Optional: Set info bar if logging failed (non-intrusive)
+        if !log_success {
+            let _ = lines_editor_state.set_info_bar_message("undo disabled");
+        }
+    }
+
     // Note: We don't update line_count_at_top_of_window here
     // The window rebuild will handle proper positioning
 
