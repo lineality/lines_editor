@@ -6060,14 +6060,14 @@ impl EditorState {
         Ok(keep_editor_loop_running)
     }
 
-    /// Gets the first valid text column for cursor's current row
-    ///
-    /// # Returns
-    /// * Column position where text starts (after line number)
-    pub fn get_text_start_column(&self) -> usize {
-        let line_number = self.line_count_at_top_of_window + self.cursor.row;
-        calculate_line_number_width(line_number + 1) // +1 for 1-indexed display
-    }
+    // /// Gets the first valid text column for cursor's current row
+    // ///
+    // /// # Returns
+    // /// * Column position where text starts (after line number)
+    // pub fn get_text_start_column(&self) -> usize {
+    //     let line_number = self.line_count_at_top_of_window + self.cursor.row;
+    //     calculate_line_number_width(line_number + 1, self.effective_rows) // +1 for 1-indexed display
+    // }
 
     /// Writes a message into the info bar message buffer
     ///
@@ -6204,38 +6204,185 @@ impl EditorState {
         Ok(())
     }
 
-    /// Writes a line number into a display buffer
-    ///
-    /// # Format
-    /// Just the line number and ONE space. No padding, no alignment.
-    /// - Line 1: "1 " (2 bytes)
-    /// - Line 42: "42 " (3 bytes)
-    /// - Line 999: "999 " (4 bytes)
-    pub fn write_line_number(&mut self, row_idx: usize, line_num: usize) -> io::Result<usize> {
-        // Defensive: Validate row index
-        if row_idx >= 45 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row index {} exceeds maximum 44", row_idx),
-            ));
-        }
+    // /// Writes a line number into a display buffer
+    // ///
+    // /// # Format
+    // /// Just the line number and ONE space. No padding, no alignment.
+    // /// - Line 1: "1 " (2 bytes)
+    // /// - Line 42: "42 " (3 bytes)
+    // /// - Line 999: "999 " (4 bytes)
+    // pub fn write_line_number(&mut self, row_idx: usize, line_num: usize) -> io::Result<usize> {
+    //     // Defensive: Validate row index
+    //     if row_idx >= 45 {
+    //         return Err(io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             format!("Row index {} exceeds maximum 44", row_idx),
+    //         ));
+    //     }
 
-        // Format: just the number and one space, NO PADDING
-        let line_str = format!("{} ", line_num);
-        let line_bytes = line_str.as_bytes();
+    //     // Format: just the number and one space, NO PADDING
+    //     let line_str = format!("{} ", line_num);
+    //     let line_bytes = line_str.as_bytes();
 
-        // Copy to buffer
-        let bytes_to_write = line_bytes.len().min(182); // Safety check against buffer size
-        self.utf8_txt_display_buffers[row_idx][..bytes_to_write]
-            .copy_from_slice(&line_bytes[..bytes_to_write]);
+    //     // Copy to buffer
+    //     let bytes_to_write = line_bytes.len().min(182); // Safety check against buffer size
+    //     self.utf8_txt_display_buffers[row_idx][..bytes_to_write]
+    //         .copy_from_slice(&line_bytes[..bytes_to_write]);
 
-        Ok(bytes_to_write)
-    }
+    //     Ok(bytes_to_write)
+    // }
+
+    // /// Writes a line number into a display buffer with appropriate padding
+    // ///
+    // /// # Format
+    // /// Line number with leading padding to align with wider numbers in visible range,
+    // /// plus ONE trailing space.
+    // ///
+    // /// # Examples (with 20-row display):
+    // /// - Lines 1-20: " 1 " (3 bytes) aligns with "20 "
+    // /// - Lines 85-105: " 99 " (4 bytes) aligns with "105 "
+    // pub fn write_line_number(&mut self, row_idx: usize, line_num: usize) -> io::Result<usize> {
+    //     // Defensive: Validate row index
+    //     if row_idx >= 45 {
+    //         return Err(io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             format!("Row index {} exceeds maximum 44", row_idx),
+    //         ));
+    //     }
+
+    //     /*
+    //     A:
+    //     calculate_line_number_width() will produce
+    //     1 or 2 plus the number of digits, depending on the digit.
+
+    //     B:
+    //     digit_count() produces 1 + the number of digits.
+
+    //     C:
+    //     If digit count it smaller, then add one more padding space.
+    //      */
+    //     // Calculate target display width (includes trailing space)
+    //     let target_width = calculate_line_number_width(line_num, self.effective_rows);
+
+    //     // Count actual digits in the number
+    //     let digit_count = if line_num == 0 {
+    //         1
+    //     } else {
+    //         (line_num as f64).log10().floor() as usize + 1
+    //     };
+
+    //     // Calculate leading padding: target_width = padding + digits + 1 (trailing space)
+    //     let leading_padding = target_width.saturating_sub(digit_count + 1);
+
+    //     // Build formatted string with padding
+    //     let line_str = format!(
+    //         "{:>width$} ",
+    //         line_num,
+    //         width = digit_count + leading_padding
+    //     );
+    //     let line_bytes = line_str.as_bytes();
+
+    //     // Copy to buffer
+    //     let bytes_to_write = line_bytes.len().min(182);
+    //     self.utf8_txt_display_buffers[row_idx][..bytes_to_write]
+    //         .copy_from_slice(&line_bytes[..bytes_to_write]);
+
+    //     Ok(bytes_to_write)
+    // }
+
+    // pub fn write_line_number(
+    //     &mut self,
+    //     row_idx: usize,
+    //     line_num: usize,
+    //     effective_rows: usize,
+    // ) -> io::Result<usize> {
+    //     // Validate row index
+    //     if row_idx >= 45 {
+    //         return Err(io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             format!("Row index {} exceeds maximum 44", row_idx),
+    //         ));
+    //     }
+
+    //     // Check if we need padding
+    //     let needs_padding = self::row_needs_extra_padding_bool(line_num, effective_rows);
+
+    //     // Format with or without leading space
+    //     let line_str = if needs_padding {
+    //         format!(" {} ", line_num) // With padding
+    //     } else {
+    //         format!("{} ", line_num) // Without padding
+    //     };
+
+    //     let line_bytes = line_str.as_bytes();
+
+    //     // Copy to buffer
+    //     let bytes_to_write = line_bytes.len().min(182);
+    //     self.utf8_txt_display_buffers[row_idx][..bytes_to_write]
+    //         .copy_from_slice(&line_bytes[..bytes_to_write]);
+
+    //     Ok(bytes_to_write)
+    // }
 
     //
     // Methods for byte positions of start and stop
     // VERY under constriction, VERY not working
     //
+    //
+
+    /// Writes a line number into a display buffer with optional padding
+    ///
+    /// # Format
+    /// Either "N " or " N " depending on rollover zone
+    /// No heap allocation - writes directly to pre-allocated buffer
+    pub fn write_line_number(&mut self, row_idx: usize, line_num: usize) -> io::Result<usize> {
+        // Validate row index
+        if row_idx >= 45 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Row index exceeds maximum 44",
+            ));
+        }
+
+        // Check if we need padding
+        let needs_padding = needs_extra_padding(line_num, self.effective_rows);
+
+        // Convert number to bytes directly into buffer
+        let mut write_pos = 0;
+
+        // Add leading space if needed
+        if needs_padding {
+            self.utf8_txt_display_buffers[row_idx][0] = b' ';
+            write_pos = 1;
+        }
+
+        // Write digits directly
+        let mut temp_num = line_num;
+        let mut digit_stack = [0u8; 7]; // Max 7 digits (999,999)
+        let mut digit_count = 0;
+
+        // Extract digits (they come out reversed)
+        loop {
+            digit_stack[digit_count] = (temp_num % 10) as u8 + b'0';
+            digit_count += 1;
+            temp_num /= 10;
+            if temp_num == 0 {
+                break;
+            }
+        }
+
+        // Write digits in correct order
+        for i in (0..digit_count).rev() {
+            self.utf8_txt_display_buffers[row_idx][write_pos] = digit_stack[i];
+            write_pos += 1;
+        }
+
+        // Add trailing space
+        self.utf8_txt_display_buffers[row_idx][write_pos] = b' ';
+        write_pos += 1;
+
+        Ok(write_pos)
+    }
 
     /// Checks if cursor is at the end of its current line
     ///
@@ -8749,7 +8896,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
 
-            let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+            let line_num_width = calculate_line_number_width(
+                lines_editor_state.cursor.row,
+                lines_editor_state.effective_rows,
+            );
 
             // if position.. is <
             if lines_editor_state.absolute_horizontal_0index_cursor_position <= line_num_width {
@@ -9064,7 +9214,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             // reset to first real position each new go-to-linw
-            let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+            let line_num_width = calculate_line_number_width(
+                lines_editor_state.cursor.row,
+                lines_editor_state.effective_rows,
+            );
             lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
@@ -9114,7 +9267,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Position cursor AFTER line number (same as bootstrap)
                     // number of digits in line number + 1 is first character
-                    let line_num_width = calculate_line_number_width(line_number);
+                    let line_num_width =
+                        calculate_line_number_width(line_number, lines_editor_state.effective_rows);
                     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
 
                     // Rebuild window to show the new position
@@ -9141,7 +9295,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             // reset to first real position each new GotoFileStart
-            let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+            let line_num_width = calculate_line_number_width(
+                lines_editor_state.cursor.row,
+                lines_editor_state.effective_rows,
+            );
             lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
@@ -9234,7 +9391,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             // goto_line_start(lines_editor_state, &read_copy)?;
 
-            let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+            let line_num_width = calculate_line_number_width(
+                lines_editor_state.cursor.row,
+                lines_editor_state.effective_rows,
+            );
             lines_editor_state.cursor.col = line_num_width;
             lines_editor_state.absolute_horizontal_0index_cursor_position = line_num_width;
             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -9652,8 +9812,8 @@ fn goto_line_start(lines_editor_state: &mut EditorState, file_path: &Path) -> Re
     // STEP 2: Calculate line number width for cursor positioning
     // ========================================================================
 
-    let line_num_width = calculate_line_number_width(line_number_for_display);
-
+    let line_num_width =
+        calculate_line_number_width(line_number_for_display, lines_editor_state.effective_rows);
     // ========================================================================
     // STEP 3: Reset horizontal scroll to 0
     // ========================================================================
@@ -9686,7 +9846,10 @@ fn goto_line_start(lines_editor_state: &mut EditorState, file_path: &Path) -> Re
     //     }
     // }
 
-    let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.cursor.row,
+        lines_editor_state.effective_rows,
+    );
     lines_editor_state.cursor.col = line_num_width;
 
     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -9790,7 +9953,10 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // =========================
     // position state inspection
     // =========================
-    let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.cursor.row,
+        lines_editor_state.effective_rows,
+    );
     // reset for each new fn goto_line_end
     lines_editor_state.absolute_horizontal_0index_cursor_position = line_length + line_num_width;
     let this_row = lines_editor_state.cursor.row;
@@ -9838,7 +10004,8 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // STEP 4: Calculate display column
     // ========================================================================
 
-    let line_num_width = calculate_line_number_width(line_number_for_display);
+    let line_num_width =
+        calculate_line_number_width(line_number_for_display, lines_editor_state.effective_rows);
     let display_col_for_line_end = line_num_width + char_position_in_line;
 
     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
@@ -10262,39 +10429,187 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     Ok(())
 }
 
-/// Calculates how many columns the line number display uses
+// /// Calculates how many columns the line number display uses
+// ///
+// /// # Arguments
+// /// * `line_number` - The 1-indexed line number (for display)
+// ///
+// /// # Returns
+// /// * Number of columns used (digits + 1 space)
+// ///
+// /// # Examples
+// /// * Line 1-9: "1 " = 2 columns
+// /// * Line 10-99: "10 " = 3 columns
+// /// * Line 100-999: "100 " = 4 columns
+// fn calculate_line_number_width(line_number: usize) -> usize {
+//     if line_number == 0 {
+//         return 2; // Edge case: treat as single digit
+//     }
+
+//     /*
+//     Make a system to calculate even-witdth
+//     based on tui size
+//     e.g. if in 100/tui-size (or etc.)
+//     then add pad before row...
+
+//      */
+//     // Count digits
+//     let digits = if line_number < 9 {
+//         1
+//     } else if line_number < 99 {
+//         2
+//     } else if line_number < 999 {
+//         3
+//     } else if line_number < 9999 {
+//         4
+//     } else if line_number < 99999 {
+//         5
+//     } else {
+//         6 // Cap at 6 digits (999,999 lines max) TODO
+//     };
+
+//     digits + 1 // Add 1 for the space after the number
+// }
+
+/// Calculates the display width for line numbers in the current visible range
 ///
-/// # Arguments
-/// * `line_number` - The 1-indexed line number (for display)
-///
-/// # Returns
-/// * Number of columns used (digits + 1 space)
+/// Returns total width including the mandatory trailing space.
+/// Uses wider width when we're within `effective_rows` of a digit rollover.
 ///
 /// # Examples
-/// * Line 1-9: "1 " = 2 columns
-/// * Line 10-99: "10 " = 3 columns
-/// * Line 100-999: "100 " = 4 columns
-fn calculate_line_number_width(line_number: usize) -> usize {
+/// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
+/// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
+fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usize {
     if line_number == 0 {
         return 2; // Edge case: treat as single digit
     }
 
+    /*
+    Make a system to calculate even-witdth
+    based on tui size
+    e.g. if in rollover - tui-size
+    then add pad +1 before row...
+
+     */
+
     // Count digits
-    let digits = if line_number < 10 {
-        1
-    } else if line_number < 100 {
+    let digits = if line_number < 9 {
         2
-    } else if line_number < 1000 {
-        3
-    } else if line_number < 10000 {
-        4
-    } else if line_number < 100000 {
-        5
+    } else if line_number < 99 {
+        if line_number > (99 - effective_rows) {
+            3
+        } else {
+            2
+        }
+    } else if line_number < 999 {
+        if line_number > (999 - effective_rows) {
+            4
+        } else {
+            3
+        }
+    } else if line_number < 9999 {
+        if line_number > (9999 - effective_rows) {
+            5
+        } else {
+            4
+        }
+    } else if line_number < 99999 {
+        if line_number > (99999 - effective_rows) {
+            6
+        } else {
+            5
+        }
+    } else if line_number < 999999 {
+        if line_number > (999999 - effective_rows) {
+            7
+        } else {
+            6
+        }
     } else {
-        6 // Cap at 6 digits (999,999 lines max)
+        7 // Cap at 6 digits (999,999 lines max) TODO
     };
 
     digits + 1 // Add 1 for the space after the number
+}
+
+/// Calculates the display width for line numbers in the current visible range
+///
+/// Returns total width including the mandatory trailing space.
+/// Uses wider width when we're within `effective_rows` of a digit rollover.
+///
+/// # Examples
+/// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
+/// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
+fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bool {
+    if line_number == 0 {
+        return true; // Edge case: treat as single digit
+    }
+
+    /*
+    Make a system to calculate even-witdth
+    based on tui size
+    e.g. if in rollover - tui-size
+    then add pad +1 before row...
+     */
+
+    // Count digits
+    if line_number < 9 {
+        return true;
+    } else if line_number < 99 {
+        if line_number > (99 - effective_rows) {
+            return true;
+        } else {
+            return false;
+        }
+    } else if line_number < 999 {
+        if line_number > (999 - effective_rows) {
+            return true;
+        } else {
+            return false;
+        }
+    } else if line_number < 9999 {
+        if line_number > (9999 - effective_rows) {
+            return true;
+        } else {
+            return false;
+        }
+    } else if line_number < 99999 {
+        if line_number > (99999 - effective_rows) {
+            return true;
+        } else {
+            return false;
+        }
+    } else if line_number < 999999 {
+        if line_number > (999999 - effective_rows) {
+            return true;
+        } else {
+            return false;
+        }
+    } else {
+        return false; // Cap at 6 digits (999,999 lines max) TODO
+    };
+}
+
+// /// Returns true if this line number needs an extra padding space
+// fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
+//     // Using 9, 99, 999 as you specified (zero-indexed)
+//     line_num < 9 && (line_num + effective_rows > 9)
+//         || (line_num >= 9 && line_num < 99 && line_num > 99 - effective_rows)
+//         || (line_num >= 99 && line_num < 999 && line_num > 999 - effective_rows)
+//         || (line_num >= 999 && line_num < 9999 && line_num > 9999 - effective_rows)
+//         || (line_num >= 9999 && line_num < 99999 && line_num > 99999 - effective_rows)
+//         || (line_num >= 99999 && line_num < 999999 && line_num > 999999 - effective_rows)
+// }
+
+/// Returns true if this line number needs an extra padding space
+fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
+    // Within rollover zone of 10, 100, 1000, etc
+    line_num < 10 && (line_num + effective_rows > 10)
+        || (line_num >= 10 && line_num < 100 && line_num > 100 - effective_rows)
+        || (line_num >= 100 && line_num < 1000 && line_num > 1000 - effective_rows)
+        || (line_num >= 1000 && line_num < 10000 && line_num > 10000 - effective_rows)
+        || (line_num >= 10000 && line_num < 100000 && line_num > 100000 - effective_rows)
+        || (line_num >= 100000 && line_num < 1000000 && line_num > 1000000 - effective_rows)
 }
 
 // TODO: this should use general_use_256_buffer
@@ -10454,7 +10769,7 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
 
     // Calculate where the text starts after the line number
     let new_line_number = state.line_count_at_top_of_window + state.cursor.row;
-    let line_num_width = calculate_line_number_width(new_line_number + 1); // +1 for 1-indexed display
+    let line_num_width = calculate_line_number_width(new_line_number + 1, state.effective_rows); // +1 for 1-indexed display
 
     state.cursor.col = line_num_width; // Position cursor after line number
 
@@ -12984,7 +13299,7 @@ fn format_info_bar_cafe_normal_visualselect(state: &EditorState) -> Result<Strin
 
     // Get line number to calculate line number display width
     let line_num = state.line_count_at_top_of_window + state.cursor.row + 1;
-    let line_num_width = calculate_line_number_width(line_num);
+    let line_num_width = calculate_line_number_width(line_num, state.effective_rows);
 
     // Add horizontal offset to get character position in line
     // Subtract line number width from displayed column
@@ -14180,7 +14495,7 @@ pub fn full_lines_editor(
 
     // Bootstrap initial cursor position, start of file, after "l "
     lines_editor_state.cursor.row = 0;
-    lines_editor_state.cursor.col = 2; // Bootstrap Bumb: start after line nunber (zero-index 2)
+    lines_editor_state.cursor.col = 3; // Bootstrap Bumb: start after padded line nunber (zero-index 3)
 
     // IF userizer input line: Jump to starting line if provided
     if let Some(line_num) = starting_line {
@@ -14189,7 +14504,8 @@ pub fn full_lines_editor(
         match seek_to_line_number(&mut File::open(&read_copy_path)?, target_line) {
             Ok(byte_pos) => {
                 // Position cursor AFTER line number (same as bootstrap)
-                let line_num_width = calculate_line_number_width(target_line);
+                let line_num_width =
+                    calculate_line_number_width(target_line, lines_editor_state.effective_rows);
                 // println!("{line_num_width}{target_line}");
                 lines_editor_state.cursor.col = line_num_width; // Skip over line number display
                 lines_editor_state.line_count_at_top_of_window = target_line;
@@ -14251,8 +14567,19 @@ pub fn full_lines_editor(
         // ====
         // Bump
         // ====
+        /*
+        To keep the cursor on the text:
+        If on the top (zero index 0-line 0-row) bump to end of line number
+        If not, move to end of previous line.
+
+        TODO: make system to calculate even number indent...
+
+        */
         // // find line text width
-        let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+        let line_num_width = calculate_line_number_width(
+            lines_editor_state.cursor.row,
+            lines_editor_state.effective_rows,
+        );
         if lines_editor_state.cursor.col < line_num_width {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
             if lines_editor_state.cursor.col == 0 {
