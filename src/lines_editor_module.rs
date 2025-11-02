@@ -6327,7 +6327,10 @@ impl EditorState {
     //
     // Methods for byte positions of start and stop
     // VERY under constriction, VERY not working
-    //
+    //  00
+    // 000
+    //0000
+    //0000
     //
 
     /// Writes a line number into a display buffer with optional padding
@@ -6335,7 +6338,12 @@ impl EditorState {
     /// # Format
     /// Either "N " or " N " depending on rollover zone
     /// No heap allocation - writes directly to pre-allocated buffer
-    pub fn write_line_number(&mut self, row_idx: usize, line_num: usize) -> io::Result<usize> {
+    pub fn write_line_number(
+        &mut self,
+        row_idx: usize,
+        line_num: usize,
+        starting_row: usize,
+    ) -> io::Result<usize> {
         // Validate row index
         if row_idx >= 45 {
             return Err(io::Error::new(
@@ -6345,7 +6353,8 @@ impl EditorState {
         }
 
         // Check if we need padding
-        let needs_padding = needs_extra_padding(line_num, self.effective_rows);
+        let needs_padding =
+            row_needs_extra_padding_bool(starting_row, line_num, self.effective_rows);
 
         // Convert number to bytes directly into buffer
         let mut write_pos = 0;
@@ -7439,8 +7448,11 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
 
         // Write line number to display buffer
         let line_number_display = current_line_number + 1; // Convert 0-indexed to 1-indexed
-        let line_num_bytes_written =
-            state.write_line_number(current_display_row, line_number_display)?;
+        let line_num_bytes_written = state.write_line_number(
+            current_display_row,
+            line_number_display,
+            state.line_count_at_top_of_window,
+        )?;
 
         // Calculate how many columns remain after line number
         let remaining_cols = state.effective_cols.saturating_sub(line_num_bytes_written);
@@ -10471,6 +10483,13 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
 //     digits + 1 // Add 1 for the space after the number
 // }
 
+/// TODO: yes, this is wrong, part of construction experiments...
+/// e.g. before building get 'starting row number'
+///
+/// if sarting row is > (99 - effective_rows)
+/// then if line_number > (99 - effective_rows)
+/// needs rows starting number...maybe just make this a method...
+///
 /// Calculates the display width for line numbers in the current visible range
 ///
 /// Returns total width including the mandatory trailing space.
@@ -10532,6 +10551,63 @@ fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usi
     digits + 1 // Add 1 for the space after the number
 }
 
+// /// Calculates the display width for line numbers in the current visible range
+// ///
+// /// Returns total width including the mandatory trailing space.
+// /// Uses wider width when we're within `effective_rows` of a digit rollover.
+// ///
+// /// # Examples
+// /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
+// /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
+// fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bool {
+//     if line_number == 0 {
+//         return true; // Edge case: treat as single digit
+//     }
+
+//     /*
+//     Make a system to calculate even-witdth
+//     based on tui size
+//     e.g. if in rollover - tui-size
+//     then add pad +1 before row...
+//      */
+//     // Count digits
+//     if line_number < 9 {
+//         return true;
+//     } else if line_number < 99 {
+//         if line_number > (99 - effective_rows) {
+//             return true;
+//         } else {
+//             return false;
+//         }
+//     } else if line_number < 999 {
+//         if line_number > (999 - effective_rows) {
+//             return true;
+//         } else {
+//             return false;
+//         }
+//     } else if line_number < 9999 {
+//         if line_number > (9999 - effective_rows) {
+//             return true;
+//         } else {
+//             return false;
+//         }
+//     } else if line_number < 99999 {
+//         if line_number > (99999 - effective_rows) {
+//             return true;
+//         } else {
+//             return false;
+//         }
+//     } else if line_number < 999999 {
+//         if line_number > (999999 - effective_rows) {
+//             return true;
+//         } else {
+//             return false;
+//         }
+//     } else {
+//         return false; // Cap at 6 digits (999,999 lines max) TODO
+//     };
+// }
+
 /// Calculates the display width for line numbers in the current visible range
 ///
 /// Returns total width including the mandatory trailing space.
@@ -10540,24 +10616,25 @@ fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usi
 /// # Examples
 /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
 /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
-fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bool {
-    if line_number == 0 {
-        return true; // Edge case: treat as single digit
-    }
-
+fn row_needs_extra_padding_bool(
+    starting_row: usize,
+    line_number: usize,
+    effective_rows: usize,
+) -> bool {
     /*
     Make a system to calculate even-witdth
     based on tui size
     e.g. if in rollover - tui-size
     then add pad +1 before row...
      */
-
     // Count digits
     if line_number < 9 {
         return true;
     } else if line_number < 99 {
-        if line_number > (99 - effective_rows) {
-            return true;
+        if starting_row > (99 - effective_rows) {
+            if line_number > (99 - effective_rows) {
+                return true;
+            }
         } else {
             return false;
         }
@@ -10588,6 +10665,7 @@ fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bo
     } else {
         return false; // Cap at 6 digits (999,999 lines max) TODO
     };
+    return false;
 }
 
 // /// Returns true if this line number needs an extra padding space
@@ -10601,16 +10679,16 @@ fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bo
 //         || (line_num >= 99999 && line_num < 999999 && line_num > 999999 - effective_rows)
 // }
 
-/// Returns true if this line number needs an extra padding space
-fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
-    // Within rollover zone of 10, 100, 1000, etc
-    line_num < 10 && (line_num + effective_rows > 10)
-        || (line_num >= 10 && line_num < 100 && line_num > 100 - effective_rows)
-        || (line_num >= 100 && line_num < 1000 && line_num > 1000 - effective_rows)
-        || (line_num >= 1000 && line_num < 10000 && line_num > 10000 - effective_rows)
-        || (line_num >= 10000 && line_num < 100000 && line_num > 100000 - effective_rows)
-        || (line_num >= 100000 && line_num < 1000000 && line_num > 1000000 - effective_rows)
-}
+// /// Returns true if this line number needs an extra padding space
+// fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
+//     // Within rollover zone of 10, 100, 1000, etc
+//     line_num < 10 && (line_num + effective_rows > 10)
+//         || (line_num >= 10 && line_num < 100 && line_num > 100 - effective_rows)
+//         || (line_num >= 100 && line_num < 1000 && line_num > 1000 - effective_rows)
+//         || (line_num >= 1000 && line_num < 10000 && line_num > 10000 - effective_rows)
+//         || (line_num >= 10000 && line_num < 100000 && line_num > 100000 - effective_rows)
+//         || (line_num >= 100000 && line_num < 1000000 && line_num > 1000000 - effective_rows)
+// }
 
 // TODO: this should use general_use_256_buffer
 /// Inserts a newline character at cursor position WITHOUT loading whole file
