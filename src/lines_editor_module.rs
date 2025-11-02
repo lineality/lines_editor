@@ -1052,7 +1052,7 @@ pub const DEFAULT_COLS: usize = 80;
 const RESET: &str = "\x1b[0m";
 const RED: &str = "\x1b[31m";
 const YELLOW: &str = "\x1b[33m";
-const GREEN: &str = "\x1b[32m";
+// const GREEN: &str = "\x1b[32m";
 // const BLUE: &str = "\x1b[34m";
 // const BOLD: &str = "\x1b[1m";
 // const ITALIC: &str = "\x1b[3m";
@@ -4010,47 +4010,156 @@ impl EditorState {
         Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
     }
 
-    /// Checks if the next byte after cursor is a newline
+    // /// Checks if the next byte after cursor is a newline
+    // ///
+    // /// # Purpose
+    // /// Determines if moving right should wrap to next line.
+    // /// Used in MoveRight command to detect line boundaries.
+    // ///
+    // /// # Returns
+    // /// * `Ok(true)` - Next byte in file is newline (at line end)
+    // /// * `Ok(false)` - Next byte is NOT newline (can move right)
+    // /// * `Err(LinesError)` - Cannot determine (state error)
+    // ///
+    // /// # Logic
+    // /// If cursor's byte_offset_linear_file_absolute_position equals the line's end_byte,
+    // /// then the next file byte is the newline character.
+    // pub fn is_next_byte_newline(&self) -> Result<bool> {
+    //     // Get cursor's file byte position
+    //     let cursor_byte = self
+    //         .window_map
+    //         .get_row_col_file_position(self.cursor.row, self.cursor.col)?
+    //         .ok_or_else(|| {
+    //             let msg = format!(
+    //                 "Cursor at ({}, {}) maps to empty cell",
+    //                 self.cursor.row, self.cursor.col
+    //             );
+    //             log_error(&msg, Some("is_next_byte_newline"));
+    //             LinesError::StateError(msg)
+    //         })?
+    //         .byte_offset_linear_file_absolute_position;
+
+    //     // Get line's end boundary
+    //     let (_start, end) = self.window_map.line_byte_start_end_position_pairs[self.cursor.row]
+    //         .ok_or_else(|| {
+    //             let msg = format!("Line byte range not set for row {}", self.cursor.row);
+    //             log_error(&msg, Some("is_next_byte_newline"));
+    //             LinesError::StateError(msg)
+    //         })?;
+
+    //     // If cursor is at line end, next byte is newline
+    //     Ok(cursor_byte == end)
+    // }
+    /// Determines if the next byte in the file is a newline character (line-end detection).
     ///
-    /// # Purpose
-    /// Determines if moving right should wrap to next line.
-    /// Used in MoveRight command to detect line boundaries.
+    /// # Purpose (Project Context)
+    /// This function supports text editor cursor movement in the MoveRight command.
+    /// When the cursor reaches the end of a line, the next byte is a newline character,
+    /// which signals that MoveRight should wrap to the next line instead of continuing right.
+    ///
+    /// # Scope - Graceful Out-of-Bounds Handling (Primary Purpose)
+    /// **This function exists specifically to handle out-of-bounds conditions safely.**
+    /// Instead of crashing when the cursor is at invalid positions, it returns safe
+    /// default values that allow the application to continue operating:
+    ///
+    /// - Cursor row beyond file line count → Returns `Ok(false)` (treat as not at newline)
+    /// - Cursor column beyond line length → Returns `Ok(false)` (treat as not at newline)
+    /// - Line byte range not initialized → Returns `Ok(false)` (treat as not at newline)
+    /// - Cursor position unmapped in window → Returns `Ok(false)` (treat as not at newline)
+    ///
+    /// The philosophy: **When in doubt about boundaries, assume we're NOT at a newline.**
+    /// This prevents cursor movement commands from incorrectly wrapping lines, which is
+    /// safer than crashing the application.
+    ///
+    /// This function is stateless and read-only; it never modifies editor state.
     ///
     /// # Returns
-    /// * `Ok(true)` - Next byte in file is newline (at line end)
-    /// * `Ok(false)` - Next byte is NOT newline (can move right)
-    /// * `Err(LinesError)` - Cannot determine (state error)
+    /// * `Ok(true)` - Cursor is definitively at line-end; next file byte is the newline
+    /// * `Ok(false)` - Cursor is NOT at line-end, OR position is out-of-bounds/invalid
+    /// * `Err(LinesError::StateError)` - Only for truly unrecoverable internal corruption
     ///
-    /// # Logic
-    /// If cursor's byte_offset_linear_file_absolute_position equals the line's end_byte,
-    /// then the next file byte is the newline character.
+    /// Note: Out-of-bounds conditions return `Ok(false)`, not errors. This allows the
+    /// application to continue safely without crashing on boundary conditions.
     pub fn is_next_byte_newline(&self) -> Result<bool> {
-        // Get cursor's file byte position
-        let cursor_byte = self
+        // === DEFENSIVE CHECK 1: Row bounds validation ===
+        // Instead of panicking on out-of-bounds, return Ok(false).
+        // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
+        if self.cursor.row >= self.window_map.line_byte_start_end_position_pairs.len() {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "is_next_byte_newline: cursor row {} >= line count {} (returning false - not at newline)",
+                self.cursor.row,
+                self.window_map.line_byte_start_end_position_pairs.len()
+            );
+
+            // Not an error - this is expected handling of out-of-bounds
+            return Ok(false);
+        }
+
+        // === DEFENSIVE CHECK 2: Cursor position mapping validation ===
+        // If cursor doesn't map to a valid file position, safely return false.
+        // This handles columns beyond line length without crashing.
+        let cursor_byte_result = self
             .window_map
-            .get_row_col_file_position(self.cursor.row, self.cursor.col)?
-            .ok_or_else(|| {
-                let msg = format!(
-                    "Cursor at ({}, {}) maps to empty cell",
+            .get_row_col_file_position(self.cursor.row, self.cursor.col)?;
+
+        let cursor_byte = match cursor_byte_result {
+            Some(pos) => pos.byte_offset_linear_file_absolute_position,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: cursor ({}, {}) has no valid file position mapping (returning false - not at newline)",
                     self.cursor.row, self.cursor.col
                 );
-                log_error(&msg, Some("is_next_byte_newline"));
-                LinesError::StateError(msg)
-            })?
-            .byte_offset_linear_file_absolute_position;
 
-        // Get line's end boundary
-        let (_start, end) = self.window_map.line_byte_start_end_position_pairs[self.cursor.row]
-            .ok_or_else(|| {
-                let msg = format!("Line byte range not set for row {}", self.cursor.row);
-                log_error(&msg, Some("is_next_byte_newline"));
-                LinesError::StateError(msg)
-            })?;
+                // Not an error - cursor is just beyond valid positions
+                return Ok(false);
+            }
+        };
 
-        // If cursor is at line end, next byte is newline
+        // === DEFENSIVE CHECK 3: Line byte range access ===
+        // Use .get() for safe indexing. If somehow the row is still invalid,
+        // return false (defense-in-depth: additional validation layer).
+        let line_byte_range = match self
+            .window_map
+            .line_byte_start_end_position_pairs
+            .get(self.cursor.row)
+        {
+            Some(range) => range,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: line byte range missing for row {} (returning false - not at newline)",
+                    self.cursor.row
+                );
+
+                // Not an error - handle missing range gracefully
+                return Ok(false);
+            }
+        };
+
+        // === DEFENSIVE CHECK 4: Line byte range initialization ===
+        // The line_byte_range is an Option; if None, return false safely.
+        let (_start, end) = match line_byte_range {
+            Some(range) => *range,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: line byte range is None (uninitialized) for row {} (returning false - not at newline)",
+                    self.cursor.row
+                );
+
+                // Not an error - uninitialized state handled gracefully
+                return Ok(false);
+            }
+        };
+
+        // === LOGIC: Determine if at line end ===
+        // If cursor byte position equals line end byte position,
+        // the next byte in the file is the newline character.
+        // This is the only condition where we return Ok(true).
         Ok(cursor_byte == end)
     }
-
     /// Handles Pasty mode - clipboard management and file insertion interface
     ///
     /// # Purpose
@@ -7465,10 +7574,11 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
 
         // Write line number to display buffer
         let line_number_display = current_line_number + 1; // Convert 0-indexed to 1-indexed
+
         let line_num_bytes_written = state.write_line_number(
-            current_display_row,
-            line_number_display,
-            state.line_count_at_top_of_window,
+            current_display_row,               // row_idx: usize,
+            line_number_display,               // line_num: usize,
+            state.line_count_at_top_of_window, // starting_row: usize,
         )?;
 
         // Calculate how many columns remain after line number
@@ -8926,6 +9036,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
 
             let line_num_width = calculate_line_number_width(
+                lines_editor_state.line_count_at_top_of_window,
                 lines_editor_state.cursor.row,
                 lines_editor_state.effective_rows,
             );
@@ -9247,6 +9358,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             // reset to first real position each new go-to-linw
             let line_num_width = calculate_line_number_width(
+                lines_editor_state.line_count_at_top_of_window,
                 lines_editor_state.cursor.row,
                 lines_editor_state.effective_rows,
             );
@@ -9299,8 +9411,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Position cursor AFTER line number (same as bootstrap)
                     // number of digits in line number + 1 is first character
-                    let line_num_width =
-                        calculate_line_number_width(line_number, lines_editor_state.effective_rows);
+                    let line_num_width = calculate_line_number_width(
+                        lines_editor_state.line_count_at_top_of_window,
+                        line_number,
+                        lines_editor_state.effective_rows,
+                    );
                     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
 
                     // Rebuild window to show the new position
@@ -9328,6 +9443,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             // reset to first real position each new GotoFileStart
             let line_num_width = calculate_line_number_width(
+                lines_editor_state.line_count_at_top_of_window,
                 lines_editor_state.cursor.row,
                 lines_editor_state.effective_rows,
             );
@@ -9424,6 +9540,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // goto_line_start(lines_editor_state, &read_copy)?;
 
             let line_num_width = calculate_line_number_width(
+                lines_editor_state.line_count_at_top_of_window,
                 lines_editor_state.cursor.row,
                 lines_editor_state.effective_rows,
             );
@@ -9856,8 +9973,11 @@ fn goto_line_start(lines_editor_state: &mut EditorState, file_path: &Path) -> Re
     // STEP 2: Calculate line number width for cursor positioning
     // ========================================================================
 
-    let line_num_width =
-        calculate_line_number_width(line_number_for_display, lines_editor_state.effective_rows);
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
+        line_number_for_display,
+        lines_editor_state.effective_rows,
+    );
     // ========================================================================
     // STEP 3: Reset horizontal scroll to 0
     // ========================================================================
@@ -9891,6 +10011,7 @@ fn goto_line_start(lines_editor_state: &mut EditorState, file_path: &Path) -> Re
     // }
 
     let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
         lines_editor_state.cursor.row,
         lines_editor_state.effective_rows,
     );
@@ -9999,6 +10120,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // position state inspection
     // =========================
     let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
         lines_editor_state.cursor.row,
         lines_editor_state.effective_rows,
     );
@@ -10049,8 +10171,11 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // STEP 4: Calculate display column
     // ========================================================================
 
-    let line_num_width =
-        calculate_line_number_width(line_number_for_display, lines_editor_state.effective_rows);
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
+        line_number_for_display,
+        lines_editor_state.effective_rows,
+    );
     let display_col_for_line_end = line_num_width + char_position_in_line;
 
     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
@@ -10114,7 +10239,10 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
         .window_map
         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
         .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Cursor not on valid position")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bsd: Cursor not on valid position",
+            )
         })?;
 
     let cursor_byte = file_pos.byte_offset_linear_file_absolute_position;
@@ -10360,7 +10488,10 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::
         .window_map
         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
         .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Cursor not on valid position")
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dcln: Cursor not on valid position",
+            )
         })?;
 
     // Step 2: Find line boundaries
@@ -10537,7 +10668,11 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
 /// # Examples
 /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
 /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
-fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usize {
+fn calculate_line_number_width(
+    starting_row: usize,
+    line_number: usize,
+    effective_rows: usize,
+) -> usize {
     if line_number == 0 {
         return 2; // Edge case: treat as single digit
     }
@@ -10551,45 +10686,113 @@ fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usi
      */
 
     // Count digits
-    let digits = if line_number < 9 {
+    let digits = if line_number < 10 {
         2
-    } else if line_number < 99 {
-        if line_number > (99 - effective_rows) {
-            3
+    // } else if line_number < 99 {
+    // if line_number > (99 - effective_rows) {
+    //     3
+    // } else {
+    //     2
+    // }
+    } else if line_number < 100 {
+        if starting_row > (100 - effective_rows - 1) {
+            if line_number > (100 - effective_rows - 1) {
+                3
+            } else {
+                2
+            }
         } else {
             2
         }
+    // } else if line_number < 999 {
+    //     if line_number > (999 - effective_rows) {
+    //         4
+    //     } else {
+    //         3
+    //     }
     } else if line_number < 999 {
-        if line_number > (999 - effective_rows) {
-            4
+        if starting_row > (999 - effective_rows) {
+            if line_number > (999 - effective_rows) {
+                4
+            } else {
+                3
+            }
         } else {
             3
         }
-    } else if line_number < 9999 {
-        if line_number > (9999 - effective_rows) {
-            5
+    // } else if line_number < 9999 {
+    //     if line_number > (9999 - effective_rows) {
+    //         5
+    //     } else {
+    //         4
+    //     }
+    } else if line_number < 9_999 {
+        if starting_row > (9_999 - effective_rows) {
+            if line_number > (9_999 - effective_rows) {
+                5
+            } else {
+                4
+            }
         } else {
             4
         }
-    } else if line_number < 99999 {
-        if line_number > (99999 - effective_rows) {
-            6
+    // } else if line_number < 99999 {
+    //     if line_number > (99999 - effective_rows) {
+    //         6
+    //     } else {
+    //         5
+    //     }
+    } else if line_number < 99_999 {
+        if starting_row > (99_999 - effective_rows) {
+            if line_number > (99_999 - effective_rows) {
+                6
+            } else {
+                5
+            }
         } else {
             5
         }
-    } else if line_number < 999999 {
-        if line_number > (999999 - effective_rows) {
-            7
+    // } else if line_number < 999999 {
+    //     if line_number > (999999 - effective_rows) {
+    //         7
+    //     } else {
+    //         6
+    //     }
+    } else if line_number < 999_999 {
+        if starting_row > (999_999 - effective_rows) {
+            if line_number > (999_999 - effective_rows) {
+                7
+            } else {
+                6
+            }
         } else {
             6
         }
+    } else if line_number < 9_999_999 {
+        if starting_row > (9_999_999 - effective_rows) {
+            if line_number > (9_999_999 - effective_rows) {
+                8
+            } else {
+                7
+            }
+        } else {
+            7
+        }
     } else {
-        7 // Cap at 6 digits (999,999 lines max) TODO
+        8 // Cap at 8 digits (999,999 lines max) TODO
     };
 
+    // Return
     digits + 1 // Add 1 for the space after the number
 }
 
+// /// TODO: yes, this is wrong, part of construction experiments...
+// /// e.g. before building get 'starting row number'
+// ///
+// /// if sarting row is > (99 - effective_rows)
+// /// then if line_number > (99 - effective_rows)
+// /// needs rows starting number...maybe just make this a method...
+// ///
 // /// Calculates the display width for line numbers in the current visible range
 // ///
 // /// Returns total width including the mandatory trailing space.
@@ -10598,9 +10801,13 @@ fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usi
 // /// # Examples
 // /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
 // /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
-// fn row_needs_extra_padding_bool(line_number: usize, effective_rows: usize) -> bool {
+// fn calculate_line_number_width(
+//     starting_row: usize,
+//     line_number: usize,
+//     effective_rows: usize,
+// ) -> usize {
 //     if line_number == 0 {
-//         return true; // Edge case: treat as single digit
+//         return 2; // Edge case: treat as single digit
 //     }
 
 //     /*
@@ -10608,43 +10815,107 @@ fn calculate_line_number_width(line_number: usize, effective_rows: usize) -> usi
 //     based on tui size
 //     e.g. if in rollover - tui-size
 //     then add pad +1 before row...
+
 //      */
 //     // Count digits
-//     if line_number < 9 {
-//         return true;
+//     let digits = if line_number < 9 {
+//         2
+//     // } else if line_number < 99 {
+//     // if line_number > (99 - effective_rows) {
+//     //     3
+//     // } else {
+//     //     2
+//     // }
 //     } else if line_number < 99 {
-//         if line_number > (99 - effective_rows) {
-//             return true;
+//         if starting_row > (99 - effective_rows) {
+//             if line_number > (99 - effective_rows) {
+//                 3
+//             } else {
+//                 2
+//             }
 //         } else {
-//             return false;
+//             2
 //         }
+//     // } else if line_number < 999 {
+//     //     if line_number > (999 - effective_rows) {
+//     //         4
+//     //     } else {
+//     //         3
+//     //     }
 //     } else if line_number < 999 {
-//         if line_number > (999 - effective_rows) {
-//             return true;
+//         if starting_row > (999 - effective_rows) {
+//             if line_number > (999 - effective_rows) {
+//                 4
+//             } else {
+//                 3
+//             }
 //         } else {
-//             return false;
+//             3
 //         }
-//     } else if line_number < 9999 {
-//         if line_number > (9999 - effective_rows) {
-//             return true;
+//     // } else if line_number < 9999 {
+//     //     if line_number > (9999 - effective_rows) {
+//     //         5
+//     //     } else {
+//     //         4
+//     //     }
+//     } else if line_number < 9_999 {
+//         if starting_row > (9_999 - effective_rows) {
+//             if line_number > (9_999 - effective_rows) {
+//                 5
+//             } else {
+//                 4
+//             }
 //         } else {
-//             return false;
+//             4
 //         }
-//     } else if line_number < 99999 {
-//         if line_number > (99999 - effective_rows) {
-//             return true;
+//     // } else if line_number < 99999 {
+//     //     if line_number > (99999 - effective_rows) {
+//     //         6
+//     //     } else {
+//     //         5
+//     //     }
+//     } else if line_number < 99_999 {
+//         if starting_row > (99_999 - effective_rows) {
+//             if line_number > (99_999 - effective_rows) {
+//                 6
+//             } else {
+//                 5
+//             }
 //         } else {
-//             return false;
+//             5
 //         }
-//     } else if line_number < 999999 {
-//         if line_number > (999999 - effective_rows) {
-//             return true;
+//     // } else if line_number < 999999 {
+//     //     if line_number > (999999 - effective_rows) {
+//     //         7
+//     //     } else {
+//     //         6
+//     //     }
+//     } else if line_number < 999_999 {
+//         if starting_row > (999_999 - effective_rows) {
+//             if line_number > (999_999 - effective_rows) {
+//                 7
+//             } else {
+//                 6
+//             }
 //         } else {
-//             return false;
+//             6
+//         }
+//     } else if line_number < 9_999_999 {
+//         if starting_row > (9_999_999 - effective_rows) {
+//             if line_number > (9_999_999 - effective_rows) {
+//                 8
+//             } else {
+//                 7
+//             }
+//         } else {
+//             7
 //         }
 //     } else {
-//         return false; // Cap at 6 digits (999,999 lines max) TODO
+//         8 // Cap at 8 digits (999,999 lines max) TODO
 //     };
+
+//     // Return
+//     digits + 1 // Add 1 for the space after the number
 // }
 
 /// Calculates the display width for line numbers in the current visible range
@@ -10660,73 +10931,113 @@ fn row_needs_extra_padding_bool(
     line_number: usize,
     effective_rows: usize,
 ) -> bool {
-    /*
-    Make a system to calculate even-witdth
-    based on tui size
-    e.g. if in rollover - tui-size
-    then add pad +1 before row...
-     */
-    // Count digits
-    if line_number < 9 {
-        return true;
-    } else if line_number < 99 {
-        if starting_row > (99 - effective_rows) {
-            if line_number > (99 - effective_rows) {
-                return true;
+    let bool_output;
+
+    if line_number < 10 {
+        bool_output = true;
+    } else if line_number < 100 {
+        if starting_row > (100 - effective_rows - 1) {
+            if line_number > (100 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
             }
         } else {
-            return false;
+            bool_output = false;
         }
     } else if line_number < 999 {
         if line_number > (999 - effective_rows) {
-            return true;
+            bool_output = true;
         } else {
-            return false;
+            bool_output = false;
         }
     } else if line_number < 9999 {
         if line_number > (9999 - effective_rows) {
-            return true;
+            bool_output = true;
         } else {
-            return false;
+            bool_output = false;
         }
     } else if line_number < 99999 {
         if line_number > (99999 - effective_rows) {
-            return true;
+            bool_output = true;
         } else {
-            return false;
+            bool_output = false;
         }
     } else if line_number < 999999 {
         if line_number > (999999 - effective_rows) {
-            return true;
+            bool_output = true;
         } else {
-            return false;
+            bool_output = false;
         }
     } else {
-        return false; // Cap at 6 digits (999,999 lines max) TODO
-    };
-    return false;
+        bool_output = false; // Cap at 6 digits (999,999 lines max) TODO
+    }
+
+    bool_output
 }
 
-// /// Returns true if this line number needs an extra padding space
-// fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
-//     // Using 9, 99, 999 as you specified (zero-indexed)
-//     line_num < 9 && (line_num + effective_rows > 9)
-//         || (line_num >= 9 && line_num < 99 && line_num > 99 - effective_rows)
-//         || (line_num >= 99 && line_num < 999 && line_num > 999 - effective_rows)
-//         || (line_num >= 999 && line_num < 9999 && line_num > 9999 - effective_rows)
-//         || (line_num >= 9999 && line_num < 99999 && line_num > 99999 - effective_rows)
-//         || (line_num >= 99999 && line_num < 999999 && line_num > 999999 - effective_rows)
-// }
+// /// Calculates the display width for line numbers in the current visible range
+// ///
+// /// Returns total width including the mandatory trailing space.
+// /// Uses wider width when we're within `effective_rows` of a digit rollover.
+// ///
+// /// # Examples
+// /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
+// /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
+// fn row_needs_extra_padding_bool(
+//     starting_row: usize,
+//     line_number: usize,
+//     effective_rows: usize,
+// ) -> bool {
+//     /*
+//     Make a system to calculate even-witdth
+//     based on tui size
+//     e.g. if in rollover - tui-size
+//     then add pad +1 before row...
+//      */
+//     // Count digits
 
-// /// Returns true if this line number needs an extra padding space
-// fn needs_extra_padding(line_num: usize, effective_rows: usize) -> bool {
-//     // Within rollover zone of 10, 100, 1000, etc
-//     line_num < 10 && (line_num + effective_rows > 10)
-//         || (line_num >= 10 && line_num < 100 && line_num > 100 - effective_rows)
-//         || (line_num >= 100 && line_num < 1000 && line_num > 1000 - effective_rows)
-//         || (line_num >= 1000 && line_num < 10000 && line_num > 10000 - effective_rows)
-//         || (line_num >= 10000 && line_num < 100000 && line_num > 100000 - effective_rows)
-//         || (line_num >= 100000 && line_num < 1000000 && line_num > 1000000 - effective_rows)
+//     let bool_output = false;
+//     if line_number < 9 {
+//         let bool_output = true;
+//     } else if line_number < 99 {
+//         if starting_row > (99 - effective_rows) {
+//             if line_number > (99 - effective_rows) {
+//                 let bool_output = true;
+//             } else {
+//                 let bool_output = false;
+//             }
+//         } else {
+//             let bool_output = false;
+//         }
+//     } else if line_number < 999 {
+//         if line_number > (999 - effective_rows) {
+//             let bool_output = true;
+//         } else {
+//             let bool_output = false;
+//         }
+//     } else if line_number < 9999 {
+//         if line_number > (9999 - effective_rows) {
+//             let bool_output = true;
+//         } else {
+//             let bool_output = false;
+//         }
+//     } else if line_number < 99999 {
+//         if line_number > (99999 - effective_rows) {
+//             let bool_output = true;
+//         } else {
+//             let bool_output = false;
+//         }
+//     } else if line_number < 999999 {
+//         if line_number > (999999 - effective_rows) {
+//             let bool_output = true;
+//         } else {
+//             let bool_output = false;
+//         }
+//     } else {
+//         let bool_output = false; // Cap at 6 digits (999,999 lines max) TODO
+//     };
+//     bool_output
 // }
 
 // TODO: this should use general_use_256_buffer
@@ -10756,11 +11067,14 @@ fn row_needs_extra_padding_bool(
 /// - Uses 8KB pre-allocated buffer
 /// - Never loads whole file
 /// - Bounded iteration counts
-fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+fn insert_newline_at_cursor_chunked(
+    lines_editor_state: &mut EditorState,
+    file_path: &Path,
+) -> io::Result<()> {
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
-    let file_pos = match state
+    let file_pos = match lines_editor_state
         .window_map
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)
+        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(pos)) => pos,
         Ok(None) => {
@@ -10869,26 +11183,31 @@ fn insert_newline_at_cursor_chunked(state: &mut EditorState, file_path: &Path) -
     fs::rename(&temp_path, file_path)?;
 
     // Step 9: Mark file as modified
-    state.is_modified = true;
+    lines_editor_state.is_modified = true;
 
     // Step 10: Log the edit
-    state.log_edit(&format!(
+    lines_editor_state.log_edit(&format!(
         "INSERT_NEWLINE line:{} byte:{}",
         file_pos.line_number, file_pos.byte_offset_linear_file_absolute_position
     ))?;
 
     // // Step 11: Update cursor - move to start of new line
-    // state.cursor.row += 1;
-    // state.cursor.col = 0;
+    // lines_editor_state.cursor.row += 1;
+    // lines_editor_state.cursor.col = 0;
 
     // Step 11: Update cursor - move to start of new line
-    state.cursor.row += 1;
+    lines_editor_state.cursor.row += 1;
 
     // Calculate where the text starts after the line number
-    let new_line_number = state.line_count_at_top_of_window + state.cursor.row;
-    let line_num_width = calculate_line_number_width(new_line_number + 1, state.effective_rows); // +1 for 1-indexed display
+    let new_line_number =
+        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row;
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
+        new_line_number + 1,
+        lines_editor_state.effective_rows,
+    ); // +1 for 1-indexed display
 
-    state.cursor.col = line_num_width; // Position cursor after line number
+    lines_editor_state.cursor.col = line_num_width; // Position cursor after line number
 
     // Note: We don't update line_count_at_top_of_window here
     // The window rebuild will handle proper positioning
@@ -13418,7 +13737,11 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
     // Get line number to calculate line number display width
     let line_num =
         lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row + 1;
-    let line_num_width = calculate_line_number_width(line_num, lines_editor_state.effective_rows);
+    let line_num_width = calculate_line_number_width(
+        lines_editor_state.line_count_at_top_of_window,
+        line_num,
+        lines_editor_state.effective_rows,
+    );
 
     // Add horizontal offset to get character position in line
     // Subtract line number width from displayed column
@@ -13446,16 +13769,31 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
             .unwrap_or(""); // Empty string if invalid UTF-8
 
     // Step 1: Get current line's file position
-    let row_col_file_pos = lines_editor_state
+    // In case of exception, say 'n/a'
+    let file_position_string = match lines_editor_state
         .window_map
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "Cursor not on valid position")
-        })?;
+        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+    {
+        Ok(Some(row_col_file_pos)) => row_col_file_pos
+            .byte_offset_linear_file_absolute_position
+            .to_string(),
+        _ => "n/a".to_string(),
+    };
 
-    // Get file position at/of/where cursor
-    let file_position_string = row_col_file_pos.byte_offset_linear_file_absolute_position;
-    // .to_string();
+    // let row_col_file_pos = lines_editor_state
+    //     .window_map
+    //     .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
+    //     .ok_or_else(|| {
+    //         io::Error::new(
+    //             io::ErrorKind::InvalidInput,
+    //             "fib: Cursor not on valid position",
+    //         )
+    //     })?;
+
+    // // Get file position at/of/where cursor
+    // let file_position_string = row_col_file_pos
+    //     .byte_offset_linear_file_absolute_position
+    //     .to_string();
 
     // Build the info bar
     let info = format!(
@@ -14633,17 +14971,24 @@ pub fn full_lines_editor(
     lines_editor_state.cursor.row = 0;
     lines_editor_state.cursor.col = 3; // Bootstrap Bumb: start after padded line nunber (zero-index 3)
 
-    // IF userizer input line: Jump to starting line if provided
+    // IF cli argument to goto/start-at line:
+    // e.g. lines many_lines_v1.txt:500
+    // IF user input line: Jump to starting line if provided
     if let Some(line_num) = starting_line {
         let target_line = line_num.saturating_sub(1); // Convert 1-indexed to 0-indexed
 
         match seek_to_line_number(&mut File::open(&read_copy_path)?, target_line) {
             Ok(byte_pos) => {
                 // Position cursor AFTER line number (same as bootstrap)
-                let line_num_width =
-                    calculate_line_number_width(target_line, lines_editor_state.effective_rows);
+                let line_num_width = calculate_line_number_width(
+                    // lines_editor_state.line_count_at_top_of_window,
+                    target_line,
+                    target_line,
+                    lines_editor_state.effective_rows,
+                );
                 // println!("{line_num_width}{target_line}");
                 lines_editor_state.cursor.col = line_num_width; // Skip over line number display
+
                 lines_editor_state.line_count_at_top_of_window = target_line;
                 lines_editor_state.file_position_of_topline_start = byte_pos;
             }
@@ -14713,16 +15058,18 @@ pub fn full_lines_editor(
         */
         // // find line text width
         let line_num_width = calculate_line_number_width(
+            lines_editor_state.line_count_at_top_of_window,
             lines_editor_state.cursor.row,
             lines_editor_state.effective_rows,
         );
         if lines_editor_state.cursor.col < line_num_width {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
-            if lines_editor_state.cursor.col == 0 {
+            if lines_editor_state.cursor.row == 0 {
                 lines_editor_state.cursor.col = line_num_width;
                 lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
             } else {
+                print!("moving up: line_num_width {line_num_width}");
                 // Not at Top? If so... Bump it up!
                 // Move up one line
                 execute_command(&mut lines_editor_state, Command::MoveUp(1))?;
@@ -14731,9 +15078,8 @@ pub fn full_lines_editor(
                 execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
-                // return Ok(true);
 
-                _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy); // rebuild
+                // _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy); // rebuild
                 let _ = lines_editor_state.set_info_bar_message("start of line"); // massage
             }
         }
