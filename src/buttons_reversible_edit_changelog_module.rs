@@ -12055,3 +12055,838 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
     Ok(())
 }
 */
+
+/* Delete Line Integration
+
+// ==============================
+// That's a Cheap Trick, Buttons!
+// ==============================
+
+/// Deletes entire line at cursor WITHOUT loading whole file, with undo support
+///
+/// # Overview
+/// Deletes the line containing the cursor using chunked file operations and creates
+/// inverse changelog entries for undo. Line content is saved to a temporary file
+/// before deletion, then changelog entries are created character-by-character using
+/// the "Cheap Trick" button stack approach.
+///
+/// # The "Cheap Trick" Button Stack (Critical for Undo!)
+///
+/// **The Problem We Solve:**
+/// When deleting a line like "pine\nuts nheggs\n" at position 25, we need to create
+/// undo logs that will reconstruct it correctly. Naive approach would be:
+/// ```text
+/// Log: ADD 'p' at 25
+/// Log: ADD 'i' at 26  ← WRONG! Position changes as we add
+/// Log: ADD 'n' at 27
+/// ...
+/// ```
+/// When undo runs backwards (LIFO), it would add last character first at wrong position.
+///
+/// **The Solution: All Logs Use Same Position**
+/// ```text
+/// Log 1.o: ADD 'p' at 25  (first char, highest letter, last to execute)
+/// Log 1.n: ADD 'i' at 25  (same position!)
+/// Log 1.m: ADD 'n' at 25  (same position!)
+/// Log 1.l: ADD 'e' at 25  (same position!)
+/// ...
+/// Log 1.a: ADD 's' at 25  (same position!)
+/// Log 1:   ADD '\n' at 25 (last char, no letter, first to execute)
+/// ```
+///
+/// **How Button Stack Reconstructs the Line:**
+/// When undo executes (reads files in sorted order: 1, 1.a, 1.b, ..., 1.o):
+/// 1. ADD '\n' at 25 → "\n" at position 25
+/// 2. ADD 's' at 25 → "s\n" at positions 25-26 (pushes \n right)
+/// 3. ADD 'g' at 25 → "gs\n" at 25-26-27 (pushes s,\n right)
+/// 4. ADD 'g' at 25 → "ggs\n" at 25-26-27-28
+/// 5. ... continues pushing right ...
+/// 16. ADD 'e' at 25 → "e...ggs\n" (all chars pushed right)
+/// 17. ADD 'p' at 25 → "pe...ggs\n" (reconstruction complete!)
+///
+/// Result: "pine\nuts nheggs\n" perfectly reconstructed!
+///
+/// **Why This Works:**
+/// - LIFO (Last In, First Out): Undo reads logs in reverse order of creation
+/// - Insert-at-same-position: Each insertion pushes previous characters right
+/// - Natural cascading: File operations automatically shift bytes
+/// - Fewer moving parts: No position arithmetic, just one constant position
+/// - UTF-8 safe: Works for multi-byte characters (each byte gets same position)
+///
+/// **Letter Suffixes Enforce Execution Order:**
+/// - No letter (e.g., "1"): Last character in line, executed FIRST by undo
+/// - Letter 'a' (e.g., "1.a"): Second-to-last character, executed second
+/// - Letter 'b' (e.g., "1.b"): Third-to-last, executed third
+/// - ...
+/// - Highest letter (e.g., "1.o"): First character in line, executed LAST by undo
+///
+/// This naming ensures correct LIFO execution order through filesystem sorting.
+///
+/// # Algorithm
+///
+/// **Phase 1: Find Line Boundaries**
+/// 1. Get cursor's byte position in file
+/// 2. Scan backwards to find line start (previous \n or BOF)
+/// 3. Scan forwards to find line end (next \n or EOF)
+/// 4. Include trailing newline if present
+///
+/// **Phase 2: Save Line to Temp File**
+/// 5. Create temporary file (file.tmp_deleted_line)
+/// 6. Copy line bytes [line_start..delete_end] to temp file (chunked, no heap)
+/// 7. Flush and close temp file
+/// 8. If copy fails: clean up temp file, abort operation
+///
+/// **Phase 3: Delete Line from Source File**
+/// 9. Delete byte range [line_start..delete_end] using chunked operations
+/// 10. If deletion fails: clean up temp file, abort operation
+///
+/// **Phase 4: Create Undo Logs (Button Stack)**
+/// 11. Get changelog directory path
+/// 12. Open temp file for reading
+/// 13. Iterate through temp file character-by-character (chunked)
+/// 14. For each UTF-8 character:
+///     - Position = line_start (NOT line_start + offset!) ← Key insight!
+///     - Call button_make_changeloge_from_user_character_action_level()
+///     - EditType = Rmv (user removed line, inverse adds it back)
+///     - Character = Some(char) (need character for restoration)
+/// 15. Handle UTF-8 boundaries across chunks (carry-over buffer)
+/// 16. Retry each log creation up to 3 times
+/// 17. Continue on logging errors (non-critical, deletion succeeded)
+///
+/// **Phase 5: Cleanup and Update State**
+/// 18. Delete temp file
+/// 19. Mark editor state as modified
+/// 20. Log the edit operation
+/// 21. Move cursor to column 0 (start of new line at same row)
+///
+/// # Memory Safety
+///
+/// **Stack-only buffers:**
+/// - Line copy buffer: [0u8; 256] - 256 bytes on stack
+/// - UTF-8 carry-over buffer: [0u8; 4] - 4 bytes on stack (max UTF-8 char)
+/// - No heap allocation for data processing
+/// - Temp file on disk (not in memory)
+///
+/// **Bounded iterations:**
+/// - MAX_COPY_ITERATIONS: 1,000,000 (prevents infinite loops)
+/// - MAX_CHUNKS: 16,777,216 (during changelog creation)
+/// - MAX_LOGGING_ERRORS: 100 (stops after too many failures)
+///
+/// # Error Handling Philosophy
+///
+/// **Critical operations (must succeed):**
+/// - Finding line boundaries: Return error if cursor invalid
+/// - Line copy to temp: Return error, clean up temp file
+/// - Line deletion: Return error, clean up temp file
+///
+/// **Non-critical operations (fail gracefully):**
+/// - Changelog directory creation: Continue without undo
+/// - Temp file re-opening for logging: Continue without undo
+/// - Individual log creation: Retry 3x, then skip and continue
+/// - Temp file cleanup: Log error but don't fail operation
+///
+/// **Undo is a luxury, never blocks deletion.**
+///
+/// # Edge Cases
+///
+/// **Empty line:**
+/// - Line contains only "\n"
+/// - Creates one log entry: ADD '\n' at line_start
+/// - Undo restores the newline
+///
+/// **Last line without trailing \n:**
+/// - delete_end = line_end (no +1)
+/// - Deletes to EOF
+/// - Undo restores line without adding extra newline
+///
+/// **Single line file:**
+/// - line_start = 0, line_end = EOF
+/// - Results in empty file
+/// - Undo restores the entire file content
+///
+/// **First line:**
+/// - line_start = 0 (BOF)
+/// - Works normally, deletes from beginning
+///
+/// **Line with multi-byte UTF-8 characters:**
+/// - Each character logged separately at same position
+/// - Multi-byte chars handled by button_make_changeloge... function
+/// - Creates letter-suffixed log files (e.g., 1.a, 1.b) automatically
+///
+/// **Invalid UTF-8 in line:**
+/// - Logged as error (debug mode) or terse message (production)
+/// - Skips invalid byte(s)
+/// - Continues processing rest of line
+/// - Undo will not restore invalid bytes
+///
+/// **Line longer than MAX_COPY_ITERATIONS × 256 bytes:**
+/// - Copy phase aborts with error
+/// - Deletion does not occur
+/// - No orphan undo logs created
+///
+/// **Logging failures:**
+/// - Each character retried 3 times with 50ms pause
+/// - After 100 total errors: stops creating logs
+/// - Info bar shows "undo log incomplete"
+/// - Deletion still succeeded, undo partially disabled
+///
+/// **Temp file already exists:**
+/// - File::create() truncates existing file
+/// - Not an error, just overwrites
+///
+/// # Why Temp File Approach?
+///
+/// **Prevents Orphan Logs:**
+/// If we created undo logs BEFORE deletion and deletion failed, we'd have
+/// orphan logs for a delete that never happened. Corrupts undo history.
+///
+/// **Clean Failure Semantics:**
+/// - Save line → fails → abort, no side effects
+/// - Save line → success → Delete line → fails → abort, temp file cleaned up
+/// - Save line → success → Delete line → success → Create logs → can't fail critically
+///
+/// **Reuses Proven Pattern:**
+/// Logging loop is identical to file insertion Phase 6. Same UTF-8 handling,
+/// same carry-over buffer, same error handling, same retry logic.
+///
+/// # Position Tracking
+///
+/// **Important: byte_offset_in_line is tracked but NOT used for positions!**
+/// ```rust
+/// byte_offset_in_line += char_len;  // Only for error messages
+/// char_position = line_start;        // Always the same position!
+/// ```
+///
+/// This seems counterintuitive but is critical for button stack to work.
+///
+/// # Arguments
+///
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy, absolute path)
+///
+/// # Returns
+///
+/// * `Ok(())` - Line deleted successfully (with or without undo logs)
+/// * `Err(io::Error)` - Critical operation failed (line NOT deleted)
+///
+/// # Side Effects
+///
+/// - Deletes byte range from file
+/// - Creates multiple changelog files in undo directory
+/// - Creates and deletes temporary file (file.tmp_deleted_line)
+/// - Marks editor state as modified
+/// - Moves cursor to column 0
+/// - May set info bar message on non-critical errors
+///
+/// # Examples
+///
+/// ```ignore
+/// // Delete line 3: "pine\nuts nheggs\n" at position 25
+/// delete_current_line_noload(&mut state, &file_path)?;
+///
+/// // Undo logs created (button stack, all at position 25):
+/// // changelog_file/1.o: ADD 'p' at 25
+/// // changelog_file/1.n: ADD 'i' at 25
+/// // ... 14 more logs ...
+/// // changelog_file/1.a: ADD 's' at 25
+/// // changelog_file/1:   ADD '\n' at 25
+///
+/// // User presses undo:
+/// // 1. Reads "1" → ADD '\n' at 25 → "\n"
+/// // 2. Reads "1.a" → ADD 's' at 25 → "s\n"
+/// // 3. Reads "1.b" → ADD 'g' at 25 → "gs\n"
+/// // ... cascading insertions ...
+/// // 17. Reads "1.o" → ADD 'p' at 25 → "pine\nuts nheggs\n" ✓
+/// ```
+///
+/// # See Also
+///
+/// * `button_make_changeloge_from_user_character_action_level()` - Creates individual log entries
+/// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
+/// * `delete_byte_range_chunked()` - Performs the actual deletion
+/// * `find_line_start()` - Finds beginning of current line
+/// * `find_line_end()` - Finds end of current line
+///
+/// # Testing Considerations
+///
+/// Test with lines containing:
+/// - Empty line ("\n")
+/// - Single character ("a\n")
+/// - ASCII text ("Hello, world!\n")
+/// - Multi-byte UTF-8 ("你好世界\n")
+/// - Mixed ASCII and UTF-8 ("Hello 世界\n")
+/// - No trailing newline (last line of file)
+/// - Very long line (test MAX_COPY_ITERATIONS)
+/// - Invalid UTF-8 bytes
+/// - Line at start of file (BOF)
+/// - Line at end of file (EOF)
+/// - Single line file
+fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get current line's file position
+    let row_col_file_pos = state
+        .window_map
+        .get_row_col_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dcln: Cursor not on valid position",
+            )
+        })?;
+
+    // Step 2: Find line boundaries
+    let line_start = find_line_start(
+        file_path,
+        row_col_file_pos.byte_offset_linear_file_absolute_position,
+    )?;
+    let line_end = find_line_end(
+        file_path,
+        row_col_file_pos.byte_offset_linear_file_absolute_position,
+    )?;
+
+    // Step 3: Include the newline character if present
+    let delete_end = if line_end_has_newline(file_path, line_end)? {
+        line_end + 1
+    } else {
+        line_end
+    };
+
+    // =================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // =================================================
+
+    debug_assert!(
+        line_start <= delete_end,
+        "Line start must be before or at delete end"
+    );
+
+    #[cfg(test)]
+    assert!(
+        line_start <= delete_end,
+        "Line start must be before or at delete end"
+    );
+
+    if line_start > delete_end {
+        #[cfg(debug_assertions)]
+        log_error(
+            &format!(
+                "Invalid line bounds: start {} > end {}",
+                line_start, delete_end
+            ),
+            Some("delete_current_line_noload"),
+        );
+
+        #[cfg(not(debug_assertions))]
+        log_error("Invalid line bounds", Some("delete_current_line_noload"));
+
+        let _ = state.set_info_bar_message("line bounds error");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid line boundaries",
+        ));
+    }
+
+    // ============================================
+    // Step 2.5: Copy Line to Temporary File
+    // ============================================
+    // Save line content before deletion so we can create undo logs afterward
+    // This prevents orphan logs if deletion fails
+
+    let temp_line_path = file_path.with_extension("tmp_deleted_line");
+
+    // Open source file for reading the line
+    let mut source_file = File::open(file_path)?;
+
+    // Create temp file for saving line
+    let mut temp_file = File::create(&temp_line_path)?;
+
+    // Seek to line start
+    source_file.seek(SeekFrom::Start(line_start))?;
+
+    // Copy line bytes to temp file (chunked, no heap)
+    const CHUNK_SIZE: usize = 256;
+    let mut buffer = [0u8; CHUNK_SIZE];
+    let mut bytes_to_copy = (delete_end - line_start) as usize;
+    let mut copy_iterations = 0;
+    const MAX_COPY_ITERATIONS: usize = 1_000_000; // Safety limit
+
+    while bytes_to_copy > 0 && copy_iterations < MAX_COPY_ITERATIONS {
+        copy_iterations += 1;
+
+        let to_read = bytes_to_copy.min(CHUNK_SIZE);
+        let bytes_read = source_file.read(&mut buffer[..to_read])?;
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        temp_file.write_all(&buffer[..bytes_read])?;
+        bytes_to_copy = bytes_to_copy.saturating_sub(bytes_read);
+    }
+
+    temp_file.flush()?;
+    drop(temp_file);
+    drop(source_file);
+
+    // =================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // =================================================
+
+    if copy_iterations >= MAX_COPY_ITERATIONS {
+        #[cfg(debug_assertions)]
+        log_error(
+            &format!("Copy iterations {} exceeded limit", copy_iterations),
+            Some("delete_current_line_noload:copy"),
+        );
+
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Copy iteration limit exceeded",
+            Some("delete_current_line_noload:copy"),
+        );
+
+        // Clean up temp file
+        let _ = fs::remove_file(&temp_line_path);
+
+        let _ = state.set_info_bar_message("line too long");
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Max copy iterations exceeded",
+        ));
+    }
+
+    // Step 4: Delete the line
+    // If this fails, temp file remains but that's okay (cleanup handled below)
+    let delete_result = delete_byte_range_chunked(file_path, line_start, delete_end);
+
+    // Check if deletion succeeded before creating undo logs
+    if let Err(e) = delete_result {
+        // Deletion failed - clean up temp file and propagate error
+        let _ = fs::remove_file(&temp_line_path);
+        return Err(e);
+    }
+
+    // ============================================
+    // Step 4.5: Create Inverse Changelog Entries
+    // ============================================
+    // Deletion succeeded - now create undo logs from temp file
+    // Same pattern as Phase 6 of insert_file_at_cursor
+
+    let log_directory_path = match get_undo_changelog_directory_path(file_path) {
+        Ok(path) => Some(path),
+        Err(_e) => {
+            // Non-critical: Log error but don't fail the deletion
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Cannot get changelog directory: {}", _e),
+                Some("delete_current_line_noload:changelog"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot get changelog directory",
+                Some("delete_current_line_noload:changelog"),
+            );
+
+            // Clean up temp file and continue without undo
+            let _ = fs::remove_file(&temp_line_path);
+
+            // Skip to Step 5
+            state.is_modified = true;
+
+            #[cfg(debug_assertions)]
+            {
+                state.log_edit(&format!(
+                    "DELETE_LINE line:{} bytes:{}-{}",
+                    row_col_file_pos.line_number, line_start, delete_end
+                ))?;
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                let _ = state.log_edit("DELETE_LINE");
+            }
+
+            state.cursor.col = 0;
+            let _ = state.set_info_bar_message("undo disabled");
+            return Ok(());
+        }
+    };
+
+    // Create undo logs if we have the directory path
+    if let Some(log_dir) = log_directory_path {
+        // Open temp file for reading
+        let mut temp_file_for_logging = match File::open(&temp_line_path) {
+            Ok(file) => file,
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                log_error(
+                    &format!("Cannot open temp file for logging: {}", _e),
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Cannot open temp file",
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                // Clean up and continue
+                let _ = fs::remove_file(&temp_line_path);
+                let _ = state.set_info_bar_message("undo disabled");
+
+                // Skip to Step 5
+                state.is_modified = true;
+
+                #[cfg(debug_assertions)]
+                {
+                    state.log_edit(&format!(
+                        "DELETE_LINE line:{} bytes:{}-{}",
+                        row_col_file_pos.line_number, line_start, delete_end
+                    ))?;
+                }
+
+                #[cfg(not(debug_assertions))]
+                {
+                    let _ = state.log_edit("DELETE_LINE");
+                }
+
+                state.cursor.col = 0;
+                return Ok(());
+            }
+        };
+
+        // Initialize logging state (same as Phase 6)
+        let mut logging_chunk_counter: usize = 0;
+        let mut byte_offset_in_line: u64 = 0;
+        let mut carry_over_bytes: [u8; 4] = [0; 4];
+        let mut carry_over_count: usize = 0;
+        let mut logging_error_count: usize = 0;
+        const MAX_LOGGING_ERRORS: usize = 100;
+        const MAX_CHUNKS: usize = 16_777_216;
+
+        // Logging loop (same pattern as file insertion)
+        loop {
+            if logging_chunk_counter >= MAX_CHUNKS {
+                #[cfg(debug_assertions)]
+                log_error(
+                    "Logging iteration exceeded MAX_CHUNKS",
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Logging limit reached",
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                let _ = state.set_info_bar_message("undo log incomplete");
+                break;
+            }
+
+            if logging_error_count >= MAX_LOGGING_ERRORS {
+                #[cfg(debug_assertions)]
+                log_error(
+                    &format!("Logging stopped after {} errors", MAX_LOGGING_ERRORS),
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Logging stopped after max errors",
+                    Some("delete_current_line_noload:changelog"),
+                );
+
+                let _ = state.set_info_bar_message("undo log incomplete");
+                break;
+            }
+
+            let mut buffer = [0u8; CHUNK_SIZE];
+
+            if state.security_mode {
+                for i in 0..CHUNK_SIZE {
+                    buffer[i] = 0;
+                }
+            }
+
+            let bytes_read = match temp_file_for_logging.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    log_error(
+                        &format!(
+                            "Read error during logging at chunk {}: {}",
+                            logging_chunk_counter, _e
+                        ),
+                        Some("delete_current_line_noload:changelog"),
+                    );
+
+                    #[cfg(not(debug_assertions))]
+                    log_error(
+                        "Read error during logging",
+                        Some("delete_current_line_noload:changelog"),
+                    );
+
+                    logging_error_count += 1;
+                    continue;
+                }
+            };
+
+            if bytes_read == 0 && carry_over_count == 0 {
+                break; // EOF
+            }
+
+            logging_chunk_counter += 1;
+
+            let mut buffer_index: usize = 0;
+
+            // Handle carry-over from previous chunk
+            if carry_over_count > 0 {
+                let bytes_needed = detect_utf8_byte_count(carry_over_bytes[0])
+                    .unwrap_or(1)
+                    .saturating_sub(carry_over_count);
+
+                if bytes_needed > 0 && bytes_needed <= bytes_read {
+                    for i in 0..bytes_needed {
+                        carry_over_bytes[carry_over_count + i] = buffer[i];
+                    }
+                    buffer_index += bytes_needed;
+
+                    let full_char_bytes = &carry_over_bytes[0..(carry_over_count + bytes_needed)];
+
+                    // Replace this section in the logging loop:
+
+                    match std::str::from_utf8(full_char_bytes) {
+                        Ok(s) => {
+                            if let Some(ch) = s.chars().next() {
+                                // USE LINE_START FOR ALL CHARACTERS (button stack trick)
+                                // Don't add byte_offset_in_line!
+                                let char_position_u128 = line_start as u128;
+
+                                for retry_attempt in 0..3 {
+                                    match button_make_changeloge_from_user_character_action_level(
+                                        file_path,
+                                        Some(ch),
+                                        char_position_u128,
+                                        EditType::Rmv, // User removed, inverse is add
+                                        &log_dir,
+                                    ) {
+                                        Ok(_) => break,
+                                        Err(_e) => {
+                                            if retry_attempt == 2 {
+                                                #[cfg(debug_assertions)]
+                                                log_error(
+                                                    &format!(
+                                                        "Failed to log char at position {}: {}",
+                                                        char_position_u128, _e
+                                                    ),
+                                                    Some("delete_current_line_noload:changelog"),
+                                                );
+
+                                                #[cfg(not(debug_assertions))]
+                                                log_error(
+                                                    "Failed to log character",
+                                                    Some("delete_current_line_noload:changelog"),
+                                                );
+
+                                                logging_error_count += 1;
+                                            } else {
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(50),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Still track offset for error messages, but don't use it for position
+                                byte_offset_in_line += full_char_bytes.len() as u64;
+                            }
+                        }
+                        Err(_) => {
+                            #[cfg(debug_assertions)]
+                            log_error(
+                                &format!(
+                                    "Invalid UTF-8 in carry-over at offset {}",
+                                    byte_offset_in_line
+                                ),
+                                Some("delete_current_line_noload:changelog"),
+                            );
+
+                            #[cfg(not(debug_assertions))]
+                            log_error(
+                                "Invalid UTF-8 in carry-over",
+                                Some("delete_current_line_noload:changelog"),
+                            );
+
+                            byte_offset_in_line += full_char_bytes.len() as u64;
+                        }
+                    }
+
+                    carry_over_count = 0;
+                }
+            }
+
+            // Process remaining bytes in buffer
+            while buffer_index < bytes_read {
+                let byte = buffer[buffer_index];
+
+                let char_len = match detect_utf8_byte_count(byte) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!("Invalid UTF-8 start byte at offset {}", byte_offset_in_line),
+                            Some("delete_current_line_noload:changelog"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "Invalid UTF-8 start byte",
+                            Some("delete_current_line_noload:changelog"),
+                        );
+
+                        buffer_index += 1;
+                        byte_offset_in_line += 1;
+                        continue;
+                    }
+                };
+
+                if buffer_index + char_len <= bytes_read {
+                    let char_bytes = &buffer[buffer_index..(buffer_index + char_len)];
+                    match std::str::from_utf8(char_bytes) {
+                        Ok(s) => {
+                            if let Some(ch) = s.chars().next() {
+                                // USE LINE_START FOR ALL CHARACTERS (button stack trick)
+                                let char_position_u128 = line_start as u128;
+
+                                for retry_attempt in 0..3 {
+                                    match button_make_changeloge_from_user_character_action_level(
+                                        file_path,
+                                        Some(ch),
+                                        char_position_u128,
+                                        EditType::Rmv, // User removed, inverse is add
+                                        &log_dir,
+                                    ) {
+                                        Ok(_) => break,
+                                        Err(_e) => {
+                                            if retry_attempt == 2 {
+                                                #[cfg(debug_assertions)]
+                                                log_error(
+                                                    &format!(
+                                                        "Failed to log char at position {}: {}",
+                                                        char_position_u128, _e
+                                                    ),
+                                                    Some("delete_current_line_noload:changelog"),
+                                                );
+
+                                                #[cfg(not(debug_assertions))]
+                                                log_error(
+                                                    "Failed to log character",
+                                                    Some("delete_current_line_noload:changelog"),
+                                                );
+
+                                                logging_error_count += 1;
+                                            } else {
+                                                std::thread::sleep(
+                                                    std::time::Duration::from_millis(50),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Still track offset for error messages
+                                byte_offset_in_line += char_len as u64;
+                            }
+                        }
+                        Err(_) => {
+                            #[cfg(debug_assertions)]
+                            log_error(
+                                &format!(
+                                    "Invalid UTF-8 sequence at offset {}",
+                                    byte_offset_in_line
+                                ),
+                                Some("delete_current_line_noload:changelog"),
+                            );
+
+                            #[cfg(not(debug_assertions))]
+                            log_error(
+                                "Invalid UTF-8 sequence",
+                                Some("delete_current_line_noload:changelog"),
+                            );
+
+                            byte_offset_in_line += char_len as u64;
+                        }
+                    }
+
+                    buffer_index += char_len;
+                } else {
+                    carry_over_count = bytes_read - buffer_index;
+
+                    if carry_over_count > 4 {
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!("carry_over_count {} exceeds 4", carry_over_count),
+                            Some("delete_current_line_noload:changelog"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "carry_over buffer overflow",
+                            Some("delete_current_line_noload:changelog"),
+                        );
+
+                        break;
+                    }
+
+                    for i in 0..carry_over_count {
+                        carry_over_bytes[i] = buffer[buffer_index + i];
+                    }
+                    break;
+                }
+            }
+        }
+
+        if logging_error_count > 0 {
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Logging completed with {} errors", logging_error_count),
+                Some("delete_current_line_noload:changelog"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Logging completed with errors",
+                Some("delete_current_line_noload:changelog"),
+            );
+
+            let _ = state.set_info_bar_message("undo log incomplete");
+        }
+    }
+
+    // Clean up temp file
+    let _ = fs::remove_file(&temp_line_path);
+
+    // Step 5: Update state
+    state.is_modified = true;
+
+    #[cfg(debug_assertions)]
+    {
+        state.log_edit(&format!(
+            "DELETE_LINE line:{} bytes:{}-{}",
+            row_col_file_pos.line_number, line_start, delete_end
+        ))?;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = state.log_edit("DELETE_LINE");
+    }
+
+    // Step 6: Cursor stays at current row
+    // After rebuild, this row will show the next line
+    state.cursor.col = 0; // Move to start of (new) line
+
+    Ok(())
+}
+*/

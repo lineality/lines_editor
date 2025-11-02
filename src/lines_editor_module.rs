@@ -10308,18 +10308,265 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 // That's a Cheap Trick, Buttons!
 // ==============================
 
-/// Deletes entire line at cursor WITHOUT loading whole file
+/// Deletes entire line at cursor WITHOUT loading whole file, with undo support
+///
+/// # Overview
+/// Deletes the line containing the cursor using chunked file operations and creates
+/// inverse changelog entries for undo. Line content is saved to a temporary file
+/// before deletion, then changelog entries are created character-by-character using
+/// the "Cheap Trick" button stack approach.
+///
+/// # The "Cheap Trick" Button Stack (Critical for Undo!)
+///
+/// **The Problem We Solve:**
+/// When deleting a line like "pine\nuts nheggs\n" at position 25, we need to create
+/// undo logs that will reconstruct it correctly. Naive approach would be:
+/// ```text
+/// Log: ADD 'p' at 25
+/// Log: ADD 'i' at 26  ← WRONG! Position changes as we add
+/// Log: ADD 'n' at 27
+/// ...
+/// ```
+/// When undo runs backwards (LIFO), it would add last character first at wrong position.
+///
+/// **The Solution: All Logs Use Same Position**
+/// ```text
+/// Log 1.o: ADD 'p' at 25  (first char, highest letter, last to execute)
+/// Log 1.n: ADD 'i' at 25  (same position!)
+/// Log 1.m: ADD 'n' at 25  (same position!)
+/// Log 1.l: ADD 'e' at 25  (same position!)
+/// ...
+/// Log 1.a: ADD 's' at 25  (same position!)
+/// Log 1:   ADD '\n' at 25 (last char, no letter, first to execute)
+/// ```
+///
+/// **How Button Stack Reconstructs the Line:**
+/// When undo executes (reads files in sorted order: 1, 1.a, 1.b, ..., 1.o):
+/// 1. ADD '\n' at 25 → "\n" at position 25
+/// 2. ADD 's' at 25 → "s\n" at positions 25-26 (pushes \n right)
+/// 3. ADD 'g' at 25 → "gs\n" at 25-26-27 (pushes s,\n right)
+/// 4. ADD 'g' at 25 → "ggs\n" at 25-26-27-28
+/// 5. ... continues pushing right ...
+/// 16. ADD 'e' at 25 → "e...ggs\n" (all chars pushed right)
+/// 17. ADD 'p' at 25 → "pe...ggs\n" (reconstruction complete!)
+///
+/// Result: "pine\nuts nheggs\n" perfectly reconstructed!
+///
+/// **Why This Works:**
+/// - LIFO (Last In, First Out): Undo reads logs in reverse order of creation
+/// - Insert-at-same-position: Each insertion pushes previous characters right
+/// - Natural cascading: File operations automatically shift bytes
+/// - Fewer moving parts: No position arithmetic, just one constant position
+/// - UTF-8 safe: Works for multi-byte characters (each byte gets same position)
+///
+/// **Letter Suffixes Enforce Execution Order:**
+/// - No letter (e.g., "1"): Last character in line, executed FIRST by undo
+/// - Letter 'a' (e.g., "1.a"): Second-to-last character, executed second
+/// - Letter 'b' (e.g., "1.b"): Third-to-last, executed third
+/// - ...
+/// - Highest letter (e.g., "1.o"): First character in line, executed LAST by undo
+///
+/// This naming ensures correct LIFO execution order through filesystem sorting.
 ///
 /// # Algorithm
-/// 1. Find start of current line (scan back to previous \n or BOF)
-/// 2. Find end of current line (scan forward to next \n or EOF)
-/// 3. Delete byte range [line_start..line_end+1] (include newline)
-/// 4. Cursor stays at same row (now showing next line)
+///
+/// **Phase 1: Find Line Boundaries**
+/// 1. Get cursor's byte position in file
+/// 2. Scan backwards to find line start (previous \n or BOF)
+/// 3. Scan forwards to find line end (next \n or EOF)
+/// 4. Include trailing newline if present
+///
+/// **Phase 2: Save Line to Temp File**
+/// 5. Create temporary file (file.tmp_deleted_line)
+/// 6. Copy line bytes [line_start..delete_end] to temp file (chunked, no heap)
+/// 7. Flush and close temp file
+/// 8. If copy fails: clean up temp file, abort operation
+///
+/// **Phase 3: Delete Line from Source File**
+/// 9. Delete byte range [line_start..delete_end] using chunked operations
+/// 10. If deletion fails: clean up temp file, abort operation
+///
+/// **Phase 4: Create Undo Logs (Button Stack)**
+/// 11. Get changelog directory path
+/// 12. Open temp file for reading
+/// 13. Iterate through temp file character-by-character (chunked)
+/// 14. For each UTF-8 character:
+///     - Position = line_start (NOT line_start + offset!) ← Key insight!
+///     - Call button_make_changeloge_from_user_character_action_level()
+///     - EditType = Rmv (user removed line, inverse adds it back)
+///     - Character = Some(char) (need character for restoration)
+/// 15. Handle UTF-8 boundaries across chunks (carry-over buffer)
+/// 16. Retry each log creation up to 3 times
+/// 17. Continue on logging errors (non-critical, deletion succeeded)
+///
+/// **Phase 5: Cleanup and Update State**
+/// 18. Delete temp file
+/// 19. Mark editor state as modified
+/// 20. Log the edit operation
+/// 21. Move cursor to column 0 (start of new line at same row)
+///
+/// # Memory Safety
+///
+/// **Stack-only buffers:**
+/// - Line copy buffer: [0u8; 256] - 256 bytes on stack
+/// - UTF-8 carry-over buffer: [0u8; 4] - 4 bytes on stack (max UTF-8 char)
+/// - No heap allocation for data processing
+/// - Temp file on disk (not in memory)
+///
+/// **Bounded iterations:**
+/// - MAX_COPY_ITERATIONS: 1,000,000 (prevents infinite loops)
+/// - MAX_CHUNKS: 16,777,216 (during changelog creation)
+/// - MAX_LOGGING_ERRORS: 100 (stops after too many failures)
+///
+/// # Error Handling Philosophy
+///
+/// **Critical operations (must succeed):**
+/// - Finding line boundaries: Return error if cursor invalid
+/// - Line copy to temp: Return error, clean up temp file
+/// - Line deletion: Return error, clean up temp file
+///
+/// **Non-critical operations (fail gracefully):**
+/// - Changelog directory creation: Continue without undo
+/// - Temp file re-opening for logging: Continue without undo
+/// - Individual log creation: Retry 3x, then skip and continue
+/// - Temp file cleanup: Log error but don't fail operation
+///
+/// **Undo is a luxury, never blocks deletion.**
 ///
 /// # Edge Cases
-/// - Last line with no trailing \n: delete to EOF
-/// - Single line file: leaves empty file
-/// - First line: deletes from BOF
+///
+/// **Empty line:**
+/// - Line contains only "\n"
+/// - Creates one log entry: ADD '\n' at line_start
+/// - Undo restores the newline
+///
+/// **Last line without trailing \n:**
+/// - delete_end = line_end (no +1)
+/// - Deletes to EOF
+/// - Undo restores line without adding extra newline
+///
+/// **Single line file:**
+/// - line_start = 0, line_end = EOF
+/// - Results in empty file
+/// - Undo restores the entire file content
+///
+/// **First line:**
+/// - line_start = 0 (BOF)
+/// - Works normally, deletes from beginning
+///
+/// **Line with multi-byte UTF-8 characters:**
+/// - Each character logged separately at same position
+/// - Multi-byte chars handled by button_make_changeloge... function
+/// - Creates letter-suffixed log files (e.g., 1.a, 1.b) automatically
+///
+/// **Invalid UTF-8 in line:**
+/// - Logged as error (debug mode) or terse message (production)
+/// - Skips invalid byte(s)
+/// - Continues processing rest of line
+/// - Undo will not restore invalid bytes
+///
+/// **Line longer than MAX_COPY_ITERATIONS × 256 bytes:**
+/// - Copy phase aborts with error
+/// - Deletion does not occur
+/// - No orphan undo logs created
+///
+/// **Logging failures:**
+/// - Each character retried 3 times with 50ms pause
+/// - After 100 total errors: stops creating logs
+/// - Info bar shows "undo log incomplete"
+/// - Deletion still succeeded, undo partially disabled
+///
+/// **Temp file already exists:**
+/// - File::create() truncates existing file
+/// - Not an error, just overwrites
+///
+/// # Why Temp File Approach?
+///
+/// **Prevents Orphan Logs:**
+/// If we created undo logs BEFORE deletion and deletion failed, we'd have
+/// orphan logs for a delete that never happened. Corrupts undo history.
+///
+/// **Clean Failure Semantics:**
+/// - Save line → fails → abort, no side effects
+/// - Save line → success → Delete line → fails → abort, temp file cleaned up
+/// - Save line → success → Delete line → success → Create logs → can't fail critically
+///
+/// **Reuses Proven Pattern:**
+/// Logging loop is identical to file insertion Phase 6. Same UTF-8 handling,
+/// same carry-over buffer, same error handling, same retry logic.
+///
+/// # Position Tracking
+///
+/// **Important: byte_offset_in_line is tracked but NOT used for positions!**
+/// ```rust
+/// byte_offset_in_line += char_len;  // Only for error messages
+/// char_position = line_start;        // Always the same position!
+/// ```
+///
+/// This seems counterintuitive but is critical for button stack to work.
+///
+/// # Arguments
+///
+/// * `state` - Editor state with cursor position
+/// * `file_path` - Path to the file being edited (read-copy, absolute path)
+///
+/// # Returns
+///
+/// * `Ok(())` - Line deleted successfully (with or without undo logs)
+/// * `Err(io::Error)` - Critical operation failed (line NOT deleted)
+///
+/// # Side Effects
+///
+/// - Deletes byte range from file
+/// - Creates multiple changelog files in undo directory
+/// - Creates and deletes temporary file (file.tmp_deleted_line)
+/// - Marks editor state as modified
+/// - Moves cursor to column 0
+/// - May set info bar message on non-critical errors
+///
+/// # Examples
+///
+/// ```ignore
+/// // Delete line 3: "pine\nuts nheggs\n" at position 25
+/// delete_current_line_noload(&mut state, &file_path)?;
+///
+/// // Undo logs created (button stack, all at position 25):
+/// // changelog_file/1.o: ADD 'p' at 25
+/// // changelog_file/1.n: ADD 'i' at 25
+/// // ... 14 more logs ...
+/// // changelog_file/1.a: ADD 's' at 25
+/// // changelog_file/1:   ADD '\n' at 25
+///
+/// // User presses undo:
+/// // 1. Reads "1" → ADD '\n' at 25 → "\n"
+/// // 2. Reads "1.a" → ADD 's' at 25 → "s\n"
+/// // 3. Reads "1.b" → ADD 'g' at 25 → "gs\n"
+/// // ... cascading insertions ...
+/// // 17. Reads "1.o" → ADD 'p' at 25 → "pine\nuts nheggs\n" ✓
+/// ```
+///
+/// # See Also
+///
+/// * `button_make_changeloge_from_user_character_action_level()` - Creates individual log entries
+/// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
+/// * `delete_byte_range_chunked()` - Performs the actual deletion
+/// * `find_line_start()` - Finds beginning of current line
+/// * `find_line_end()` - Finds end of current line
+///
+/// # Testing Considerations
+///
+/// Test with lines containing:
+/// - Empty line ("\n")
+/// - Single character ("a\n")
+/// - ASCII text ("Hello, world!\n")
+/// - Multi-byte UTF-8 ("你好世界\n")
+/// - Mixed ASCII and UTF-8 ("Hello 世界\n")
+/// - No trailing newline (last line of file)
+/// - Very long line (test MAX_COPY_ITERATIONS)
+/// - Invalid UTF-8 bytes
+/// - Line at start of file (BOF)
+/// - Line at end of file (EOF)
+/// - Single line file
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
     // Step 1: Get current line's file position
     let row_col_file_pos = state
@@ -10889,53 +11136,6 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::
     Ok(())
 }
 
-// fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-//     // Step 1: Get current line's file position
-//     let row_col_file_pos = state
-//         .window_map
-//         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
-//         .ok_or_else(|| {
-//             io::Error::new(
-//                 io::ErrorKind::InvalidInput,
-//                 "dcln: Cursor not on valid position",
-//             )
-//         })?;
-
-//     // Step 2: Find line boundaries
-//     let line_start = find_line_start(
-//         file_path,
-//         row_col_file_pos.byte_offset_linear_file_absolute_position,
-//     )?;
-//     let line_end = find_line_end(
-//         file_path,
-//         row_col_file_pos.byte_offset_linear_file_absolute_position,
-//     )?;
-
-//     // Step 3: Include the newline character if present
-//     let delete_end = if line_end_has_newline(file_path, line_end)? {
-//         line_end + 1
-//     } else {
-//         line_end
-//     };
-
-//     // Step 4: Delete the line
-//     delete_byte_range_chunked(file_path, line_start, delete_end)?;
-
-//     // Step 5: Update state
-//     state.is_modified = true;
-//     state.log_edit(&format!(
-//         "DELETE_LINE line:{} bytes:{}-{}",
-//         row_col_file_pos.line_number, line_start, delete_end
-//     ))?;
-
-//     // Step 6: Cursor stays at current row
-//     // After rebuild, this row will show the next line
-//     state.cursor.col = 0; // Move to start of (new) line
-
-//     Ok(())
-// }
-
-// TODO why is this re-allocating the same chunk-buffer size?
 /// Deletes a byte range from file using chunked operations
 ///
 /// # Algorithm
