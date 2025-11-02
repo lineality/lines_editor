@@ -5654,7 +5654,7 @@ pub fn detect_utf8_byte_count(first_byte: u8) -> Result<usize, &'static str> {
 /// let char_bytes = read_character_bytes_from_file(&file_path, 10)?;
 /// assert!(char_bytes.len() >= 1 && char_bytes.len() <= 4);
 /// ```
-fn read_character_bytes_from_file(file_path: &Path, position: u128) -> ButtonResult<Vec<u8>> {
+pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> ButtonResult<Vec<u8>> {
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
@@ -11839,4 +11839,219 @@ fn insert_newline_at_cursor_chunked(
     Ok(())
 }
 
+*/
+/*
+Sample integration for Delete
+/// Deletes the character before cursor WITHOUT loading whole file
+///
+/// # Algorithm
+/// 1. Get cursor file position
+/// 2. Find previous UTF-8 character boundary (walk back max 4 bytes)
+/// 3. Use chunked delete: copy [0..prev_char) + copy [cursor..EOF)
+/// 4. Update cursor position
+///
+/// # Memory
+/// - 8KB pre-allocated buffer for chunking
+/// - No whole-file load
+/// - Bounded iterations
+fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    // Step 1: Get current file position
+    let file_pos = state
+        .window_map
+        .get_row_col_file_position(state.cursor.row, state.cursor.col)?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bsd: Cursor not on valid position",
+            )
+        })?;
+
+    let cursor_byte = file_pos.byte_offset_linear_file_absolute_position;
+
+    // Step 2: Can't delete before start of file
+    if cursor_byte == 0 {
+        return Ok(()); // Nothing to delete
+    }
+
+    // Step 3: Find start of previous UTF-8 character
+    // Read up to 4 bytes back to find character boundary
+    let prev_char_start = find_previous_utf8_boundary(file_path, cursor_byte)?;
+
+    // ============================================
+    // Step 3.5: Read Character BEFORE Deletion
+    // ============================================
+    // We need the character value for the undo log
+    // Must read it before we delete it from the file
+
+    let character_to_delete =
+        match read_character_bytes_from_file(file_path, prev_char_start as u128) {
+            Ok(char_bytes) => {
+                // Decode bytes to char
+                match std::str::from_utf8(&char_bytes) {
+                    Ok(s) => s.chars().next(), // Some(char) or None if empty
+                    Err(_) => {
+                        // Invalid UTF-8 - log but continue with deletion
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!("Invalid UTF-8 at position {}", prev_char_start),
+                            Some("backspace_style_delete_noload:read_char"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "Invalid UTF-8 character",
+                            Some("backspace_style_delete_noload:read_char"),
+                        );
+
+                        None // Continue without character for undo
+                    }
+                }
+            }
+            Err(_e) => {
+                // Cannot read character - log but continue with deletion
+                #[cfg(debug_assertions)]
+                log_error(
+                    &format!(
+                        "Cannot read character at position {}: {}",
+                        prev_char_start, _e
+                    ),
+                    Some("backspace_style_delete_noload:read_char"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Cannot read character",
+                    Some("backspace_style_delete_noload:read_char"),
+                );
+
+                None // Continue without character for undo
+            }
+        };
+
+    // Step 4: Delete byte range [prev_char_start..cursor_byte)
+    delete_byte_range_chunked(file_path, prev_char_start, cursor_byte)?;
+
+    // ============================================
+    // Step 4.5: Create Inverse Changelog Entry
+    // ============================================
+    // Create undo log for character deletion
+    // User action: Rmv → Inverse log: Add (restore character)
+    // This is non-critical - if it fails, deletion still succeeded
+
+    let log_directory_path = match get_undo_changelog_directory_path(file_path) {
+        Ok(path) => Some(path),
+        Err(_e) => {
+            // Non-critical: Log error but don't fail the deletion
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Cannot get changelog directory: {}", _e),
+                Some("backspace_style_delete_noload:changelog"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot get changelog directory",
+                Some("backspace_style_delete_noload:changelog"),
+            );
+
+            // Continue without undo support - deletion succeeded
+            None
+        }
+    };
+
+    // Create log entry if we have both directory path AND the character
+    if let (Some(log_dir), Some(deleted_char)) = (log_directory_path, character_to_delete) {
+        // Retry logic: 3 attempts with 50ms pause
+        let mut log_success = false;
+
+        for retry_attempt in 0..3 {
+            // Convert u64 position to u128 for API compatibility
+            let position_u128 = prev_char_start as u128;
+
+            match button_make_changeloge_from_user_character_action_level(
+                file_path,
+                Some(deleted_char), // Character that was deleted (for restore)
+                position_u128,
+                EditType::Rmv, // User removed, inverse is add
+                &log_dir,
+            ) {
+                Ok(_) => {
+                    log_success = true;
+                    break; // Success
+                }
+                Err(_e) => {
+                    if retry_attempt == 2 {
+                        // Final retry failed - log but don't fail operation
+                        #[cfg(debug_assertions)]
+                        log_error(
+                            &format!(
+                                "Failed to log deleted char '{}' at position {}: {}",
+                                deleted_char, position_u128, _e
+                            ),
+                            Some("backspace_style_delete_noload:changelog"),
+                        );
+
+                        #[cfg(not(debug_assertions))]
+                        log_error(
+                            "Failed to log deletion",
+                            Some("backspace_style_delete_noload:changelog"),
+                        );
+                    } else {
+                        // Retry after brief pause
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+
+        // Optional: Set info bar if logging failed (non-intrusive)
+        if !log_success {
+            let _ = state.set_info_bar_message("undo disabled");
+        }
+    } else if character_to_delete.is_none() {
+        // Could read character for undo - inform user
+        #[cfg(debug_assertions)]
+        log_error(
+            "Undo disabled: could not read deleted character",
+            Some("backspace_style_delete_noload:changelog"),
+        );
+
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Undo disabled",
+            Some("backspace_style_delete_noload:changelog"),
+        );
+
+        let _ = state.set_info_bar_message("undo disabled");
+    }
+
+    // Step 5: Update state
+    state.is_modified = true;
+
+    // Step 6: Log edit (existing debug log)
+    #[cfg(debug_assertions)]
+    {
+        let bytes_deleted = cursor_byte - prev_char_start;
+        state.log_edit(&format!(
+            "BACKSPACE line:{} byte:{} deleted:{} bytes",
+            file_pos.line_number, prev_char_start, bytes_deleted
+        ))?;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = state.log_edit("BACKSPACE");
+    }
+
+    // Step 7: Move cursor back one position
+    if state.cursor.col > 0 {
+        state.cursor.col -= 1;
+    } else if state.cursor.row > 0 {
+        // Deleted at line start - move to end of previous line
+        state.cursor.row -= 1;
+        // Will be repositioned correctly after window rebuild
+    }
+
+    Ok(())
+}
 */
