@@ -10537,3 +10537,496 @@ pub fn write_n_log_hex_edit_in_place(
 }
 
 */
+
+/*
+ # User Level Logging example
+ # after file-pasty insert
+
+ // ============================================
+     // Phase 6: Create Inverse Changelog Entries
+     // ============================================
+     // Re-iterate through source file to create undo logs
+     // Same chunk-based pattern as Phase 5, but for logging not insertion
+     //
+     // Purpose: Generate inverse operation logs so user can undo the insertion
+     // User action: Add (inserted file) → Inverse log: Rmv (remove those bytes)
+     //
+     // Important: This happens AFTER insertion completes successfully
+     // If logging fails, insertion has already succeeded (non-critical failure)
+
+     // Get changelog directory path
+     let log_directory_path = match get_undo_changelog_directory_path(&target_file_path) {
+         Ok(path) => path,
+         Err(_e) => {
+             // Non-critical: Log error but don't fail the insertion operation
+             #[cfg(debug_assertions)]
+             log_error(
+                 &format!("Cannot get changelog directory: {}", _e),
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             #[cfg(not(debug_assertions))]
+             log_error(
+                 "Cannot get changelog directory",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             let _ = state.set_info_bar_message("undo log path failed");
+             // Continue to Phase 7 - insertion succeeded, logging is optional
+             state.is_modified = true;
+             build_windowmap_nowrap(state, &target_file_path)?;
+             let _ = state.set_info_bar_message("inserted (undo disabled)");
+             return Ok(());
+         }
+     };
+
+     // Re-open source file for logging iteration
+     // We don't reuse the previous file handle - it's at EOF
+     let mut source_file_for_logging = match File::open(&source_path) {
+         Ok(file) => file,
+         Err(_e) => {
+             // Non-critical: File was already inserted successfully
+             #[cfg(debug_assertions)]
+             log_error(
+                 &format!(
+                     "Cannot reopen source for logging: {} - {}",
+                     source_path.display(),
+                     _e
+                 ),
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             #[cfg(not(debug_assertions))]
+             log_error(
+                 "Cannot reopen source for logging",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             let _ = state.set_info_bar_message("undo log failed");
+             // Continue to Phase 7
+             state.is_modified = true;
+             build_windowmap_nowrap(state, &target_file_path)?;
+             let _ = state.set_info_bar_message("inserted (undo disabled)");
+             return Ok(());
+         }
+     };
+
+     // Initialize logging iteration state
+     let mut logging_chunk_counter: usize = 0;
+     let mut byte_offset_in_insertion: u64 = 0; // Tracks position within inserted content
+     let mut carry_over_bytes: [u8; 4] = [0; 4]; // Max UTF-8 char is 4 bytes
+     let mut carry_over_count: usize = 0;
+     let mut logging_error_count: usize = 0;
+     const MAX_LOGGING_ERRORS: usize = 100; // Stop logging after too many failures
+
+     // =================================================
+     // Debug-Assert, Test-Assert, Production-Catch-Handle
+     // =================================================
+
+     debug_assert!(
+         MAX_LOGGING_ERRORS > 0,
+         "Max logging errors must be positive"
+     );
+
+     #[cfg(test)]
+     assert!(
+         MAX_LOGGING_ERRORS > 0,
+         "Max logging errors must be positive"
+     );
+
+     // Production catch-handle (always included)
+     if MAX_LOGGING_ERRORS == 0 {
+         let _ = state.set_info_bar_message("config error");
+         return Err(LinesError::GeneralAssertionCatchViolation(
+             "zero max logging errors".into(),
+         ));
+     }
+
+     // ============================================
+     // Logging Bucket Brigade Loop
+     // ============================================
+     // Same pattern as Phase 5, but creates logs instead of inserting
+
+     loop {
+         // Safety limit: Same as insertion loop
+         if logging_chunk_counter >= MAX_CHUNKS {
+             #[cfg(debug_assertions)]
+             log_error(
+                 "Logging iteration exceeded MAX_CHUNKS",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             #[cfg(not(debug_assertions))]
+             log_error(
+                 "Logging limit reached",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             let _ = state.set_info_bar_message("undo log incomplete");
+             break; // Exit loop, continue to Phase 7
+         }
+
+         // Stop logging if too many errors (fail-safe)
+         if logging_error_count >= MAX_LOGGING_ERRORS {
+             #[cfg(debug_assertions)]
+             log_error(
+                 &format!("Logging stopped after {} errors", MAX_LOGGING_ERRORS),
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             #[cfg(not(debug_assertions))]
+             log_error(
+                 "Logging stopped after max errors",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             let _ = state.set_info_bar_message("undo log incomplete");
+             break;
+         }
+
+         // Stack-allocated read buffer (NASA Rule 3: pre-allocated)
+         let mut buffer = [0u8; CHUNK_SIZE];
+
+         // Security mode: clear buffer before use
+         if state.security_mode {
+             for i in 0..CHUNK_SIZE {
+                 buffer[i] = 0;
+             }
+         }
+
+         // Read next chunk
+         let bytes_read = match source_file_for_logging.read(&mut buffer) {
+             Ok(n) => n,
+             Err(_e) => {
+                 #[cfg(debug_assertions)]
+                 log_error(
+                     &format!(
+                         "Read error during logging at chunk {}: {}",
+                         logging_chunk_counter, _e
+                     ),
+                     Some("insert_file_at_cursor:phase6"),
+                 );
+
+                 #[cfg(not(debug_assertions))]
+                 log_error(
+                     "Read error during logging",
+                     Some("insert_file_at_cursor:phase6"),
+                 );
+
+                 logging_error_count += 1;
+                 continue; // Skip this chunk, try next
+             }
+         };
+
+         // =================================================
+         // Debug-Assert, Test-Assert, Production-Catch-Handle
+         // =================================================
+
+         debug_assert!(
+             bytes_read <= CHUNK_SIZE,
+             "bytes_read exceeded CHUNK_SIZE"
+         );
+
+         #[cfg(test)]
+         assert!(
+             bytes_read <= CHUNK_SIZE,
+             "bytes_read exceeded CHUNK_SIZE"
+         );
+
+         // Production catch-handle
+         if bytes_read > CHUNK_SIZE {
+             #[cfg(debug_assertions)]
+             log_error(
+                 &format!("bytes_read {} exceeded CHUNK_SIZE {}", bytes_read, CHUNK_SIZE),
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             #[cfg(not(debug_assertions))]
+             log_error(
+                 "Buffer overflow detected",
+                 Some("insert_file_at_cursor:phase6"),
+             );
+
+             let _ = state.set_info_bar_message("undo log failed");
+             break; // Exit loop safely
+         }
+
+         // EOF detection
+         if bytes_read == 0 && carry_over_count == 0 {
+             break; // Normal completion
+         }
+
+         logging_chunk_counter += 1;
+
+         // Process bytes in this chunk
+         let mut buffer_index: usize = 0;
+
+         // If we have carry-over bytes from previous chunk, process them first
+         if carry_over_count > 0 {
+             // We need more bytes to complete the UTF-8 character
+             let bytes_needed = detect_utf8_byte_count(carry_over_bytes[0])
+                 .unwrap_or(1)
+                 .saturating_sub(carry_over_count);
+
+             if bytes_needed > 0 && bytes_needed <= bytes_read {
+                 // Complete the character with bytes from current chunk
+                 for i in 0..bytes_needed {
+                     carry_over_bytes[carry_over_count + i] = buffer[i];
+                 }
+                 buffer_index += bytes_needed;
+
+                 let full_char_bytes = &carry_over_bytes[0..(carry_over_count + bytes_needed)];
+
+                 // Try to decode as UTF-8 character
+                 match std::str::from_utf8(full_char_bytes) {
+                     Ok(s) => {
+                         if let Some(ch) = s.chars().next() {
+                             // Calculate absolute position in file
+                             // Converting from u64 to u128 (safe: u64 always fits in u128)
+                             let char_position_u64: u64 =
+                                 start_byte_position + byte_offset_in_insertion;
+                             let char_position_u128 = char_position_u64 as u128;
+
+                             // Create inverse log entry (with retry)
+                             for retry_attempt in 0..3 {
+                                 match button_make_changeloge_from_user_character_action_level(
+                                     &target_file_path,
+                                     Some(ch),
+                                     char_position_u128,
+                                     EditType::Add, // User added, inverse is remove
+                                     &log_directory_path,
+                                 ) {
+                                     Ok(_) => break, // Success
+                                     Err(_e) => {
+                                         if retry_attempt == 2 {
+                                             // Final retry failed
+                                             #[cfg(debug_assertions)]
+                                             log_error(
+                                                 &format!(
+                                                     "Failed to log char at position {}: {}",
+                                                     char_position_u128, _e
+                                                 ),
+                                                 Some("insert_file_at_cursor:phase6"),
+                                             );
+
+                                             #[cfg(not(debug_assertions))]
+                                             log_error(
+                                                 "Failed to log character",
+                                                 Some("insert_file_at_cursor:phase6"),
+                                             );
+
+                                             logging_error_count += 1;
+                                         } else {
+                                             // Retry after brief pause
+                                             std::thread::sleep(std::time::Duration::from_millis(
+                                                 50,
+                                             ));
+                                         }
+                                     }
+                                 }
+                             }
+
+                             byte_offset_in_insertion += full_char_bytes.len() as u64;
+                         }
+                     }
+                     Err(_) => {
+                         // Invalid UTF-8, skip these bytes
+                         #[cfg(debug_assertions)]
+                         log_error(
+                             &format!(
+                                 "Invalid UTF-8 in carry-over at offset {}",
+                                 byte_offset_in_insertion
+                             ),
+                             Some("insert_file_at_cursor:phase6"),
+                         );
+
+                         #[cfg(not(debug_assertions))]
+                         log_error(
+                             "Invalid UTF-8 in carry-over",
+                             Some("insert_file_at_cursor:phase6"),
+                         );
+
+                         byte_offset_in_insertion += full_char_bytes.len() as u64;
+                     }
+                 }
+
+                 carry_over_count = 0; // Clear carry-over
+             }
+         }
+
+         // Process remaining bytes in buffer
+         while buffer_index < bytes_read {
+             let byte = buffer[buffer_index];
+
+             // Detect UTF-8 character length
+             let char_len = match detect_utf8_byte_count(byte) {
+                 Ok(len) => len,
+                 Err(_) => {
+                     // Invalid UTF-8 start byte, skip it
+                     #[cfg(debug_assertions)]
+                     log_error(
+                         &format!(
+                             "Invalid UTF-8 start byte at offset {}",
+                             byte_offset_in_insertion
+                         ),
+                         Some("insert_file_at_cursor:phase6"),
+                     );
+
+                     #[cfg(not(debug_assertions))]
+                     log_error(
+                         "Invalid UTF-8 start byte",
+                         Some("insert_file_at_cursor:phase6"),
+                     );
+
+                     buffer_index += 1;
+                     byte_offset_in_insertion += 1;
+                     continue;
+                 }
+             };
+
+             // Check if complete character is in buffer
+             if buffer_index + char_len <= bytes_read {
+                 // Complete character available
+                 let char_bytes = &buffer[buffer_index..(buffer_index + char_len)];
+
+                 // Decode UTF-8 character
+                 match std::str::from_utf8(char_bytes) {
+                     Ok(s) => {
+                         if let Some(ch) = s.chars().next() {
+                             // Calculate absolute position
+                             // Converting from u64 to u128 (safe: u64 always fits in u128)
+                             let char_position_u64: u64 =
+                                 start_byte_position + byte_offset_in_insertion;
+                             let char_position_u128 = char_position_u64 as u128;
+
+                             // Create inverse log entry (with retry)
+                             for retry_attempt in 0..3 {
+                                 match button_make_changeloge_from_user_character_action_level(
+                                     &target_file_path,
+                                     Some(ch),
+                                     char_position_u128,
+                                     EditType::Add, // User added, inverse is remove
+                                     &log_directory_path,
+                                 ) {
+                                     Ok(_) => break, // Success
+                                     Err(_e) => {
+                                         if retry_attempt == 2 {
+                                             // Final retry failed
+                                             #[cfg(debug_assertions)]
+                                             log_error(
+                                                 &format!(
+                                                     "Failed to log char at position {}: {}",
+                                                     char_position_u128, _e
+                                                 ),
+                                                 Some("insert_file_at_cursor:phase6"),
+                                             );
+
+                                             #[cfg(not(debug_assertions))]
+                                             log_error(
+                                                 "Failed to log character",
+                                                 Some("insert_file_at_cursor:phase6"),
+                                             );
+
+                                             logging_error_count += 1;
+                                         } else {
+                                             // Retry after brief pause
+                                             std::thread::sleep(std::time::Duration::from_millis(
+                                                 50,
+                                             ));
+                                         }
+                                     }
+                                 }
+                             }
+
+                             byte_offset_in_insertion += char_len as u64;
+                         }
+                     }
+                     Err(_) => {
+                         // Invalid UTF-8 sequence
+                         #[cfg(debug_assertions)]
+                         log_error(
+                             &format!(
+                                 "Invalid UTF-8 sequence at offset {}",
+                                 byte_offset_in_insertion
+                             ),
+                             Some("insert_file_at_cursor:phase6"),
+                         );
+
+                         #[cfg(not(debug_assertions))]
+                         log_error(
+                             "Invalid UTF-8 sequence",
+                             Some("insert_file_at_cursor:phase6"),
+                         );
+
+                         byte_offset_in_insertion += char_len as u64;
+                     }
+                 }
+
+                 buffer_index += char_len;
+             } else {
+                 // Incomplete character at end of chunk - carry over to next iteration
+                 carry_over_count = bytes_read - buffer_index;
+
+                 // =================================================
+                 // Debug-Assert, Test-Assert, Production-Catch-Handle
+                 // =================================================
+
+                 debug_assert!(
+                     carry_over_count <= 4,
+                     "carry_over_count exceeds max UTF-8 char length"
+                 );
+
+                 #[cfg(test)]
+                 assert!(
+                     carry_over_count <= 4,
+                     "carry_over_count exceeds max UTF-8 char length"
+                 );
+
+                 // Production catch-handle
+                 if carry_over_count > 4 {
+                     #[cfg(debug_assertions)]
+                     log_error(
+                         &format!("carry_over_count {} exceeds 4", carry_over_count),
+                         Some("insert_file_at_cursor:phase6"),
+                     );
+
+                     #[cfg(not(debug_assertions))]
+                     log_error(
+                         "carry_over buffer overflow",
+                         Some("insert_file_at_cursor:phase6"),
+                     );
+
+                     let _ = state.set_info_bar_message("undo log failed");
+                     break; // Exit inner loop safely
+                 }
+
+                 for i in 0..carry_over_count {
+                     carry_over_bytes[i] = buffer[buffer_index + i];
+                 }
+                 break; // Process carry-over in next iteration
+             }
+         }
+     }
+
+     // Check if logging completed reasonably successfully
+     if logging_error_count > 0 {
+         #[cfg(debug_assertions)]
+         log_error(
+             &format!("Logging completed with {} errors", logging_error_count),
+             Some("insert_file_at_cursor:phase6"),
+         );
+
+         #[cfg(not(debug_assertions))]
+         log_error(
+             "Logging completed with errors",
+             Some("insert_file_at_cursor:phase6"),
+         );
+
+         let _ = state.set_info_bar_message("undo log incomplete");
+     }
+
+     // ============================================
+     // Phase 7: Update Editor State (was Phase 7, now renumbered)
+     // ============================================
+     // Mark file as modified and rebuild display
+*/
