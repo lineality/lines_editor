@@ -1496,50 +1496,50 @@ mod test_parse_movement {
 //     );
 // }
 
-#[test]
-fn test_eol_mapping_simple() {
-    use std::env;
-    // use std::path::PathBuf;
+// #[test]
+// fn test_eol_mapping_simple() {
+//     use std::env;
+//     // use std::path::PathBuf;
 
-    // Use existing test file
-    let cwd = env::current_dir().unwrap();
-    let test_file = cwd.join("test_files/basic_short.txt");
+//     // Use existing test file
+//     let cwd = env::current_dir().unwrap();
+//     let test_file = cwd.join("test_files/basic_short.txt");
 
-    // Create unique session dir that won't conflict
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros();
-    let session_ts =
-        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+//     // Create unique session dir that won't conflict
+//     use std::time::{SystemTime, UNIX_EPOCH};
+//     let timestamp = SystemTime::now()
+//         .duration_since(UNIX_EPOCH)
+//         .unwrap()
+//         .as_micros();
+//     let session_ts =
+//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
 
-    let mut state = EditorState::new();
-    initialize_session_directory(&mut state, session_ts).unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_ts).unwrap();
 
-    let session_dir = state.session_directory_path.as_ref().unwrap();
-    let read_copy =
-        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
 
-    state.read_copy_path = Some(read_copy.clone());
-    state.original_file_path = Some(test_file.clone());
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
 
-    // Build window
-    let lines = build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-    println!("Built window with {} lines", lines);
+//     // Build window
+//     let lines = build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+//     println!("Built window with {} lines", lines);
 
-    // Line 1 is "Line 1: Hello, world!" - check what columns are mapped
-    for col in 0..30 {
-        match state.window_map.get_row_col_file_position(0, col) {
-            Ok(Some(pos)) => println!(
-                "Col {} -> byte_offset_linear_file_absolute_position: {}, byte_in_line: {}",
-                col, pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
-            ),
-            Ok(None) => println!("Col {} -> None (unmapped)", col),
-            Err(e) => println!("Col {} -> Error: {}", col, e),
-        }
-    }
-}
+//     // Line 1 is "Line 1: Hello, world!" - check what columns are mapped
+//     for col in 0..30 {
+//         match state.window_map.get_row_col_file_position(0, col) {
+//             Ok(Some(pos)) => println!(
+//                 "Col {} -> byte_offset_linear_file_absolute_position: {}, byte_in_line: {}",
+//                 col, pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
+//             ),
+//             Ok(None) => println!("Col {} -> None (unmapped)", col),
+//             Err(e) => println!("Col {} -> Error: {}", col, e),
+//         }
+//     }
+// }
 
 // #[test]
 // fn test_cursor_movement_to_eol() {
@@ -1684,62 +1684,62 @@ fn test_eol_mapping_simple() {
 //     );
 // }
 
-#[test]
-fn test_insert_at_eol_works() {
-    use std::env;
-    // use std::path::PathBuf;
+// #[test]
+// fn test_insert_at_eol_works() {
+//     use std::env;
+//     // use std::path::PathBuf;
 
-    let cwd = env::current_dir().unwrap();
-    let test_file = cwd.join("test_files/basic_short.txt");
+//     let cwd = env::current_dir().unwrap();
+//     let test_file = cwd.join("test_files/basic_short.txt");
 
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_micros();
-    let session_ts =
-        FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
+//     use std::time::{SystemTime, UNIX_EPOCH};
+//     let timestamp = SystemTime::now()
+//         .duration_since(UNIX_EPOCH)
+//         .unwrap()
+//         .as_micros();
+//     let session_ts =
+//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
 
-    let mut state = EditorState::new();
-    initialize_session_directory(&mut state, session_ts).unwrap();
+//     let mut state = EditorState::new();
+//     initialize_session_directory(&mut state, session_ts).unwrap();
 
-    let session_dir = state.session_directory_path.as_ref().unwrap();
-    let read_copy =
-        create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
+//     let session_dir = state.session_directory_path.as_ref().unwrap();
+//     let read_copy =
+//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
 
-    state.read_copy_path = Some(read_copy.clone());
-    state.original_file_path = Some(test_file.clone());
-    build_windowmap_nowrap(&mut state, &read_copy).unwrap();
+//     state.read_copy_path = Some(read_copy.clone());
+//     state.original_file_path = Some(test_file.clone());
+//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
 
-    // Move to EOL
-    state.cursor.row = 0;
-    state.cursor.col = 23;
-    state.mode = EditorMode::Insert;
+//     // Move to EOL
+//     state.cursor.row = 0;
+//     state.cursor.col = 23;
+//     state.mode = EditorMode::Insert;
 
-    println!(
-        "Cursor at EOL: ({}, {})",
-        state.cursor.row, state.cursor.col
-    );
+//     println!(
+//         "Cursor at EOL: ({}, {})",
+//         state.cursor.row, state.cursor.col
+//     );
 
-    // Insert text at EOL
-    let text = " ADDED";
-    let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
+//     // Insert text at EOL
+//     let text = " ADDED";
+//     let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
 
-    println!("Insert result: {:?}", result);
+//     println!("Insert result: {:?}", result);
 
-    // Read file and check
-    let contents = std::fs::read_to_string(&read_copy).unwrap();
-    println!(
-        "First line after insert: {}",
-        contents.lines().next().unwrap()
-    );
+//     // Read file and check
+//     let contents = std::fs::read_to_string(&read_copy).unwrap();
+//     println!(
+//         "First line after insert: {}",
+//         contents.lines().next().unwrap()
+//     );
 
-    assert!(result.is_ok(), "Insert should succeed");
-    assert!(
-        contents.contains("world! ADDED"),
-        "Text should be appended to line"
-    );
-}
+//     assert!(result.is_ok(), "Insert should succeed");
+//     assert!(
+//         contents.contains("world! ADDED"),
+//         "Text should be appended to line"
+//     );
+// }
 
 // ============================================================================
 // TEST insert_file

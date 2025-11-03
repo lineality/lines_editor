@@ -16282,11 +16282,11 @@ fn render_utf8txt_row_with_cursor(
 /// Initializes the session directory structure for this editing session
 ///
 /// # Purpose
-/// Creates the lines_data infrastructure and a unique session directory
-/// for this run of the editor. Session directories persist after exit
-/// for crash recovery purposes.
+/// Creates the lines_data infrastructure and either creates a new unique session
+/// directory for this run OR uses an existing session directory for crash recovery.
+/// Session directories persist after exit for crash recovery purposes.
 ///
-/// # Directory Structure Created
+/// # Directory Structure Created (when creating new)
 /// ```text
 /// {executable_dir}/
 ///   lines_data/
@@ -16297,34 +16297,73 @@ fn render_utf8txt_row_with_cursor(
 ///
 /// # Arguments
 /// * `state` - Editor state to update with session directory path
+/// * `session_time_stamp` - Timestamp used only when creating new session directory
+/// * `use_this_session` - Optional path to existing session directory for recovery:
+///   - Can be relative: `"lines_data/sessions/20250103_143022"`
+///   - Can be absolute: `"/full/path/to/exe/lines_data/sessions/20250103_143022"`
+///   - If provided, `session_time_stamp` parameter is ignored
+///   - Directory must already exist and contain recovery files
+///   - Directory will NOT be created, modified, or deleted
 ///
 /// # Returns
-/// * `Ok(())` - Session directory created and path stored in state
-/// * `Err(io::Error)` - If directory creation fails
+/// * `Ok(())` - Session directory validated/created and path stored in state
+/// * `Err(io::Error)` - If directory creation/validation fails
 ///
 /// # State Modified
 /// - `state.session_directory_path` - Set to absolute path of session directory
 ///
-/// # Crash Recovery
-/// Session directories are NOT deleted on exit. This allows recovery of
-/// read-copy files if the editor crashes or is interrupted.
+/// # Crash Recovery Use Case
+/// When recovering from a crash or interrupted session:
+/// ```rust
+/// // User provides the session directory they want to recover
+/// let recovery_path = PathBuf::from("lines_data/sessions/20250103_143022");
+/// initialize_session_directory(&mut state, timestamp, Some(recovery_path))?;
+/// ```
+///
+/// # Security
+/// When `use_this_session` is provided, the function validates that the
+/// canonicalized path is within the sessions directory structure. This prevents
+/// path traversal attacks attempting to use system directories like `/etc` or `/tmp`.
+///
+/// # Error Handling
+/// Possible errors when using existing session:
+/// - Provided path does not exist
+/// - Provided path is not a directory (is a file)
+/// - Provided path is outside the sessions directory structure (security)
+/// - Cannot canonicalize or access the path
 ///
 /// # Future Enhancement
 /// TODO: On startup, detect existing session directories and offer user
 /// the option to recover interrupted sessions. Display path to recovery files.
-///
-/// # Error Handling
-/// If session directory creation fails, editor should not continue as
-/// read-copy operations depend on this directory existing.
 pub fn initialize_session_directory(
     state: &mut EditorState,
     session_time_stamp: FixedSize32Timestamp,
+    use_this_session: Option<PathBuf>,
 ) -> io::Result<()> {
+    // =================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // =================================================
+
     // Defensive: Verify state is in clean initial state
     debug_assert!(
         state.session_directory_path.is_none(),
         "Session directory should not be initialized twice"
     );
+
+    // Test assertion for double-initialization
+    #[cfg(test)]
+    assert!(
+        state.session_directory_path.is_none(),
+        "Session directory should not be initialized twice"
+    );
+
+    // Production catch: Handle double-initialization gracefully
+    if state.session_directory_path.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Session directory already initialized",
+        ));
+    }
 
     // Step 1: Ensure base directory structure exists
     // Creates: {executable_dir}/lines_data/sessions/
@@ -16348,40 +16387,142 @@ pub fn initialize_session_directory(
         ));
     }
 
-    // Step 2: Get timestamp for this session: synced at source, from parameter now
+    // Step 2: Determine session directory - either use existing or create new
+    let session_path = if let Some(provided_path) = use_this_session {
+        // ============================================================
+        // Step 2a: Use existing session directory (crash recovery)
+        // ============================================================
 
-    // Step 3: Create this session's directory
-    // let session_dir_name = format!("{}/", session_time_stamp);
-    let session_path = sessions_dir.join(session_time_stamp.to_string());
+        // Resolve the provided path to absolute form
+        // Handle both relative paths (resolved from exe dir) and absolute paths
+        let resolved_path = if provided_path.is_absolute() {
+            // Already absolute, use directly
+            provided_path
+        } else {
+            // Relative path - resolve from executable directory
+            let path_str = provided_path.to_string_lossy();
+            // Convert Cow<str> to &str using as_ref()
+            make_input_path_name_abs_executabledirectoryrelative_nocheck(path_str.as_ref())
+                .map_err(|e| {
+                    #[cfg(debug_assertions)]
+                    let msg = format!(
+                        "Failed to resolve provided session path '{}': {}",
+                        path_str, e
+                    );
+                    #[cfg(not(debug_assertions))]
+                    let msg = "Failed to resolve provided session path";
 
-    // Create the session directory
-    fs::create_dir(&session_path).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Failed to create session directory {}: {}",
-                session_time_stamp, e
-            ),
-        )
-    })?;
+                    io::Error::new(io::ErrorKind::InvalidInput, msg)
+                })?
+        };
 
-    // Defensive: Verify creation succeeded
-    if !session_path.exists() || !session_path.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Session directory creation reported success but directory not found",
-        ));
-    }
+        // Validation 1: Check if provided path exists
+        if !resolved_path.exists() {
+            #[cfg(debug_assertions)]
+            let msg = format!(
+                "Provided session directory does not exist: {}",
+                resolved_path.display()
+            );
+            #[cfg(not(debug_assertions))]
+            let msg = "Provided session directory does not exist";
 
-    // Step 4: Store path in state
+            return Err(io::Error::new(io::ErrorKind::NotFound, msg));
+        }
+
+        // Validation 2: Check if provided path is a directory (not a file)
+        if !resolved_path.is_dir() {
+            #[cfg(debug_assertions)]
+            let msg = format!(
+                "Provided session path is not a directory: {}",
+                resolved_path.display()
+            );
+            #[cfg(not(debug_assertions))]
+            let msg = "Provided session path is not a directory";
+
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, msg));
+        }
+
+        // Validation 3: SECURITY - Verify path is within sessions directory
+        // Canonicalize both paths to resolve symlinks and normalize for comparison
+        let canonical_provided = resolved_path.canonicalize().map_err(|e| {
+            #[cfg(debug_assertions)]
+            let msg = format!("Cannot canonicalize provided session path: {}", e);
+            #[cfg(not(debug_assertions))]
+            let msg = "Cannot access provided session path";
+
+            io::Error::new(io::ErrorKind::Other, msg)
+        })?;
+
+        let canonical_sessions = sessions_dir.canonicalize().map_err(|e| {
+            #[cfg(debug_assertions)]
+            let msg = format!("Cannot canonicalize sessions directory: {}", e);
+            #[cfg(not(debug_assertions))]
+            let msg = "Cannot access sessions directory";
+
+            io::Error::new(io::ErrorKind::Other, msg)
+        })?;
+
+        // Security check: Provided path must be under sessions directory
+        // This prevents path traversal attacks (e.g., /etc, /tmp, ../.., etc.)
+        if !canonical_provided.starts_with(&canonical_sessions) {
+            #[cfg(debug_assertions)]
+            let msg = format!(
+                "Security violation: Provided session path '{}' is outside sessions directory '{}'",
+                canonical_provided.display(),
+                canonical_sessions.display()
+            );
+            #[cfg(not(debug_assertions))]
+            let msg = "Provided session path is outside allowed directory";
+
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, msg));
+        }
+
+        // All validations passed - use this existing directory
+        // NOTE: We do NOT create, modify, or delete anything in this directory
+        // It may contain recovery files - that's the whole point
+        canonical_provided
+    } else {
+        // ============================================================
+        // Step 2b: Create new session directory (normal operation)
+        // ============================================================
+
+        // Use timestamp parameter to create new session directory
+        let session_path = sessions_dir.join(session_time_stamp.to_string());
+
+        // Create the session directory
+        fs::create_dir(&session_path).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "Failed to create session directory {}: {}",
+                    session_time_stamp, e
+                ),
+            )
+        })?;
+
+        // Defensive: Verify creation succeeded
+        if !session_path.exists() || !session_path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Session directory creation reported success but directory not found",
+            ));
+        }
+
+        session_path
+    };
+
+    // Step 3: Store path in state
     state.session_directory_path = Some(session_path.clone());
-
-    // // Diagnostic Log success for user visibility
-    // println!("Session directory created: {}", session_path.display());
-    // println!("(Session files persist for crash recovery)");
 
     // Assertion: Verify state was updated
     debug_assert!(
+        state.session_directory_path.is_some(),
+        "Session directory path should be set in state"
+    );
+
+    // Test assertion: Verify state was updated
+    #[cfg(test)]
+    assert!(
         state.session_directory_path.is_some(),
         "Session directory path should be set in state"
     );
@@ -16447,6 +16588,7 @@ fn parse_file_with_line(input: &str) -> (String, Option<usize>) {
 pub fn full_lines_editor(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
+    use_this_session: Option<PathBuf>,
 ) -> Result<()> {
     //  ///////////////////////////////////////
     //  Initialization & Bootstrap Lines Editor
@@ -16506,7 +16648,11 @@ pub fn full_lines_editor(
     lines_editor_state.original_file_path = Some(target_path.clone());
 
     // Initialize session directory FIRST
-    initialize_session_directory(&mut lines_editor_state, session_time_stamp1)?;
+    initialize_session_directory(
+        &mut lines_editor_state,
+        session_time_stamp1,
+        use_this_session,
+    )?;
 
     // Get session directory path (we just initialized it)
     let session_dir = lines_editor_state
