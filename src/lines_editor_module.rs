@@ -2730,7 +2730,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}{}q{}uit {}s{}av {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd b{}/{}//cmnt {}[]{}ind {}hjkl{}{}",
+        "{}{}q{}uit {}s{}av {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}//cmnt {}[]{}ind {}hjkl{}{}",
         YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -5802,16 +5802,13 @@ impl EditorState {
                 "\x1b[C" => Command::MoveRight(count), // starboard arrow
                 "k" => Command::MoveUp(count),
                 "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
+                // toggle RANGE
+                "/" => Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row),
 
-                "/b" | "b/" | "/block" | "block/" => {
-                    Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row)
-                }
-
-                // // toggle RANGE
-                // "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
+                // toggle RANGE
                 // "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
 
-                // // indent RANGE
+                // indent RANGE
                 // "[" => Command::UnindentOneLine(self.cursor.row), // zero index
                 // "]" => Command::IndentOneLine(self.cursor.row),   // zero index
                 "w" => Command::MoveWordForward(count),
