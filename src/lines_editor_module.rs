@@ -166,8 +166,18 @@ Production output following an error must be managed and defined, not not open t
 - expanding state destroys projects with unmaintainable over-reach
 
 ## code requires communication
+*/
 
+/*
+Undo Redo Note:
+# Places in Code to Clear Redo-Stack (when user requests to edit doc)
 
+1. fn pasty_mode() -> Ok(PastyInputPathOrCommand::EmptyEnterFirstItem) => {...
+2. fn execute_command() -> Command::InsertNewline(_) => {...
+3. fn execute_command() -> Command::DeleteBackspace => {...
+4. fn execute_command() -> Command::DeleteLine => {...
+5. fn write_n_log_hex_edit_in_place(...
+6. impl EditorState()->fn handle_utf8txt_insert_mode_input(...
 */
 
 /*
@@ -989,8 +999,8 @@ use super::toggle_comment_indent_module::{
 };
 
 use super::buttons_reversible_edit_changelog_module::{
-    ButtonError, EditType, button_clear_all_redo_logs, button_hexeditinplace_byte_make_log_file,
-    button_make_changeloge_from_user_character_action_level,
+    ButtonError, EditType, button_hexeditinplace_byte_make_log_file,
+    button_make_changeloge_from_user_character_action_level, button_safe_clear_all_redo_logs,
     button_undo_redo_next_inverse_changelog_pop_lifo, detect_utf8_byte_count,
     get_redo_changelog_directory_path, get_undo_changelog_directory_path,
     read_character_bytes_from_file, read_single_byte_from_file,
@@ -4308,6 +4318,18 @@ impl EditorState {
         stdin_handle: &mut StdinLock,
         text_buffer: &mut [u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE],
     ) -> io::Result<bool> {
+        // Get read-copy path
+        let base_edit_filepath: PathBuf = self
+            .read_copy_path
+            .as_ref()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "CRITICAL: No read-copy path available - cannot edit",
+                )
+            })?
+            .clone();
+
         // Set mode to normal so leaving Pasty will not restart Pasty!
         // Have another Pasty!!
         self.mode = EditorMode::Normal;
@@ -4393,6 +4415,26 @@ impl EditorState {
                 //  Empty Input -> Select Most Recent (Rank 1)
                 //  ==========================================
                 Ok(PastyInputPathOrCommand::EmptyEnterFirstItem) => {
+                    // =================================================
+                    // Clear Redo Stack Before Editing: Insert or Delete
+                    // =================================================
+                    let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                        Ok(success) => success,
+                        Err(e) => {
+                            #[cfg(debug_assertions)]
+                            eprintln!("Error clearing redo logs: {:?}", e);
+
+                            // Log error and continue (non-fatal)
+                            log_error(
+                                &format!("Cannot clear redo logs"),
+                                Some("backspace_style_delete_noload"),
+                            );
+                            let _ = self.set_info_bar_message("bsdn Redo clear failed");
+
+                            false // Treat error as failure
+                        }
+                    };
+
                     if sorted_files.is_empty() {
                         let _ = self.set_info_bar_message("*clipboard empty*");
                         continue; // Stay in loop
@@ -4710,7 +4752,7 @@ impl EditorState {
         let mut redo_clear_success = false;
 
         for attempt in 0..3 {
-            match button_clear_all_redo_logs(&file_path) {
+            match button_safe_clear_all_redo_logs(&file_path) {
                 Ok(_) => {
                     redo_clear_success = true;
                     break;
@@ -5462,6 +5504,26 @@ impl EditorState {
             //  ///////////////
             //  Text to Insert
             //  ///////////////
+
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&read_copy) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = self.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
 
             // Determine if bucket brigade will continue after this chunk
             // If the chunk ends with a newline, that newline is the stdin delimiter (Enter key)
@@ -8236,8 +8298,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // =========
         // Move Left
         // =========
-
-        // old works v1
         Command::MoveLeft(count) => {
             // Vim-like behavior: move cursor left, scroll window if at edge
             let mut remaining_moves = count;
@@ -8290,38 +8350,43 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // update for each MoveLeft
                 let this_row = lines_editor_state.cursor.row;
                 let this_col = lines_editor_state.cursor.col;
-                println!(
-                    "MoveLeft lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                    this_row, this_col,
-                );
-                println!(
-                    "\nMoveLeft lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
-                );
-                println!(
-                    "\nMoveLeft lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-                );
-                println!(
-                    "\nMoveLeft lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-                );
-                println!(
-                    "\nMoveLeft lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
-                );
-                println!(
-                    "\nMoveLeft window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
-                );
-                println!(
-                    "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
-                    lines_editor_state.is_next_byte_newline()
-                );
+
+                #[cfg(debug_assertions)]
+                {
+                    println!(
+                        "MoveLeft lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                        this_row, this_col,
+                    );
+                    println!(
+                        "\nMoveLeft lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                        lines_editor_state
+                            .window_map
+                            .get_row_col_file_position(this_row, this_col)
+                    );
+                    println!(
+                        "\nMoveLeft lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                        lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                    );
+                    println!(
+                        "\nMoveLeft lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                        lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                    );
+                    println!(
+                        "\nMoveLeft lines_editor_state.cursor.row -> {:?}",
+                        lines_editor_state.cursor.row
+                    );
+                    println!(
+                        "\nMoveLeft window_map.line_byte_start_end_position_pairs -> {:?}",
+                        lines_editor_state
+                            .window_map
+                            .line_byte_start_end_position_pairs,
+                    );
+                    println!(
+                        "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
+                        lines_editor_state.is_next_byte_newline()
+                    );
+                }
+
                 iterations += 1;
 
                 if lines_editor_state.cursor.col > 0 {
@@ -8338,7 +8403,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     remaining_moves -= scroll_amount;
                     needs_rebuild = true;
                 } else {
-                    // At absolute left edge - can't move further
+                    // At absolute left edge - cannot move further
                     break;
                 }
             }
@@ -8361,10 +8426,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         // ==========
-        // Move Right
+        // Move Right v7
         // ==========
-
-        // v7 new struct positions
+        // TODO: edge case get stuck on first row '0'
         Command::MoveRight(count) => {
             // Vim-like behavior: move cursor right, scroll window if at edge
 
@@ -8381,38 +8445,42 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position += count;
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "MoveRight lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nMoveRight lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nMoveRight lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nMoveRight lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nMoveRight lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nMoveRight window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
-            println!(
-                "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
-                lines_editor_state.is_next_byte_newline()
-            );
+
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "MoveRight lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nMoveRight lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nMoveRight lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nMoveRight lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nMoveRight lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nMoveRight window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+                println!(
+                    "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
+                    lines_editor_state.is_next_byte_newline()
+                );
+            }
 
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
@@ -8434,8 +8502,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     needs_rebuild = true;
                     continue;
                 }
-
-                // ======
 
                 // Calculate space available before right edge
                 // Reserve 1 column to prevent display overflow
@@ -8494,88 +8560,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        // // old v1 works
-        // Command::MoveRight(count) => {
-        //     // Vim-like behavior: move cursor right, scroll window if at edge
-
-        //     let mut remaining_moves = count;
-        //     let mut needs_rebuild = false;
-
-        //     // Defensive: Limit iterations
-        //     let mut iterations = 0;
-
-        //     // =========================
-        //     // position state inspection
-        //     // =========================
-        //     // update for each move
-        //     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position += count;
-        //     println!(
-        //         "MoveRight lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-        //         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-        //     );
-        //     println!(
-        //         "MoveRight lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-        //         lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-        //     );
-
-        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
-        //         iterations += 1;
-
-        //         // Calculate space available before right edge
-        //         // Reserve 1 column to prevent display overflow
-        //         let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
-
-        //         if lines_editor_state.cursor.col < right_edge {
-        //             // Cursor can move right within visible window
-        //             let space_available = right_edge - lines_editor_state.cursor.col;
-        //             let cursor_moves = remaining_moves.min(space_available);
-
-        //             // inspection
-        //             println!("Inspection cursor_moves-> {:?}", &cursor_moves);
-
-        //             lines_editor_state.cursor.col += cursor_moves;
-        //             remaining_moves -= cursor_moves;
-        //         } else {
-        //             // Cursor at right edge, scroll window right
-        //             // Cap scroll to prevent excessive horizontal offset
-
-        //             if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-        //                 < limits::CURSOR_MOVEMENT_STEPS
-        //             {
-        //                 let max_scroll = limits::CURSOR_MOVEMENT_STEPS
-        //                     - lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
-        //                 let scroll_amount = remaining_moves.min(max_scroll);
-
-        //                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset +=
-        //                     scroll_amount;
-
-        //                 remaining_moves -= scroll_amount;
-        //                 needs_rebuild = true;
-        //             } else {
-        //                 // Hit maximum horizontal scroll
-        //                 break;
-        //             }
-        //         }
-        //     }
-
-        //     // Defensive: Check iteration limit
-        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
-        //         return Err(LinesError::Io(io::Error::new(
-        //             io::ErrorKind::Other,
-        //             "Maximum iterations exceeded in MoveRight",
-        //         )));
-        //     }
-
-        //     // Only rebuild if we scrolled the window
-        //     if needs_rebuild {
-        //         // Rebuild window to show the change from read-copy file
-        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-        //     }
-
-        //     Ok(true)
-        // }
-
-        // What is 'count'?
+        // "Count" is int prefix entered by user, e.g. 20j (go down 20 lines)
         Command::MoveDown(count) => {
             // Vim-like behavior: move cursor down, scroll window if at bottom edge
             // Handle downward cursor movement with EOF boundary enforcement
@@ -8596,34 +8581,38 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "MoveDown lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nMoveDown lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nMoveDown lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nMoveDown lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nMoveDown lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nMoveDown window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
+
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "MoveDown lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nMoveDown lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nMoveDown lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nMoveDown lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nMoveDown lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nMoveDown window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+            }
             let mut remaining_moves = count;
             let mut needs_rebuild = false;
 
@@ -8754,34 +8743,38 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "MoveUp lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nMoveUp lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nMoveUp lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nMoveUp lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nMoveUp lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nMoveUp window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
+
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "MoveUp lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nMoveUp lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nMoveUp lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nMoveUp lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nMoveUp lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nMoveUp window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+            }
             let mut remaining_moves = count;
             let mut needs_rebuild = false;
 
@@ -8890,11 +8883,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // 5. Not syntax, MoveRight(1) → cursor on space
         // 6. IS syntax → STOP
         Command::MoveWordForward(count) => {
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
             for _ in 0..count {
                 // Step 1: Move forward 1 position
                 execute_command(lines_editor_state, Command::MoveRight(1))?;
@@ -8920,7 +8908,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         ) {
                             Ok(Some(pos)) => {
                                 let mut byte_buf = [0u8; 1];
-                                let mut f = File::open(&read_copy)?;
+                                let mut f = File::open(&base_edit_filepath)?;
                                 f.seek(io::SeekFrom::Start(
                                     pos.byte_offset_linear_file_absolute_position,
                                 ))?;
@@ -8948,11 +8936,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::MoveWordEnd(count) => {
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
             for _ in 0..count {
                 // ===================================================================
                 // STEP 1: Initial forward movement (2 positions)
@@ -8996,7 +8979,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     let next_byte_pos = current_pos.saturating_add(1);
 
                     // Open file for peek operation
-                    let mut f = File::open(&read_copy)?;
+                    let mut f = File::open(&base_edit_filepath)?;
 
                     // Seek to next byte position
                     if let Err(_) = f.seek(io::SeekFrom::Start(next_byte_pos)) {
@@ -9040,11 +9023,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
         Command::MoveWordBack(count) => {
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| LinesError::StateError("No read-copy path".into()))?;
-
             for _ in 0..count {
                 // ===================================================================
                 // STEP 1: Initial backward movement (2 positions)
@@ -9091,7 +9069,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     let prev_byte_pos = current_pos.saturating_sub(1);
 
                     // Open file for peek operation
-                    let mut f = File::open(&read_copy)?;
+                    let mut f = File::open(&base_edit_filepath)?;
 
                     // Seek to previous byte position
                     if let Err(_) = f.seek(io::SeekFrom::Start(prev_byte_pos)) {
@@ -9153,44 +9131,41 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "GotoLine lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nGotoLine lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nGotoLine lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nGotoLine lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nGotoLine lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nGotoLine window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
 
-            // // Get file path
-            // Get the read_copy path BEFORE the mutable borrow
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "GotoLine lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nGotoLine lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nGotoLine lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nGotoLine lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nGotoLine lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nGotoLine window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+            }
 
             // Seek to target line and update window position
-            match seek_to_line_number(&mut File::open(&read_copy)?, target_line) {
+            match seek_to_line_number(&mut File::open(&base_edit_filepath)?, target_line) {
                 Ok(byte_pos) => {
                     lines_editor_state.line_count_at_top_of_window = target_line;
                     lines_editor_state.file_position_of_topline_start = byte_pos;
@@ -9207,7 +9182,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
 
                     // Rebuild window to show the new position
-                    build_windowmap_nowrap(lines_editor_state, &read_copy)?;
+                    build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
                     let _ = lines_editor_state
                         .set_info_bar_message(&format!("Jumped to line {}", line_number));
@@ -9238,44 +9213,41 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "GotoFileStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nGotoFileStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nGotoFileStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nGotoFileStart lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nGotoFileStart lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nGotoFileStart window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
 
-            // // Get file path
-            // Get the read_copy path BEFORE the mutable borrow
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "GotoFileStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nGotoFileStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nGotoFileStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nGotoFileStart lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nGotoFileStart lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nGotoFileStart window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+            }
 
             // Seek to target line and update window position
-            match seek_to_line_number(&mut File::open(&read_copy)?, target_line) {
+            match seek_to_line_number(&mut File::open(&base_edit_filepath)?, target_line) {
                 Ok(byte_pos) => {
                     lines_editor_state.line_count_at_top_of_window = target_line;
                     lines_editor_state.file_position_of_topline_start = byte_pos;
@@ -9283,7 +9255,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.col = 2; // Skip over line number displayfull_lines_editor
 
                     // Rebuild window to show the new position
-                    build_windowmap_nowrap(lines_editor_state, &read_copy)?;
+                    build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
                     let _ = lines_editor_state
                         .set_info_bar_message(&format!("Jumped to line {}", line_number));
@@ -9297,14 +9269,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::GotoFileLastLine => {
-            // Get read-copy path
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| LinesError::StateError("No read-copy path available".into()))?;
-
             // Count lines in file
-            let (total_lines, _) = count_lines_in_file(&read_copy)?;
+            let (total_lines, _) = count_lines_in_file(&base_edit_filepath)?;
 
             // If file is empty, stay at current position
             if total_lines == 0 {
@@ -9319,14 +9285,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::GotoLineStart => {
-            // maybe add set selection? TODO
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
-            // goto_line_start(lines_editor_state, &read_copy)?;
-
             let line_num_width = calculate_line_number_width(
                 lines_editor_state.line_count_at_top_of_window,
                 lines_editor_state.cursor.row,
@@ -9337,7 +9295,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
             // rebuild
-            _ = build_windowmap_nowrap(lines_editor_state, &read_copy);
+            _ = build_windowmap_nowrap(lines_editor_state, &base_edit_filepath);
 
             let _ = lines_editor_state.set_info_bar_message("start of line");
 
@@ -9349,60 +9307,119 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             let this_row = lines_editor_state.cursor.row;
             let this_col = lines_editor_state.cursor.col;
-            println!(
-                "GotoLineStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
-                this_row, this_col,
-            );
-            println!(
-                "\nGotoLineStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .get_row_col_file_position(this_row, this_col)
-            );
-            println!(
-                "\nGotoLineStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-            );
-            println!(
-                "\nGotoLineStart lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-            );
-            println!(
-                "\nGotoLineStart lines_editor_state.cursor.row -> {:?}",
-                lines_editor_state.cursor.row
-            );
-            println!(
-                "\nGotoLineStart window_map.line_byte_start_end_position_pairs -> {:?}",
-                lines_editor_state
-                    .window_map
-                    .line_byte_start_end_position_pairs,
-            );
+
+            #[cfg(debug_assertions)]
+            {
+                println!(
+                    "GotoLineStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    this_row, this_col,
+                );
+                println!(
+                    "\nGotoLineStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .get_row_col_file_position(this_row, this_col)
+                );
+                println!(
+                    "\nGotoLineStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                );
+                println!(
+                    "\nGotoLineStart lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+                );
+                println!(
+                    "\nGotoLineStart lines_editor_state.cursor.row -> {:?}",
+                    lines_editor_state.cursor.row
+                );
+                println!(
+                    "\nGotoLineStart window_map.line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state
+                        .window_map
+                        .line_byte_start_end_position_pairs,
+                );
+            }
 
             Ok(true)
         }
 
         Command::GotoLineEnd => {
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
-            goto_line_end(lines_editor_state, &read_copy)?;
+            goto_line_end(lines_editor_state, &base_edit_filepath)?;
             Ok(true)
         }
+
         Command::DeleteLine => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
             delete_current_line_noload(lines_editor_state, &edit_file_path)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
 
         Command::DeleteBackspace => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
             backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
 
         Command::InsertNewline(_) => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
             insert_newline_at_cursor_chunked(lines_editor_state, edit_file_path)?;
 
             // Rebuild window to show the change
@@ -9411,12 +9428,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        // TODO: this legacy item may not be needed...
-        // Command::DeleteChar => {
-        //     // This command is not used in normal flow
-        //     eprintln!("Warning: DeleteChar command called directly (unexpected)");
-        //     Ok(true)
-        // }
         Command::EnterInsertMode => {
             // Without rebuild here, hexedit changes do not appear until
             // after a next change. Keep in Sync.
@@ -9436,7 +9447,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::EnterVisualMode => {
-            // Without rebuild here, hexedit changes do not appear until
+            // Must rebuild here, or hexedit changes would not appear until
             // after a next change. Keep in Sync.
 
             // Set cursor position to file_position_of_vis_select_start
@@ -9545,8 +9556,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
         Command::ToggleBlockcomments(start_row_0number, end_row_0number) => {
-            println!("start_row_0number {start_row_0number}");
-            println!("end_row_0number {end_row_0number}");
+            #[cfg(debug_assertions)]
+            {
+                println!("start_row_0number {start_row_0number}");
+                println!("end_row_0number {end_row_0number}");
+            }
+
             toggle_block_comment(
                 &edit_file_path.display().to_string(),
                 start_row_0number,
@@ -9591,19 +9606,24 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
 
             Ok(true)
-            // Save doesn't need rebuild (no content change in display)
         }
         Command::RedoButtonsCommand => {
             let redo_path = get_redo_changelog_directory_path(&edit_file_path)?;
             match button_undo_redo_next_inverse_changelog_pop_lifo(&edit_file_path, &redo_path) {
                 Ok(_) => {
-                    println!("❌ ERROR: Should have failed (no redo logs)");
+                    #[cfg(debug_assertions)]
+                    {
+                        println!("❌ ERROR: Should have failed (no redo logs)");
+                    }
                 }
                 Err(e) => {
-                    println!("✓ Operation failed as expected");
-                    println!("Error: {}", e);
-                    println!();
-                    println!("✅ CORRECT: Cannot redo because redo logs were cleared");
+                    #[cfg(debug_assertions)]
+                    {
+                        println!("✓ Operation failed as expected");
+                        println!("Error: {}", e);
+                        println!();
+                        println!("✅ CORRECT: Cannot redo because redo logs were cleared");
+                    }
                 }
             }
 
@@ -9611,44 +9631,19 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
 
             Ok(true)
-            // Save doesn't need rebuild (no content change in display)
         }
-        // Command::Save => {
-        //     save_file(lines_editor_state)?;
-        //     Ok(true)
-        //     // Save doesn't need rebuild (no content change in display)
-        // }
-        // Command::Save => {
-        //     save_file(lines_editor_state)?;
-        //     Ok(true)
-        //     // Save doesn't need rebuild (no content change in display)
-        // }
-        // Command::Save => {
-        //     save_file(lines_editor_state)?;
-        //     Ok(true)
-        //     // Save doesn't need rebuild (no content change in display)
-        // }
-        // Command::Save => {
-        //     save_file(lines_editor_state)?;
-        //     Ok(true)
-        //     // Save doesn't need rebuild (no content change in display)
-        // }
+
         Command::Save => {
             save_file(lines_editor_state)?;
             Ok(true)
             // Save doesn't need rebuild (no content change in display)
         }
+
         Command::Quit => {
-            // // Must-Save Mode (optional)
-            // if state.is_modified {
-            //     // Todo, maybe have a press enter to proceed thing...
-            //     println!("Warning: Unsaved changes! Use 'w' to save.");
-            //     Ok(true)
-            // } else {
-            //     Ok(false) // Signal to exit loop
-            // }
-            // Clean up session directory before the exiting
-            // Wash your teeth and brush your face!
+            // Note: There is no 'must-save' functionality by default,
+            // because that would require saving rejected/unsafe changes.
+            // How is that ok?
+            // For special uses you CAN add must-save here, but think it though.
 
             if let Err(e) = cleanup_session_directory(lines_editor_state) {
                 eprintln!("Warning: Session cleanup failed: {}", e);
@@ -9677,25 +9672,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
             Ok(false) // Signal to exit after save
         }
-        // TODO Maybe not in scope
-        // Command::ToggleWrap => {
-        //     lines_editor_state.wrap_mode = match lines_editor_state.wrap_mode {
-        //         WrapMode::Wrap => WrapMode::NoWrap,
-        //         WrapMode::NoWrap => WrapMode::Wrap,
-        //     };
 
-        //     // Rebuild window with new wrap mode
-        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-        //     Ok(true)
-        // }
         Command::Copyank => {
-            let read_copy = lines_editor_state
-                .read_copy_path
-                .clone()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
-
             // Copy the Selection To The Pasty Clipboard (as a file)
-            copy_selection_to_clipboardfile(lines_editor_state, &read_copy)?;
+            copy_selection_to_clipboardfile(lines_editor_state, &base_edit_filepath)?;
 
             Ok(true)
         }
@@ -9915,36 +9895,6 @@ fn backspace_style_delete_noload(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
 ) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("backspace_style_delete_noload"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
-    }
-
     // Step 1: Get current file position
     let file_pos = lines_editor_state
         .window_map
@@ -10598,36 +10548,6 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 /// - Line at end of file (EOF)
 /// - Single line file
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("delete_current_line_noload"),
-        );
-        let _ = state.set_info_bar_message("dcln Redo clear failed"); // ← FIXED: Now works
-    }
-
     // Step 1: Get current line's file position
     let row_col_file_pos = state
         .window_map
@@ -11542,36 +11462,6 @@ fn insert_newline_at_cursor_chunked(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
 ) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("insert_newline_at_cursor_chunked"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("inacc Redo clear failed");
-    }
-
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
     let file_pos = match lines_editor_state
         .window_map
@@ -12095,36 +11985,6 @@ fn insert_newline_at_cursor_chunked(
 /// - Large file (multiple chunks, test performance)
 /// - Very large file (trigger MAX_CHUNKS limit)
 pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&source_file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("insert_file_at_cursor"),
-        );
-        let _ = state.set_info_bar_message("ifac Redo clear failed");
-    }
-
     // ============================================
     // Phase 1: Path Validation and Normalization
     // ============================================
@@ -13253,36 +13113,6 @@ pub fn insert_text_chunk_at_cursor_position(
     file_path: &Path,
     text_bytes: &[u8],
 ) -> Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("insert_text_chunk_at_cursor_position"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("itcacp Redo clear failed");
-    }
-
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
@@ -13759,6 +13589,7 @@ pub fn insert_text_chunk_at_cursor_position(
 // ===============
 //  Have a Pasty!!
 // ===============
+// See other pasty method in EditorState impl -> fn handle_pasty_mode_input()
 
 /// Copies visual selection from source file to clipboard file with UTF-8 safety
 ///

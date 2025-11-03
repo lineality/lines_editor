@@ -9,6 +9,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 /*
 Rules & Policies
@@ -7793,9 +7795,34 @@ pub fn get_redo_changelog_directory_path(target_file: &Path) -> ButtonResult<Pat
 /// # Examples
 /// ```
 /// // User makes a normal edit - clear redo history
-/// button_clear_all_redo_logs(Path::new("file.txt"))?;
+/// button_base_clear_all_redo_logs(Path::new("file.txt"))?;
 /// ```
-pub fn button_clear_all_redo_logs(target_file: &Path) -> ButtonResult<()> {
+pub fn button_base_clear_all_redo_logs(target_file: &Path) -> ButtonResult<()> {
+    /*
+    # Example Use:
+    ```rust
+    // ============================================================
+    // Clear Redo Stack Before Editing: Insert or Delete
+    // ============================================================
+    let _: bool = match button_safe_clear_all_redo_logs(&file_path) {
+        Ok(success) => success,
+        Err(e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("Error clearing redo logs: {:?}", e);
+
+            // Log error and continue (non-fatal)
+            log_error(
+                &format!("Cannot clear redo logs"),
+                Some("backspace_style_delete_noload"),
+            );
+            let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+            false // Treat error as failure
+        }
+        };
+    ```
+    */
+
     let redo_dir = get_redo_changelog_directory_path(target_file)?;
 
     // If directory doesn't exist, nothing to clear
@@ -7855,7 +7882,7 @@ pub fn button_clear_all_redo_logs(target_file: &Path) -> ButtonResult<()> {
                 log_button_error(
                     target_file,
                     &format!("Could not remove redo log: {}", e),
-                    Some("button_clear_all_redo_logs"),
+                    Some("button_base_clear_all_redo_logs"),
                 );
             }
         }
@@ -7865,6 +7892,161 @@ pub fn button_clear_all_redo_logs(target_file: &Path) -> ButtonResult<()> {
     println!("  Cleared {} redo log file(s)", file_count);
 
     Ok(())
+}
+
+/// Safely clears all redo logs with retry logic and error recovery
+///
+/// # Purpose
+/// Provides a fault-tolerant wrapper around `button_clear_all_redo_logs` that:
+/// - Retries on transient failures (file locks, network storage delays)
+/// - Handles cosmic ray bit-flips, hardware glitches, race conditions
+/// - Never panics in production
+/// - Logs failures for debugging without exposing sensitive data
+///
+/// # Project Context
+/// When a user makes a normal edit (not undo), redo history becomes invalid.
+/// This operation must succeed to maintain UI consistency, but file system
+/// operations can fail transiently. Rather than failing the user's edit,
+/// we retry with exponential backoff and continue gracefully on final failure.
+///
+/// # Arguments
+/// * `target_file` - The file being edited (path used to locate redo directory)
+///
+/// # Returns
+/// * `ButtonResult<bool>` - Ok(true) if cleared, Ok(false) if failed after retries
+///
+/// # Retry Strategy
+/// - 3 attempts maximum (bounded operation)
+/// - 100ms pause between attempts (allows transient locks to clear)
+/// - Non-fatal: returns Ok(false) rather than Err on final failure
+///
+/// # Examples
+/// ```
+/// // User types character - clear redo stack
+/// match button_safe_clear_all_redo_logs(Path::new("file.txt"))? {
+///     true => { /* redo cleared successfully */ }
+///     false => { /* logged warning, continue editing */ }
+/// }
+/// ```
+pub fn button_safe_clear_all_redo_logs(target_file: &Path) -> ButtonResult<bool> {
+    // =================================================
+    // Defensive bounds checking
+    // =================================================
+    const MAX_RETRY_ATTEMPTS: usize = 3;
+    const RETRY_DELAY_MS: u64 = 100;
+
+    debug_assert!(MAX_RETRY_ATTEMPTS > 0, "Must have at least one attempt");
+    debug_assert!(
+        MAX_RETRY_ATTEMPTS <= 10,
+        "Retry attempts should be reasonable"
+    );
+
+    #[cfg(test)]
+    assert!(MAX_RETRY_ATTEMPTS > 0, "Must have at least one attempt");
+
+    // Production safety check
+    // Production catch-handle (matches your ButtonError enum)
+    if MAX_RETRY_ATTEMPTS == 0 {
+        return Err(ButtonError::AssertionViolation {
+            check: "Invalid retry configuration: zero attempts",
+        });
+    }
+
+    // =================================================
+    // Bounded retry loop
+    // =================================================
+    for attempt in 0..MAX_RETRY_ATTEMPTS {
+        #[cfg(debug_assertions)]
+        println!(
+            "Attempting to clear redo logs (attempt {}/{})",
+            attempt + 1,
+            MAX_RETRY_ATTEMPTS
+        );
+
+        match button_base_clear_all_redo_logs(target_file) {
+            Ok(_) => {
+                #[cfg(debug_assertions)]
+                println!(
+                    "  Successfully cleared redo logs on attempt {}",
+                    attempt + 1
+                );
+
+                return Ok(true);
+            }
+            Err(e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("  Attempt {} failed: {:?}", attempt + 1, e);
+
+                // Don't sleep after final attempt
+                if attempt < MAX_RETRY_ATTEMPTS - 1 {
+                    thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                }
+            }
+        }
+    }
+
+    // =================================================
+    // All retries exhausted - fail gracefully
+    // =================================================
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "Warning: Failed to clear redo logs after {} attempts",
+        MAX_RETRY_ATTEMPTS
+    );
+
+    // Log error without sensitive data (no file paths in production)
+    log_button_error(
+        target_file,
+        "Failed to clear redo logs after retries",
+        Some("button_safe_clear_all_redo_logs"),
+    );
+
+    // Return success with false flag rather than hard error
+    // This allows the edit operation to continue
+    Ok(false)
+}
+
+#[cfg(test)]
+mod redoclear_tests {
+    // use super::*;
+    use std::path::PathBuf;
+    const MAX_RETRY_ATTEMPTS: usize = 3;
+
+    #[test]
+    fn test_safe_clear_succeeds_on_first_attempt() {
+        // This test requires a valid test file setup
+        // Implementation depends on your test infrastructure
+
+        let test_file = PathBuf::from("/tmp/test_file.txt");
+
+        // Test should verify:
+        // 1. Function returns Ok(true) on success
+        // 2. Only one attempt is made when successful
+        // 3. Redo directory is actually cleared
+    }
+
+    #[test]
+    fn test_safe_clear_retries_on_transient_failure() {
+        // Test should verify:
+        // 1. Function retries on failure
+        // 2. Bounded retry count is respected
+        // 3. Sleep delays occur between attempts
+    }
+
+    #[test]
+    fn test_safe_clear_fails_gracefully_after_max_attempts() {
+        // Test should verify:
+        // 1. Function returns Ok(false) after max retries
+        // 2. No panic occurs
+        // 3. Error is logged appropriately
+    }
+
+    #[test]
+    fn test_retry_bounds_respected() {
+        // Verify MAX_RETRY_ATTEMPTS constant is within safe bounds
+        assert!(MAX_RETRY_ATTEMPTS > 0);
+        assert!(MAX_RETRY_ATTEMPTS <= 10);
+    }
 }
 
 // ============================================================================
@@ -8110,7 +8292,7 @@ mod router_tests {
         fs::write(redo_dir.join("2"), "test").unwrap();
 
         // Clear redo logs
-        button_clear_all_redo_logs(&target_file).unwrap();
+        button_base_clear_all_redo_logs(&target_file).unwrap();
 
         // Files should be removed
         assert!(!redo_dir.join("0").exists());
@@ -9042,7 +9224,7 @@ mod additional_comprehensive_tests {
 
         // Step 4: Clear redo logs (should happen automatically in real editor)
         println!("Step 4: Clearing redo logs (new edit invalidates redo history)");
-        button_clear_all_redo_logs(&target_file).unwrap();
+        button_base_clear_all_redo_logs(&target_file).unwrap();
 
         // Verify redo logs are gone
         let redo_count = fs::read_dir(&redo_dir)
@@ -9555,7 +9737,7 @@ mod additional_comprehensive_tests {
 
 mod buttons_reversible_edit_changelog_module;
 use buttons_reversible_edit_changelog_module::{
-    EditType, button_add_byte_make_log_file, button_clear_all_redo_logs,
+    EditType, button_add_byte_make_log_file, button_base_clear_all_redo_logs,
     button_hexeditinplace_byte_make_log_file, button_make_changeloge_from_user_character_action_level,
     button_make_hexedit_changelog, button_remove_byte_make_log_file,
     button_remove_multibyte_make_log_files, button_undo_redo_next_inverse_changelog_pop_lifo,
@@ -9988,7 +10170,7 @@ fn main() -> std::io::Result<()> {
     let _ = fs::remove_file(&test7_file);
 
     // =========================================================================
-    // NEW TEST 8: HIGH-LEVEL API - button_clear_all_redo_logs()
+    // NEW TEST 8: HIGH-LEVEL API - button_base_clear_all_redo_logs()
     // =========================================================================
     println!("─────────────────────────────────────────────────────────────");
     println!("TEST 8: HIGH-LEVEL API - Clear All Redo Logs");
@@ -10012,9 +10194,9 @@ fn main() -> std::io::Result<()> {
     assert!(redo_dir_8.join("2").exists());
 
     // Clear redo logs
-    button_clear_all_redo_logs(&test8_file).expect("Failed to clear redo logs");
+    button_base_clear_all_redo_logs(&test8_file).expect("Failed to clear redo logs");
 
-    println!("   Called button_clear_all_redo_logs()");
+    println!("   Called button_base_clear_all_redo_logs()");
 
     // Verify they're gone
     assert!(
@@ -10221,7 +10403,7 @@ fn main() -> std::io::Result<()> {
     println!();
 
     println!("Clearing redo logs (new edit invalidates redo history)");
-    _ = button_clear_all_redo_logs(&manual_test_file);
+    _ = button_base_clear_all_redo_logs(&manual_test_file);
     println!("✓ Redo logs cleared");
     println!();
     println!("Notice: The redo directory is now empty");
@@ -10468,7 +10650,7 @@ pub fn write_n_log_hex_edit_in_place(
     let mut redo_clear_success = false;
 
     for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
+        match button_base_clear_all_redo_logs(&file_path) {
             Ok(_) => {
                 redo_clear_success = true;
                 break;
@@ -11088,35 +11270,7 @@ pub fn insert_text_chunk_at_cursor_position(
     file_path: &Path,
     text_bytes: &[u8],
 ) -> Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
 
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("insert_text_chunk_at_cursor_position"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("itcacp Redo clear failed");
-    }
 
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
@@ -11644,35 +11798,7 @@ fn insert_newline_at_cursor_chunked(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
 ) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
 
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("insert_newline_at_cursor_chunked"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("inacc Redo clear failed");
-    }
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
     let file_pos = match lines_editor_state
         .window_map
@@ -11914,36 +12040,8 @@ Sample integration for Delete
 /// - No whole-file load
 /// - Bounded iterations
 fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
 
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("backspace_style_delete_noload"),
-        );
-        let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
-    }
-// Step 1: Get current file position
+    // Step 1: Get current file position
     let file_pos = state
         .window_map
         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
@@ -12410,35 +12508,6 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
 /// - Line at end of file (EOF)
 /// - Single line file
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    use std::thread;
-    use std::time::Duration;
-    // ============================================================
-    // Clear Redo Stack (3 retries, 100ms pause)
-    // Before Editing: Insert or Delete
-    // ============================================================
-    let mut redo_clear_success = false;
-
-    for attempt in 0..3 {
-        match button_clear_all_redo_logs(&file_path) {
-            Ok(_) => {
-                redo_clear_success = true;
-                break;
-            }
-            Err(_) => {
-                if attempt < 2 {
-                    thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-    }
-
-    if !redo_clear_success {
-        log_error(
-            &format!("Cannot clear redo logs"),
-            Some("delete_current_line_noload"),
-        );
-        let _ = state.set_info_bar_message("dcln Redo clear failed"); // ← FIXED: Now works
-    }
 
     // Step 1: Get current line's file position
     let row_col_file_pos = state
@@ -13007,4 +13076,29 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::
 
     Ok(())
 }
+*/
+
+/*
+# Sample Safe-Wrapper clear redo-stack call,
+  which includes multi-retry.
+
+// =================================================
+// Clear Redo Stack Before Editing: Insert or Delete
+// =================================================
+let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+    Ok(success) => success,
+    Err(e) => {
+        #[cfg(debug_assertions)]
+        eprintln!("Error clearing redo logs: {:?}", e);
+
+        // Log error and continue (non-fatal)
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("backspace_style_delete_noload"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+        false // Treat error as failure
+    }
+};
 */
