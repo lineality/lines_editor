@@ -36,10 +36,11 @@ full IDE competing with Zed, Helix, vsCode, etc.
 
 
 
+
 # Rust rules:
--Always best practice.
--Always extensive doc strings.
--Always comments.
+- Always best practice.
+- Always extensive doc strings: what the code is doing with project context
+- Always clear comments.
 - Always cargo tests (where possible).
 - Never remove documentation.
 - Always clear, meaningful, unique names (e.g. variables, functions).
@@ -48,18 +49,28 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Never unsafe code.
 - Never use unwrap.
 
-- Load what is needed when it is needed: Do not ever load a whole file, rarely load a whole anything. increment and load only what is required pragmatically.
+- Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. increment and load only what is required pragmatically. Do not fill 'state' with every possible piece of un-used information. Do not insecurity output information broadly in the case of errors and exceptions.
 
-- Always defensive best practice:
-- Always error handling: everything will fail at some point, if only because of cosmic-ray bit-flips (which are actually common), there must always be fail-safe error handling.
+- Always defensive best practice
+- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
 
-Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals.
+Somehow there seems to be no clear vocabulary for 'Do not stop.' When you come to something to handle, handle it:
+- Handle and move on: Do not halt the program.
+- Handle and move on: Do not terminate the program.
+- Handle and move on: Do not exit the program.
+- Handle and move on: Do not crash the program.
+- Handle and move on: Do not panic the program.
+- Handle and move on: Do not coredump the program.
+- Handle and move on: Do not stop the program.
+- Handle and move on: Do not finish the program.
+
+Comments and docs for functions and groups of functions must include project level information: To paraphrase Jack Welch, "The most dangerous thing in the world is a flawless operation that should never have been done in the first place." For projects, functions are not pure platonic abstractions; the project has a need that the function is or is not meeting. It happens constantly that a function does the wrong thing well and so this 'bug' is never detected. Project-level documentation and logic-level documentation are two different things that must both exist such that discrepancies must be identifiable; Project-level documentation, logic-level documentation, and the code, must align and align with user-needs, real conditions, and future conditions.
+
+Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals: not ideology, aesthetics, popularity, momentum-tradition, bad habits, convenience, nihilism, lazyness, lack of impulse control, etc.
 
 ## No third party libraries (or very strictly avoid third party libraries where possible).
 
-## Every part of code will eventually fail if only due to hardware failure, power supply failures, hard radiation bit flips, security attacks, etc. Every failure must be handled smoothly: let it fail and move on.
-
-## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (updated for 2025 and Rust):
+## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (as updated for 2025 and Rust (not narrowly 2006 c for embedded systems):
 1. no unsafe stuff:
 - no recursion
 - no goto
@@ -123,20 +134,17 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
 }
 
 
-Avoid heap for error messages and for all things.
-   Is heap used because that is THE best way
-   the most secure, the most efficient, proper separate of debug testing vs. secure production code?
-   Or is heap used because "it's future dev's problem, let's party"
-   Can we use  heap in debug/test modes/builds only?
-   The lack of clarity on this is not acceptable.
-   Production software must not be a shrug punt.
-   Is debug information being included in production builds?
-   That is NOT supposed to happen.
+Avoid heap for error messages and for all things:
+Is heap used for error messages because that is THE best way, the most secure, the most efficient, proper separate of debug testing vs. secure production code?
+Or is heap used because of oversights and apathy: "it's future dev's problem, let's party."
+We can use heap in debug/test modes/builds only.
+Production software must not insecurely output debug diagnostics.
+Debug information must not be included in production builds: "developers accidentally left development code in the software" is a classic error (not a desired design spec) that routinely leads to security and other issues. That is NOT supposed to happen. It is not coherent to insist the open ended heap output 'must' or 'should' be in a production build.
 
 This is central to the question about testing vs. a pedantic ban on conditional compilation; not putting full traceback insecurity into production code is not a different operational process logic tree for process operations.
 
-Just like with the pedantic "a loops being bounded" rule, there is a fundamental exception: always-on loops must be the opposite.
-With conditional compilations: code NEVER to EVER be in production-builds MUST be "conditionally" excluded. This is not an OS condition or a hardware condition. This is an 'unsafe-testing or not' condition.
+Just like with the pedantic "all loops being bounded" rule, there is a fundamental exception: always-on loops must be the opposite.
+With conditional compilations: code NEVER to EVER be in production-builds MUST be always "conditionally" excluded. This is not an OS conditional compilation or a hardware conditional compilation. This is an 'unsafe-testing-only or safe-production-code' condition.
 
 Error messages and error outcomes in 'production' 'release' (real-use, not debug/testing) must not ever contain any information that could be a security vulnerability or attack surface. Failing to remove debugging inspection is a major category of security and hygiene problems.
 
@@ -144,10 +152,16 @@ Security: Error messages in production must NOT contain:
 - File paths (can reveal system structure)
 - File contents
 - environment variables
-- data
-- Internal implementation details
+- user, file, state, data
+- internal implementation details
+- etc.
 
-Production output following an error must be managed and defined, not not open to whatever some api or OS call wants to dump out.
+All debug-prints not for production must be tagged with
+```
+#[cfg(debug_assertions)]
+```
+
+Production output following an error must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
 
 6. Manage ownership and borrowing
 
@@ -155,17 +169,21 @@ Production output following an error must be managed and defined, not not open t
 - use null-void return values
 - check non-void-null returns
 
-8. Navigate debugging and testing on the one hand and not-dangerous conditional compilation on the other hand
+8. Navigate debugging and testing on the one hand and not-dangerous conditional-compilation on the other hand:
+- Here 'conditional compilation' is interpreted as significant changes to the overall 'tree' of operation depending on build settings/conditions, such as using different modules and basal functions. E.g. "GDPR compliance mode compilation"
+- Any LLVM type compilation or build-flag will modify compilation details, but not the target tree logic of what the software does (arguably).
+- 2025+ "compilation" and "conditions" cannot be simplistically compared with single-architecture 1970 pdp-11-only C or similar embedded device compilation.
 
 9. Communicate:
-- use doc strings, use comments,
+- Use doc strings; use comments.
 - Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
 
 10. Use state-less operations when possible:
 - a seemingly invisibly small increase in state often completely destroys projects
 - expanding state destroys projects with unmaintainable over-reach
 
-## code requires communication
+Vigilance: We should help support users and developers and the people who depend upon maintainable software. Maintainable code supports the future for us all.
+
 */
 
 /*
@@ -8514,11 +8532,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     lines_editor_state.cursor.col += cursor_moves;
 
-                    // inspection
+                    // Inspection in debug build only
+                    #[cfg(debug_assertions)]
                     println!(
                         "Inspection cursor_moves-> {:?}, col:{:?}",
                         &cursor_moves, lines_editor_state.cursor.col
                     );
+
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at right edge, scroll window right

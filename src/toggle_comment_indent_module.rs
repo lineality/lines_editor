@@ -1033,6 +1033,7 @@ fn main() {
 */
 
 /*
+
 # Rust rules:
 - Always best practice.
 - Always extensive doc strings: what the code is doing with project context
@@ -1048,7 +1049,17 @@ fn main() {
 - Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. increment and load only what is required pragmatically. Do not fill 'state' with every possible piece of un-used information. Do not insecurity output information broadly in the case of errors and exceptions.
 
 - Always defensive best practice
-- Always error handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
+- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
+
+Somehow there seems to be no clear vocabulary for 'Do not stop.' When you come to something to handle, handle it:
+- Handle and move on: Do not halt the program.
+- Handle and move on: Do not terminate the program.
+- Handle and move on: Do not exit the program.
+- Handle and move on: Do not crash the program.
+- Handle and move on: Do not panic the program.
+- Handle and move on: Do not coredump the program.
+- Handle and move on: Do not stop the program.
+- Handle and move on: Do not finish the program.
 
 Comments and docs for functions and groups of functions must include project level information: To paraphrase Jack Welch, "The most dangerous thing in the world is a flawless operation that should never have been done in the first place." For projects, functions are not pure platonic abstractions; the project has a need that the function is or is not meeting. It happens constantly that a function does the wrong thing well and so this 'bug' is never detected. Project-level documentation and logic-level documentation are two different things that must both exist such that discrepancies must be identifiable; Project-level documentation, logic-level documentation, and the code, must align and align with user-needs, real conditions, and future conditions.
 
@@ -1155,10 +1166,13 @@ Production output following an error must be managed and defined, not not open t
 - use null-void return values
 - check non-void-null returns
 
-8. Navigate debugging and testing on the one hand and not-dangerous conditional compilation on the other hand
+8. Navigate debugging and testing on the one hand and not-dangerous conditional-compilation on the other hand:
+- Here 'conditional compilation' is interpreted as significant changes to the overall 'tree' of operation depending on build settings/conditions, such as using different modules and basal functions. E.g. "GDPR compliance mode compilation"
+- Any LLVM type compilation or build-flag will modify compilation details, but not the target tree logic of what the software does (arguably).
+- 2025+ "compilation" and "conditions" cannot be simplistically compared with single-architecture 1970 pdp-11-only C or similar embedded device compilation.
 
 9. Communicate:
-- use doc strings, use comments,
+- Use doc strings; use comments.
 - Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
 
 10. Use state-less operations when possible:
@@ -1703,7 +1717,12 @@ pub fn toggle_block_comment(
     // Determine block markers from extension
     let markers = match determine_block_markers(&extension) {
         Some(m) => m,
-        None => return Err(ToggleCommentError::UnsupportedExtension),
+        // // Optional halting, not recommended, will Terminate-Session
+        // #[cfg(debug_assertions)]
+        // None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // Nothing to do, do nothing, move on.
+        None => return Ok(()),
     };
 
     // Detect current state - are markers present AT these line positions?
@@ -2291,7 +2310,12 @@ pub fn toggle_multiple_basic_comments(
 
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-        None => return Err(ToggleCommentError::UnsupportedExtension),
+        // // Optional halting, not recommended, will Terminate-Session
+        // #[cfg(debug_assertions)]
+        // None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // Nothing to do, do nothing, move on.
+        None => return Ok(()),
     };
 
     toggle_multiple_lines(file_path, line_numbers, comment_flag)
@@ -2443,7 +2467,13 @@ pub fn toggle_basic_singleline_comment(
     // Determine comment flag from extension
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-        None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // // Optional halting, not recommended, will Terminate-Session
+        // #[cfg(debug_assertions)]
+        // None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // Nothing to do, do nothing, move on.
+        None => return Ok(()),
     };
 
     // Get filename for backup naming
@@ -4475,7 +4505,13 @@ pub fn toggle_range_basic_comments(
     // Determine comment flag from extension
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-        None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // // Optional halting, not recommended, will Terminate-Session
+        // #[cfg(debug_assertions)]
+        // None => return Err(ToggleCommentError::UnsupportedExtension),
+
+        // Nothing to do, do nothing, move on.
+        None => return Ok(()),
     };
 
     // Get filename for backup naming
