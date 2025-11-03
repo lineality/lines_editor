@@ -10486,7 +10486,7 @@ pub fn write_n_log_hex_edit_in_place(
             &format!("Cannot clear redo logs for position {}", byte_position),
             Some("write_n_log_hex_edit_in_place:step3"),
         );
-        let _ = self.set_info_bar_message("Redo clear failed"); // ← FIXED: Now works
+        let _ = self.set_info_bar_message("Redo clear failed");
     }
 
     // ============================================================
@@ -11088,6 +11088,36 @@ pub fn insert_text_chunk_at_cursor_position(
     file_path: &Path,
     text_bytes: &[u8],
 ) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("insert_text_chunk_at_cursor_position"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("itcacp Redo clear failed");
+    }
+
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
@@ -11614,6 +11644,35 @@ fn insert_newline_at_cursor_chunked(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
 ) -> io::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("insert_newline_at_cursor_chunked"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("inacc Redo clear failed");
+    }
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
     let file_pos = match lines_editor_state
         .window_map
@@ -11855,7 +11914,36 @@ Sample integration for Delete
 /// - No whole-file load
 /// - Bounded iterations
 fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
-    // Step 1: Get current file position
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("backspace_style_delete_noload"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+    }
+// Step 1: Get current file position
     let file_pos = state
         .window_map
         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
@@ -12322,6 +12410,36 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
 /// - Line at end of file (EOF)
 /// - Single line file
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("delete_current_line_noload"),
+        );
+        let _ = state.set_info_bar_message("dcln Redo clear failed"); // ← FIXED: Now works
+    }
+
     // Step 1: Get current line's file position
     let row_col_file_pos = state
         .window_map

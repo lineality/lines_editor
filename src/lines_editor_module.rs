@@ -4728,7 +4728,7 @@ impl EditorState {
                 &format!("Cannot clear redo logs for position {}", byte_position),
                 Some("write_n_log_hex_edit_in_place:step3"),
             );
-            let _ = self.set_info_bar_message("Redo clear failed"); // ← FIXED: Now works
+            let _ = self.set_info_bar_message("Redo clear failed");
         }
 
         // ============================================================
@@ -9914,11 +9914,44 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 /// - 8KB pre-allocated buffer for chunking
 /// - No whole-file load
 /// - Bounded iterations
-fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+fn backspace_style_delete_noload(
+    lines_editor_state: &mut EditorState,
+    file_path: &Path,
+) -> io::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("backspace_style_delete_noload"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+    }
+
     // Step 1: Get current file position
-    let file_pos = state
+    let file_pos = lines_editor_state
         .window_map
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)?
+        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -10066,7 +10099,7 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
 
         // Optional: Set info bar if logging failed (non-intrusive)
         if !log_success {
-            let _ = state.set_info_bar_message("undo disabled");
+            let _ = lines_editor_state.set_info_bar_message("undo disabled");
         }
     } else if character_to_delete.is_none() {
         // Could read character for undo - inform user
@@ -10082,17 +10115,17 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
             Some("backspace_style_delete_noload:changelog"),
         );
 
-        let _ = state.set_info_bar_message("undo disabled");
+        let _ = lines_editor_state.set_info_bar_message("undo disabled");
     }
 
-    // Step 5: Update state
-    state.is_modified = true;
+    // Step 5: Update lines_editor_state
+    lines_editor_state.is_modified = true;
 
     // Step 6: Log edit (existing debug log)
     #[cfg(debug_assertions)]
     {
         let bytes_deleted = cursor_byte - prev_char_start;
-        state.log_edit(&format!(
+        lines_editor_state.log_edit(&format!(
             "BACKSPACE line:{} byte:{} deleted:{} bytes",
             file_pos.line_number, prev_char_start, bytes_deleted
         ))?;
@@ -10100,15 +10133,15 @@ fn backspace_style_delete_noload(state: &mut EditorState, file_path: &Path) -> i
 
     #[cfg(not(debug_assertions))]
     {
-        let _ = state.log_edit("BACKSPACE");
+        let _ = lines_editor_state.log_edit("BACKSPACE");
     }
 
     // Step 7: Move cursor back one position
-    if state.cursor.col > 0 {
-        state.cursor.col -= 1;
-    } else if state.cursor.row > 0 {
+    if lines_editor_state.cursor.col > 0 {
+        lines_editor_state.cursor.col -= 1;
+    } else if lines_editor_state.cursor.row > 0 {
         // Deleted at line start - move to end of previous line
-        state.cursor.row -= 1;
+        lines_editor_state.cursor.row -= 1;
         // Will be repositioned correctly after window rebuild
     }
 
@@ -10568,6 +10601,36 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 /// - Line at end of file (EOF)
 /// - Single line file
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> io::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("delete_current_line_noload"),
+        );
+        let _ = state.set_info_bar_message("dcln Redo clear failed"); // ← FIXED: Now works
+    }
+
     // Step 1: Get current line's file position
     let row_col_file_pos = state
         .window_map
@@ -11482,6 +11545,36 @@ fn insert_newline_at_cursor_chunked(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
 ) -> io::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("insert_newline_at_cursor_chunked"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("inacc Redo clear failed");
+    }
+
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
     let file_pos = match lines_editor_state
         .window_map
@@ -12005,6 +12098,36 @@ fn insert_newline_at_cursor_chunked(
 /// - Large file (multiple chunks, test performance)
 /// - Very large file (trigger MAX_CHUNKS limit)
 pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&source_file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("insert_file_at_cursor"),
+        );
+        let _ = state.set_info_bar_message("ifac Redo clear failed");
+    }
+
     // ============================================
     // Phase 1: Path Validation and Normalization
     // ============================================
@@ -13129,10 +13252,40 @@ fn delete_byte_at_position(file_path: &Path, position: u64) -> io::Result<()> {
 /// - Debug/test builds have full diagnostic messages
 /// - Production builds have terse, safe messages
 pub fn insert_text_chunk_at_cursor_position(
-    state: &mut EditorState,
+    lines_editor_state: &mut EditorState,
     file_path: &Path,
     text_bytes: &[u8],
 ) -> Result<()> {
+    use std::thread;
+    use std::time::Duration;
+    // ============================================================
+    // Clear Redo Stack (3 retries, 100ms pause)
+    // Before Editing: Insert or Delete
+    // ============================================================
+    let mut redo_clear_success = false;
+
+    for attempt in 0..3 {
+        match button_clear_all_redo_logs(&file_path) {
+            Ok(_) => {
+                redo_clear_success = true;
+                break;
+            }
+            Err(_) => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+    }
+
+    if !redo_clear_success {
+        log_error(
+            &format!("Cannot clear redo logs"),
+            Some("insert_text_chunk_at_cursor_position"),
+        );
+        let _ = lines_editor_state.set_info_bar_message("itcacp Redo clear failed");
+    }
+
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
@@ -13155,7 +13308,7 @@ pub fn insert_text_chunk_at_cursor_position(
             Some("insert_text_chunk_at_cursor_position"),
         );
 
-        let _ = state.set_info_bar_message("path error");
+        let _ = lines_editor_state.set_info_bar_message("path error");
         return Err(LinesError::StateError("Non-absolute path".into()));
     }
 
@@ -13163,9 +13316,9 @@ pub fn insert_text_chunk_at_cursor_position(
     // Phase 1: Get Cursor Position
     // ============================================
 
-    let file_pos = match state
+    let file_pos = match lines_editor_state
         .window_map
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)
+        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(pos)) => pos,
         Ok(None) => {
@@ -13185,7 +13338,7 @@ pub fn insert_text_chunk_at_cursor_position(
                 Some("insert_text_chunk_at_cursor_position"),
             );
 
-            let _ = state.set_info_bar_message("invalid cursor");
+            let _ = lines_editor_state.set_info_bar_message("invalid cursor");
             return Ok(()); // Return success but do nothing
         }
         Err(e) => {
@@ -13205,7 +13358,7 @@ pub fn insert_text_chunk_at_cursor_position(
                 Some("insert_text_chunk_at_cursor_position"),
             );
 
-            let _ = state.set_info_bar_message("cursor error");
+            let _ = lines_editor_state.set_info_bar_message("cursor error");
             return Ok(()); // Return success but do nothing
         }
     };
@@ -13255,7 +13408,7 @@ pub fn insert_text_chunk_at_cursor_position(
             Some("insert_text_chunk_at_cursor_position"),
         );
 
-        let _ = state.set_info_bar_message("buffer error");
+        let _ = lines_editor_state.set_info_bar_message("buffer error");
         return Err(LinesError::GeneralAssertionCatchViolation(
             "buffer overflow".into(),
         ));
@@ -13273,8 +13426,8 @@ pub fn insert_text_chunk_at_cursor_position(
 
     file.flush().map_err(|e| LinesError::Io(e))?;
 
-    // Update state
-    state.is_modified = true;
+    // Update lines_editor_state
+    lines_editor_state.is_modified = true;
 
     // ============================================
     // Phase 3: Log the Edit (Existing Functionality)
@@ -13284,7 +13437,7 @@ pub fn insert_text_chunk_at_cursor_position(
 
     #[cfg(debug_assertions)]
     {
-        state.log_edit(&format!(
+        lines_editor_state.log_edit(&format!(
             "INSERT line:{} byte:{} text:'{}'",
             file_pos.line_number, file_pos.byte_offset_linear_file_absolute_position, text_str
         ))?;
@@ -13293,7 +13446,7 @@ pub fn insert_text_chunk_at_cursor_position(
     #[cfg(not(debug_assertions))]
     {
         // Production: log without potentially sensitive text content
-        let _ = state.log_edit("INSERT");
+        let _ = lines_editor_state.log_edit("INSERT");
     }
 
     // ============================================
@@ -13321,19 +13474,19 @@ pub fn insert_text_chunk_at_cursor_position(
                 Some("insert_text_chunk:changelog"),
             );
 
-            let _ = state.set_info_bar_message("undo disabled");
+            let _ = lines_editor_state.set_info_bar_message("undo disabled");
 
             // Skip to Phase 5 (cursor update) - insertion succeeded, logging is optional
             // Continue with cursor update and return
             let char_count = text_str.chars().count();
-            state.cursor.col += char_count;
+            lines_editor_state.cursor.col += char_count;
 
-            let right_edge = state.effective_cols.saturating_sub(1);
-            if state.cursor.col > right_edge {
-                let overflow = state.cursor.col - right_edge;
-                state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
-                state.cursor.col = right_edge;
-                build_windowmap_nowrap(state, file_path)?;
+            let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+            if lines_editor_state.cursor.col > right_edge {
+                let overflow = lines_editor_state.cursor.col - right_edge;
+                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
+                lines_editor_state.cursor.col = right_edge;
+                build_windowmap_nowrap(lines_editor_state, file_path)?;
             }
 
             return Ok(());
@@ -13370,7 +13523,7 @@ pub fn insert_text_chunk_at_cursor_position(
         #[cfg(not(debug_assertions))]
         log_error("Config error", Some("insert_text_chunk:changelog"));
 
-        let _ = state.set_info_bar_message("config error");
+        let _ = lines_editor_state.set_info_bar_message("config error");
         return Err(LinesError::GeneralAssertionCatchViolation(
             "zero max logging errors".into(),
         ));
@@ -13399,7 +13552,7 @@ pub fn insert_text_chunk_at_cursor_position(
                 Some("insert_text_chunk:changelog"),
             );
 
-            let _ = state.set_info_bar_message("undo log incomplete");
+            let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
             break;
         }
 
@@ -13573,7 +13726,7 @@ pub fn insert_text_chunk_at_cursor_position(
             Some("insert_text_chunk:changelog"),
         );
 
-        let _ = state.set_info_bar_message("undo log incomplete");
+        let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
     }
 
     // ============================================
@@ -13582,25 +13735,25 @@ pub fn insert_text_chunk_at_cursor_position(
 
     // Update cursor position
     let char_count = text_str.chars().count();
-    state.cursor.col += char_count;
+    lines_editor_state.cursor.col += char_count;
 
     // ==========================================
     // Check if cursor exceeded right edge
     // ==========================================
-    let right_edge = state.effective_cols.saturating_sub(1);
+    let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-    if state.cursor.col > right_edge {
+    if lines_editor_state.cursor.col > right_edge {
         // Calculate how far past edge we went
-        let overflow = state.cursor.col - right_edge;
+        let overflow = lines_editor_state.cursor.col - right_edge;
 
         // Scroll window right to accommodate
-        state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
+        lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
 
         // Move cursor back to right edge
-        state.cursor.col = right_edge;
+        lines_editor_state.cursor.col = right_edge;
 
         // Rebuild window to show new viewport
-        build_windowmap_nowrap(state, file_path)?;
+        build_windowmap_nowrap(lines_editor_state, file_path)?;
     }
 
     Ok(())
