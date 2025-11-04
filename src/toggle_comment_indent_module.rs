@@ -1213,9 +1213,8 @@ pub enum ToggleCommentError {
     /// File has no extension
     NoExtension,
 
-    /// File extension not recognized/supported
-    UnsupportedExtension,
-
+    // /// File extension not recognized/supported
+    // UnsupportedExtension,
     /// The requested line index exceeds the file's line count
     LineNotFound { requested: usize, file_lines: usize },
 
@@ -1265,7 +1264,6 @@ impl std::fmt::Display for ToggleCommentError {
         match self {
             ToggleCommentError::FileNotFound => write!(f, "File not found"),
             ToggleCommentError::NoExtension => write!(f, "No file extension"),
-            ToggleCommentError::UnsupportedExtension => write!(f, "Unsupported extension"),
             ToggleCommentError::LineNotFound {
                 requested,
                 file_lines,
@@ -2026,396 +2024,396 @@ mod block_comment_tests {
 /// 128 lines = 1KB of stack space (8 bytes per usize on 64-bit)
 const MAX_BATCH_LINES: usize = 128;
 
-/// Toggle comments on multiple lines in a single operation
-///
-/// # Overview
-/// Process multiple lines with one backup and one file pass.
-/// More efficient than calling toggle function N times.
-///
-/// # Arguments
-/// * `file_path` - Path to source file
-/// * `line_numbers` - Slice of line numbers to toggle (zero-indexed)
-/// * `comment_flag` - Which comment type to use
-///
-/// # Returns
-/// * `Ok(())` - All lines toggled successfully
-/// * `Err(ToggleCommentError)` - Processing failed
-///
-/// # Safety
-/// - Bounded to MAX_BATCH_LINES (128 lines)
-/// - Single backup, single file pass
-/// - Stack-only array (no heap)
-/// - Sorted for O(1) lookup per line
-///
-/// # Example
-/// ```no_run
-/// let lines = [5, 10, 15, 20];
-/// toggle_multiple_lines("./src/main.rs", &lines, CommentFlag::DoubleSlash)?;
-/// ```
-fn toggle_multiple_lines(
-    file_path: &str,
-    line_numbers: &[usize],
-    comment_flag: CommentFlag,
-) -> Result<(), ToggleCommentError> {
-    // Validate input
-    if line_numbers.is_empty() {
-        return Ok(()); // Nothing to do
-    }
+// /// Toggle comments on multiple lines in a single operation
+// ///
+// /// # Overview
+// /// Process multiple lines with one backup and one file pass.
+// /// More efficient than calling toggle function N times.
+// ///
+// /// # Arguments
+// /// * `file_path` - Path to source file
+// /// * `line_numbers` - Slice of line numbers to toggle (zero-indexed)
+// /// * `comment_flag` - Which comment type to use
+// ///
+// /// # Returns
+// /// * `Ok(())` - All lines toggled successfully
+// /// * `Err(ToggleCommentError)` - Processing failed
+// ///
+// /// # Safety
+// /// - Bounded to MAX_BATCH_LINES (128 lines)
+// /// - Single backup, single file pass
+// /// - Stack-only array (no heap)
+// /// - Sorted for O(1) lookup per line
+// ///
+// /// # Example
+// /// ```no_run
+// /// let lines = [5, 10, 15, 20];
+// /// toggle_multiple_lines("./src/main.rs", &lines, CommentFlag::DoubleSlash)?;
+// /// ```
+// fn toggle_multiple_lines(
+//     file_path: &str,
+//     line_numbers: &[usize],
+//     comment_flag: CommentFlag,
+// ) -> Result<(), ToggleCommentError> {
+//     // Validate input
+//     if line_numbers.is_empty() {
+//         return Ok(()); // Nothing to do
+//     }
 
-    if line_numbers.len() > MAX_BATCH_LINES {
-        // Too many lines - could return error or just process first N
-        return Err(ToggleCommentError::IoError(IoOperation::Read)); // Reuse error for now
-    }
+//     if line_numbers.len() > MAX_BATCH_LINES {
+//         // Too many lines - could return error or just process first N
+//         return Err(ToggleCommentError::IoError(IoOperation::Read)); // Reuse error for now
+//     }
 
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleCommentError::FileNotFound);
-            }
-            return Err(ToggleCommentError::PathError);
-        }
-    };
+//     // Convert to absolute path
+//     let absolute_path = match Path::new(file_path).canonicalize() {
+//         Ok(p) => p,
+//         Err(e) => {
+//             if e.kind() == std::io::ErrorKind::NotFound {
+//                 return Err(ToggleCommentError::FileNotFound);
+//             }
+//             return Err(ToggleCommentError::PathError);
+//         }
+//     };
 
-    // Get filename for backup
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::PathError),
-    };
+//     // Get filename for backup
+//     let filename = match absolute_path.file_name() {
+//         Some(name) => name.to_string_lossy().to_string(),
+//         None => return Err(ToggleCommentError::PathError),
+//     };
 
-    // Copy line numbers to fixed array and sort
-    let mut sorted_lines: [usize; MAX_BATCH_LINES] = [0; MAX_BATCH_LINES];
-    let count = line_numbers.len();
+//     // Copy line numbers to fixed array and sort
+//     let mut sorted_lines: [usize; MAX_BATCH_LINES] = [0; MAX_BATCH_LINES];
+//     let count = line_numbers.len();
 
-    // Copy input to our array
-    for i in 0..count {
-        sorted_lines[i] = line_numbers[i];
-    }
+//     // Copy input to our array
+//     for i in 0..count {
+//         sorted_lines[i] = line_numbers[i];
+//     }
 
-    // Sort the array (only the valid portion)
-    // This enables O(1) lookup during file processing
-    sorted_lines[..count].sort_unstable();
+//     // Sort the array (only the valid portion)
+//     // This enables O(1) lookup during file processing
+//     sorted_lines[..count].sort_unstable();
 
-    // Remove duplicates by compacting array
-    let mut unique_count = 0;
-    if count > 0 {
-        sorted_lines[0] = sorted_lines[0]; // First element stays
-        unique_count = 1;
+//     // Remove duplicates by compacting array
+//     let mut unique_count = 0;
+//     if count > 0 {
+//         sorted_lines[0] = sorted_lines[0]; // First element stays
+//         unique_count = 1;
 
-        for i in 1..count {
-            if sorted_lines[i] != sorted_lines[unique_count - 1] {
-                sorted_lines[unique_count] = sorted_lines[i];
-                unique_count += 1;
-            }
-        }
-    }
+//         for i in 1..count {
+//             if sorted_lines[i] != sorted_lines[unique_count - 1] {
+//                 sorted_lines[unique_count] = sorted_lines[i];
+//                 unique_count += 1;
+//             }
+//         }
+//     }
 
-    // If no valid lines after dedup, nothing to do
-    if unique_count == 0 {
-        return Ok(());
-    }
+//     // If no valid lines after dedup, nothing to do
+//     if unique_count == 0 {
+//         return Ok(());
+//     }
 
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
+//     // Create backup path in CWD
+//     let backup_filename = format!("backup_toggle_comment_{}", filename);
+//     let backup_path = PathBuf::from(&backup_filename);
 
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
+//     // Create backup copy
+//     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
+//         return Err(ToggleCommentError::IoError(IoOperation::Backup));
+//     }
 
-    // Create temp file
-    let temp_filename = format!("temp_toggle_batch_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
+//     // Create temp file
+//     let temp_filename = format!("temp_toggle_batch_{}_{}", std::process::id(), filename);
+//     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file with batch toggle
-    let process_result = process_batch_toggle(
-        &absolute_path,
-        &temp_path,
-        &sorted_lines[..unique_count],
-        comment_flag,
-    );
+//     // Process file with batch toggle
+//     let process_result = process_batch_toggle(
+//         &absolute_path,
+//         &temp_path,
+//         &sorted_lines[..unique_count],
+//         comment_flag,
+//     );
 
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
+//     // Handle result
+//     match process_result {
+//         Ok(()) => {
+//             // Success: replace original
+//             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
+//                 let _ = std::fs::remove_file(&temp_path);
+//                 return Err(ToggleCommentError::IoError(IoOperation::Replace));
+//             }
 
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
-            }
+//             // Clean up temp
+//             if let Err(_) = std::fs::remove_file(&temp_path) {
+//                 #[cfg(debug_assertions)]
+//                 eprintln!("Warning: Failed to clean up temp file");
+//             }
 
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
-        }
-    }
-}
+//             Ok(())
+//         }
+//         Err(e) => {
+//             let _ = std::fs::remove_file(&temp_path);
+//             Err(e)
+//         }
+//     }
+// }
 
-/// Process file toggling comments on multiple lines
-///
-/// # Arguments
-/// * `source_path` - Original file
-/// * `dest_path` - Temporary output file
-/// * `target_lines` - SORTED array of line numbers to toggle
-/// * `flag` - Comment flag to use
-///
-/// # Algorithm
-/// Uses sorted array for O(1) lookup:
-/// - Keep index into sorted array
-/// - For each line, check if current_line == sorted_array[index]
-/// - If match: toggle and increment index
-/// - If no match: copy unchanged
-///
-/// # Returns
-/// * `Ok(())` - Processing succeeded
-/// * `Err(ToggleCommentError)` - Processing failed
-fn process_batch_toggle(
-    source_path: &Path,
-    dest_path: &Path,
-    target_lines: &[usize], // Pre-sorted, no duplicates
-    flag: CommentFlag,
-) -> Result<(), ToggleCommentError> {
-    // Open source file
-    let source_file = match File::open(source_path) {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
-    };
+// /// Process file toggling comments on multiple lines
+// ///
+// /// # Arguments
+// /// * `source_path` - Original file
+// /// * `dest_path` - Temporary output file
+// /// * `target_lines` - SORTED array of line numbers to toggle
+// /// * `flag` - Comment flag to use
+// ///
+// /// # Algorithm
+// /// Uses sorted array for O(1) lookup:
+// /// - Keep index into sorted array
+// /// - For each line, check if current_line == sorted_array[index]
+// /// - If match: toggle and increment index
+// /// - If no match: copy unchanged
+// ///
+// /// # Returns
+// /// * `Ok(())` - Processing succeeded
+// /// * `Err(ToggleCommentError)` - Processing failed
+// fn process_batch_toggle(
+//     source_path: &Path,
+//     dest_path: &Path,
+//     target_lines: &[usize], // Pre-sorted, no duplicates
+//     flag: CommentFlag,
+// ) -> Result<(), ToggleCommentError> {
+//     // Open source file
+//     let source_file = match File::open(source_path) {
+//         Ok(f) => f,
+//         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
+//     };
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
+//     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
 
-    // Create destination file
-    let dest_file = match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dest_path)
-    {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
-    };
+//     // Create destination file
+//     let dest_file = match OpenOptions::new()
+//         .write(true)
+//         .create(true)
+//         .truncate(true)
+//         .open(dest_path)
+//     {
+//         Ok(f) => f,
+//         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
+//     };
 
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+//     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
 
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-    let mut current_line: usize = 0;
-    let mut target_index: usize = 0; // Index into sorted target_lines array
+//     let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
+//     let mut current_line: usize = 0;
+//     let mut target_index: usize = 0; // Index into sorted target_lines array
 
-    // Get last target line for safety limit
-    let max_target_line = target_lines[target_lines.len() - 1];
-    let line_limit = max_target_line.saturating_add(1000000);
+//     // Get last target line for safety limit
+//     let max_target_line = target_lines[target_lines.len() - 1];
+//     let line_limit = max_target_line.saturating_add(1000000);
 
-    // Track how many lines we actually toggled
-    let mut toggled_count: usize = 0;
+//     // Track how many lines we actually toggled
+//     let mut toggled_count: usize = 0;
 
-    // Process file line by line
-    loop {
-        // Safety check
-        if current_line > line_limit {
-            return Err(ToggleCommentError::IoError(IoOperation::Read));
-        }
+//     // Process file line by line
+//     loop {
+//         // Safety check
+//         if current_line > line_limit {
+//             return Err(ToggleCommentError::IoError(IoOperation::Read));
+//         }
 
-        line_buffer.clear();
+//         line_buffer.clear();
 
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
-        };
+//         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
+//             Ok(n) => n,
+//             Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+//         };
 
-        // End of file
-        if bytes_read == 0 {
-            break;
-        }
+//         // End of file
+//         if bytes_read == 0 {
+//             break;
+//         }
 
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleCommentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
+//         // Safety: check line length
+//         if line_buffer.len() > MAX_LINE_LENGTH {
+//             return Err(ToggleCommentError::LineTooLong {
+//                 line_number: current_line,
+//                 length: line_buffer.len(),
+//             });
+//         }
 
-        // Check if this is a target line (O(1) because array is sorted)
-        if target_index < target_lines.len() && current_line == target_lines[target_index] {
-            // This is a target line - toggle it
-            if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
-                return Err(e);
-            }
+//         // Check if this is a target line (O(1) because array is sorted)
+//         if target_index < target_lines.len() && current_line == target_lines[target_index] {
+//             // This is a target line - toggle it
+//             if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
+//                 return Err(e);
+//             }
 
-            // Move to next target
-            target_index += 1;
-            toggled_count += 1;
-        } else {
-            // Not a target line - copy unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleCommentError::IoError(IoOperation::Write));
-            }
-        }
+//             // Move to next target
+//             target_index += 1;
+//             toggled_count += 1;
+//         } else {
+//             // Not a target line - copy unchanged
+//             if let Err(_) = writer.write_all(&line_buffer) {
+//                 return Err(ToggleCommentError::IoError(IoOperation::Write));
+//             }
+//         }
 
-        current_line += 1;
-    }
+//         current_line += 1;
+//     }
 
-    // Flush writer
-    if let Err(_) = writer.flush() {
-        return Err(ToggleCommentError::IoError(IoOperation::Flush));
-    }
+//     // Flush writer
+//     if let Err(_) = writer.flush() {
+//         return Err(ToggleCommentError::IoError(IoOperation::Flush));
+//     }
 
-    // Verify we found all target lines
-    if toggled_count < target_lines.len() {
-        // Some target lines were beyond EOF
-        let first_missing = target_lines[toggled_count];
-        return Err(ToggleCommentError::LineNotFound {
-            requested: first_missing,
-            file_lines: current_line,
-        });
-    }
+//     // Verify we found all target lines
+//     if toggled_count < target_lines.len() {
+//         // Some target lines were beyond EOF
+//         let first_missing = target_lines[toggled_count];
+//         return Err(ToggleCommentError::LineNotFound {
+//             requested: first_missing,
+//             file_lines: current_line,
+//         });
+//     }
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-/// Toggle basic comments on multiple lines (extension-based)
-///
-/// # Arguments
-/// * `file_path` - Path to source file
-/// * `line_numbers` - Slice of line numbers to toggle
-///
-/// # Returns
-/// * `Ok(())` - All lines toggled successfully
-/// * `Err(ToggleCommentError)` - Processing failed
-///
-/// # Example
-/// ```no_run
-/// let lines = [5, 10, 15];
-/// toggle_multiple_basic_comments("./src/main.rs", &lines)?;
-/// ```
-pub fn toggle_multiple_basic_comments(
-    file_path: &str,
-    line_numbers: &[usize],
-) -> Result<(), ToggleCommentError> {
-    // Determine comment flag from extension
-    let path = Path::new(file_path);
-    let extension = match path.extension() {
-        Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::NoExtension),
-    };
+// /// Toggle basic comments on multiple lines (extension-based)
+// ///
+// /// # Arguments
+// /// * `file_path` - Path to source file
+// /// * `line_numbers` - Slice of line numbers to toggle
+// ///
+// /// # Returns
+// /// * `Ok(())` - All lines toggled successfully
+// /// * `Err(ToggleCommentError)` - Processing failed
+// ///
+// /// # Example
+// /// ```no_run
+// /// let lines = [5, 10, 15];
+// /// toggle_multiple_basic_comments("./src/main.rs", &lines)?;
+// /// ```
+// pub fn toggle_multiple_basic_comments(
+//     file_path: &str,
+//     line_numbers: &[usize],
+// ) -> Result<(), ToggleCommentError> {
+//     // Determine comment flag from extension
+//     let path = Path::new(file_path);
+//     let extension = match path.extension() {
+//         Some(ext) => ext.to_string_lossy().to_string(),
+//         None => return Err(ToggleCommentError::NoExtension),
+//     };
 
-    let comment_flag = match determine_comment_flag(&extension) {
-        Some(flag) => flag,
-        // // Optional halting, not recommended, will Terminate-Session
-        // #[cfg(debug_assertions)]
-        // None => return Err(ToggleCommentError::UnsupportedExtension),
+//     let comment_flag = match determine_comment_flag(&extension) {
+//         Some(flag) => flag,
+//         // // Optional halting, not recommended, will Terminate-Session
+//         // #[cfg(debug_assertions)]
+//         // None => return Err(ToggleCommentError::UnsupportedExtension),
 
-        // Nothing to do, do nothing, move on.
-        None => return Ok(()),
-    };
+//         // Nothing to do, do nothing, move on.
+//         None => return Ok(()),
+//     };
 
-    toggle_multiple_lines(file_path, line_numbers, comment_flag)
-}
+//     toggle_multiple_lines(file_path, line_numbers, comment_flag)
+// }
 
-/// Toggle Rust docstrings on multiple lines
-///
-/// # Arguments
-/// * `file_path` - Path to source file
-/// * `line_numbers` - Slice of line numbers to toggle
-///
-/// # Returns
-/// * `Ok(())` - All docstrings toggled successfully
-/// * `Err(ToggleCommentError)` - Processing failed
-///
-/// # Example
-/// ```no_run
-/// let lines = [10, 20, 30];
-/// toggle_multiple_singline_docstrings("./src/lib.rs", &lines)?;
-/// ```
-pub fn toggle_multiple_singline_docstrings(
-    file_path: &str,
-    line_numbers_list: &[usize],
-) -> Result<(), ToggleCommentError> {
-    toggle_multiple_lines(file_path, line_numbers_list, CommentFlag::TripppleSlash)
-}
+// /// Toggle Rust docstrings on multiple lines
+// ///
+// /// # Arguments
+// /// * `file_path` - Path to source file
+// /// * `line_numbers` - Slice of line numbers to toggle
+// ///
+// /// # Returns
+// /// * `Ok(())` - All docstrings toggled successfully
+// /// * `Err(ToggleCommentError)` - Processing failed
+// ///
+// /// # Example
+// /// ```no_run
+// /// let lines = [10, 20, 30];
+// /// toggle_multiple_singline_docstrings("./src/lib.rs", &lines)?;
+// /// ```
+// pub fn toggle_multiple_singline_docstrings(
+//     file_path: &str,
+//     line_numbers_list: &[usize],
+// ) -> Result<(), ToggleCommentError> {
+//     toggle_multiple_lines(file_path, line_numbers_list, CommentFlag::TripppleSlash)
+// }
 
-#[cfg(test)]
-mod batch_tests {
-    use super::*;
+// #[cfg(test)]
+// mod batch_tests {
+//     use super::*;
 
-    #[test]
-    fn test_batch_toggle_multiple_lines() {
-        let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
-        let test_file = create_test_file("test_batch.rs", content);
+//     #[test]
+//     fn test_batch_toggle_multiple_lines() {
+//         let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
+//         let test_file = create_test_file("test_batch.rs", content);
 
-        let lines = [1, 3]; // Toggle lines 1 and 3
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+//         let lines = [1, 3]; // Toggle lines 1 and 3
+//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
 
-        #[cfg(test)]
-        assert!(result.is_ok());
+//         #[cfg(test)]
+//         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        let expected = "line 0\n// line 1\nline 2\n// line 3\nline 4\n";
+//         let new_content = read_file_content(&test_file);
+//         let expected = "line 0\n// line 1\nline 2\n// line 3\nline 4\n";
 
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
+//         #[cfg(test)]
+//         assert_eq!(new_content, expected);
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_batch_test_batch.rs"),
-        ]);
-    }
+//         cleanup_files(&[
+//             &test_file,
+//             &PathBuf::from("backup_toggle_batch_test_batch.rs"),
+//         ]);
+//     }
 
-    #[test]
-    fn test_batch_toggle_unsorted_input() {
-        let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_batch_unsort.rs", content);
+//     #[test]
+//     fn test_batch_toggle_unsorted_input() {
+//         let content = "line 0\nline 1\nline 2\nline 3\n";
+//         let test_file = create_test_file("test_batch_unsort.rs", content);
 
-        let lines = [3, 1, 2]; // Unsorted input
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+//         let lines = [3, 1, 2]; // Unsorted input
+//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
 
-        #[cfg(test)]
-        assert!(result.is_ok());
+//         #[cfg(test)]
+//         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        let expected = "line 0\n// line 1\n// line 2\n// line 3\n";
+//         let new_content = read_file_content(&test_file);
+//         let expected = "line 0\n// line 1\n// line 2\n// line 3\n";
 
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
+//         #[cfg(test)]
+//         assert_eq!(new_content, expected);
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_batch_test_batch_unsort.rs"),
-        ]);
-    }
+//         cleanup_files(&[
+//             &test_file,
+//             &PathBuf::from("backup_toggle_batch_test_batch_unsort.rs"),
+//         ]);
+//     }
 
-    #[test]
-    fn test_batch_toggle_duplicates() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_batch_dup.rs", content);
+//     #[test]
+//     fn test_batch_toggle_duplicates() {
+//         let content = "line 0\nline 1\nline 2\n";
+//         let test_file = create_test_file("test_batch_dup.rs", content);
 
-        let lines = [1, 1, 1]; // Duplicates
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+//         let lines = [1, 1, 1]; // Duplicates
+//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
 
-        #[cfg(test)]
-        assert!(result.is_ok());
+//         #[cfg(test)]
+//         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        let expected = "line 0\n// line 1\nline 2\n";
+//         let new_content = read_file_content(&test_file);
+//         let expected = "line 0\n// line 1\nline 2\n";
 
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
+//         #[cfg(test)]
+//         assert_eq!(new_content, expected);
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_batch_test_batch_dup.rs"),
-        ]);
-    }
-}
+//         cleanup_files(&[
+//             &test_file,
+//             &PathBuf::from("backup_toggle_batch_test_batch_dup.rs"),
+//         ]);
+//     }
+// }
 
 /// Toggle comment on a specific line in a source code file
 ///
@@ -2919,22 +2917,6 @@ mod toggle_comment_tests {
     }
 
     #[test]
-    fn test_toggle_comment_unsupported_extension() {
-        let test_file = create_test_file("test.txt", "some content\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::UnsupportedExtension)
-        ));
-
-        // Cleanup
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
     fn test_toggle_preserves_other_lines() {
         let content = "line 0\nline 1\nline 2\n";
         let test_file = create_test_file("test_preserve.rs", content);
@@ -3140,38 +3122,38 @@ mod toggle_comment_tests {
             &PathBuf::from("backup_toggle_comment_test_upper.RS"),
         ]);
     }
-    #[test]
-    fn test_batch_empty_array() {
-        let test_file = create_test_file("test_batch_empty.rs", "line 0\n");
-        let lines: [usize; 0] = [];
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-        assert!(result.is_ok()); // Should succeed (no-op)
-        cleanup_files(&[&test_file]);
-    }
+    // #[test]
+    // fn test_batch_empty_array() {
+    //     let test_file = create_test_file("test_batch_empty.rs", "line 0\n");
+    //     let lines: [usize; 0] = [];
+    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+    //     assert!(result.is_ok()); // Should succeed (no-op)
+    //     cleanup_files(&[&test_file]);
+    // }
 
-    #[test]
-    fn test_batch_out_of_range() {
-        let test_file = create_test_file("test_batch_oob.rs", "line 0\n");
-        let lines = [100]; // Way beyond file
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::LineNotFound { .. })
-        ));
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_batch_test_batch_oob.rs"),
-        ]);
-    }
+    // #[test]
+    // fn test_batch_out_of_range() {
+    //     let test_file = create_test_file("test_batch_oob.rs", "line 0\n");
+    //     let lines = [100]; // Way beyond file
+    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+    //     assert!(matches!(
+    //         result,
+    //         Err(ToggleCommentError::LineNotFound { .. })
+    //     ));
+    //     cleanup_files(&[
+    //         &test_file,
+    //         &PathBuf::from("backup_toggle_batch_test_batch_oob.rs"),
+    //     ]);
+    // }
 
-    #[test]
-    fn test_batch_exceeds_max() {
-        let test_file = create_test_file("test_batch_max.rs", "line\n".repeat(150).as_str());
-        let lines: Vec<usize> = (0..130).collect(); // > MAX_BATCH_LINES
-        let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-        assert!(result.is_err()); // Should reject
-        cleanup_files(&[&test_file]);
-    }
+    // #[test]
+    // fn test_batch_exceeds_max() {
+    //     let test_file = create_test_file("test_batch_max.rs", "line\n".repeat(150).as_str());
+    //     let lines: Vec<usize> = (0..130).collect(); // > MAX_BATCH_LINES
+    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
+    //     assert!(result.is_err()); // Should reject
+    //     cleanup_files(&[&test_file]);
+    // }
     #[test]
     fn test_determine_block_markers() {
         assert!(determine_block_markers("rs").is_some());
@@ -4947,20 +4929,6 @@ mod range_toggle_tests {
 
         let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
         assert!(matches!(result, Err(ToggleCommentError::NoExtension)));
-
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_unsupported_extension() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_range_basic_unsupported.txt", content);
-
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::UnsupportedExtension)
-        ));
 
         cleanup_files(&[&test_file]);
     }

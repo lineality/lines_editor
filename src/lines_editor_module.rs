@@ -1311,8 +1311,7 @@ impl From<ToggleCommentError> for LinesError {
         match err {
             ToggleCommentError::FileNotFound
             | ToggleCommentError::NoExtension
-            | ToggleCommentError::UnsupportedExtension => LinesError::InvalidInput(err.to_string()),
-            ToggleCommentError::LineNotFound { .. } => LinesError::InvalidInput(err.to_string()),
+            | ToggleCommentError::LineNotFound { .. } => LinesError::InvalidInput(err.to_string()),
             ToggleCommentError::IoError(_) => {
                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
             }
@@ -3205,7 +3204,7 @@ impl WindowMapStruct {
 
         Ok(())
     }
-
+    #[cfg(test)]
     /// Retrieves the byte range for a display row
     ///
     /// # Purpose
@@ -3234,7 +3233,7 @@ impl WindowMapStruct {
 
         Ok(self.line_byte_start_end_position_pairs[row])
     }
-
+    #[cfg(test)]
     /// Checks if a file byte position is at the start of its line
     ///
     /// # Purpose
@@ -3275,7 +3274,7 @@ impl WindowMapStruct {
             }
         }
     }
-
+    #[cfg(test)]
     /// Checks if a file byte position is at the end of its line
     ///
     /// # Purpose
@@ -3351,8 +3350,7 @@ pub enum EditorMode {
     VisualSelectMode,
     /// Visual selection mode
     PastyMode,
-    /// Multi-cursor mode (ctrl+d equivalent)
-    MultiCursor,
+
     /// Hex Edict!
     HexMode,
     RawMode,
@@ -3547,7 +3545,7 @@ pub struct EditorState {
     pub selection_rowline_start: usize, // end is 'current' one
     // pub selection_rowline_end: usize,
     /// Path to .changelog file
-    pub changelog_path: Option<PathBuf>,
+    // pub changelog_path: Option<PathBuf>,
 
     /// Flag indicating if file has unsaved changes
     pub is_modified: bool,
@@ -3623,7 +3621,6 @@ impl EditorState {
             the_last_command: None,
             session_directory_path: None,
             mode: EditorMode::Normal,
-            // wrap_mode: WrapMode::Wrap,
             original_file_path: None,
             read_copy_path: None,
             effective_rows,
@@ -3632,6 +3629,7 @@ impl EditorState {
 
             window_map: WindowMapStruct::new(),
             cursor: WindowPosition { row: 0, col: 0 },
+
             // window_start: FilePosition {
             //     // for Wrap mode, if that happens
             //     byte_offset_linear_file_absolute_position: 0,
@@ -3640,8 +3638,6 @@ impl EditorState {
             // },
             selection_start: None,
             selection_rowline_start: 0,
-            // selection_rowline_end: 0,
-            changelog_path: None,
             is_modified: false,
 
             // === NEW FIELD INITIALIZATION ===
@@ -3657,13 +3653,12 @@ impl EditorState {
             // linewrap_window_topline_char_offset: 0,
             tui_window_horizontal_utf8txt_line_char_offset: 0,
             in_row_abs_horizontal_0_index_cursor_position: 2, // set to 0:0 real text postion after number
+
             // Display buffers - initialized to zero
             utf8_txt_display_buffers: [[0u8; 182]; 45],
             display_utf8txt_buffer_lengths: [0usize; 45],
             hex_cursor: HexCursor::new(),
-            // raw_cursor: RawCursor::new(),s
             eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
-            // total_file_lines: None,
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
         }
     }
@@ -6257,13 +6252,13 @@ impl EditorState {
         }
     }
 
-    /// Is this for undo change-log?
-    /// Initialize changelog for the current file
-    pub fn init_changelog(&mut self, original_file_path: &Path) -> io::Result<()> {
-        // Put changelog next to the file: "document.txt.changelog"
-        self.changelog_path = Some(original_file_path.with_extension("txt.changelog"));
-        Ok(())
-    }
+    // /// Is this for undo change-log?
+    // /// Initialize changelog for the current file
+    // pub fn init_changelog(&mut self, original_file_path: &Path) -> io::Result<()> {
+    //     // Put changelog next to the file: "document.txt.changelog"
+    //     self.changelog_path = Some(original_file_path.with_extension("txt.changelog"));
+    //     Ok(())
+    // }
 
     // /// Writes a line number into a display buffer
     // ///
@@ -6452,108 +6447,6 @@ impl EditorState {
         write_pos += 1;
 
         Ok(write_pos)
-    }
-
-    /// Checks if cursor is at the end of its current line
-    ///
-    /// # Purpose
-    /// Uses cursor position already in state to determine line end.
-    /// Used for move-right wrapping: when user presses 'l' at line end,
-    /// cursor wraps to start of next line.
-    ///
-    /// # Returns
-    /// * `Ok(true)` - Cursor is at the last byte of current line
-    /// * `Ok(false)` - Cursor is NOT at line end
-    /// * `Err(LinesError)` - Cannot determine (state error or invalid position)
-    ///
-    /// # Defensive
-    /// All lookups must succeed - returns error if data missing or invalid
-    pub fn is_cursor_at_line_end(&self) -> Result<bool> {
-        // Get line byte range for current row
-        let (_start_byte, end_byte) = self.window_map.line_byte_start_end_position_pairs
-            [self.cursor.row]
-            .ok_or_else(|| {
-                let msg = format!("Line byte range not set for row {}", self.cursor.row);
-                log_error(&msg, Some("is_cursor_at_line_end"));
-                LinesError::StateError(msg)
-            })?;
-
-        // Get cursor's file byte position
-        let cursor_byte_offset = self
-            .window_map
-            .get_row_col_file_position(self.cursor.row, self.cursor.col)?
-            .ok_or_else(|| {
-                let msg = format!(
-                    "Cursor at ({}, {}) maps to empty cell",
-                    self.cursor.row, self.cursor.col
-                );
-                log_error(&msg, Some("is_cursor_at_line_end"));
-                LinesError::StateError(msg)
-            })?
-            .byte_offset_linear_file_absolute_position;
-
-        // Defensive: cursor should never exceed line end
-        if cursor_byte_offset > end_byte {
-            let msg = format!(
-                "Cursor byte {} exceeds line end {} (row {}, col {})",
-                cursor_byte_offset, end_byte, self.cursor.row, self.cursor.col
-            );
-            log_error(&msg, Some("is_cursor_at_line_end"));
-            return Err(LinesError::StateError(msg));
-        }
-
-        Ok(cursor_byte_offset == end_byte)
-    }
-
-    /// Checks if cursor is at the start of its current line
-    ///
-    /// # Purpose
-    /// Uses cursor position already in state to determine line start.
-    /// Used for move-left wrapping: when user presses 'h' at line start,
-    /// cursor wraps to end of previous line.
-    ///
-    /// # Returns
-    /// * `Ok(true)` - Cursor is at the first byte of current line
-    /// * `Ok(false)` - Cursor is NOT at line start
-    /// * `Err(LinesError)` - Cannot determine (state error or invalid position)
-    ///
-    /// # Defensive
-    /// All lookups must succeed - returns error if data missing or invalid
-    pub fn is_cursor_at_line_start(&self) -> Result<bool> {
-        // Get line byte range for current row
-        let (start_byte, _end_byte) = self.window_map.line_byte_start_end_position_pairs
-            [self.cursor.row]
-            .ok_or_else(|| {
-                let msg = format!("Line byte range not set for row {}", self.cursor.row);
-                log_error(&msg, Some("is_cursor_at_line_start"));
-                LinesError::StateError(msg)
-            })?;
-
-        // Get cursor's file byte position
-        let cursor_byte_offset = self
-            .window_map
-            .get_row_col_file_position(self.cursor.row, self.cursor.col)?
-            .ok_or_else(|| {
-                let msg = format!(
-                    "Cursor at ({}, {}) maps to empty cell",
-                    self.cursor.row, self.cursor.col
-                );
-                log_error(&msg, Some("is_cursor_at_line_start"));
-                LinesError::StateError(msg)
-            })?
-            .byte_offset_linear_file_absolute_position;
-
-        // Defensive: cursor should never be before line start
-        if cursor_byte_offset < start_byte {
-            let msg = format!(
-                "Cursor byte {} is before line start {} (row {}, col {})",
-                cursor_byte_offset, start_byte, self.cursor.row, self.cursor.col
-            );
-            log_error(&msg, Some("is_cursor_at_line_start"));
-            return Err(LinesError::StateError(msg));
-        }
-
-        Ok(cursor_byte_offset == start_byte)
     }
 }
 
@@ -7243,52 +7136,52 @@ pub mod double_width {
         false
     }
 
-    /// Calculates the display width of a string in terminal columns.
-    ///
-    /// # Arguments
-    /// * `text` - The text to measure
-    ///
-    /// # Returns
-    /// * `Option<usize>` - The width in terminal columns, or None if calculation fails
-    ///
-    /// # Examples
-    /// ```
-    /// assert_eq!(calculate_display_width("Hello"), Some(5));
-    /// assert_eq!(calculate_display_width("你好"), Some(4)); // Two double-width characters
-    /// assert_eq!(calculate_display_width("Hello世界"), Some(9)); // 5 + 2*2
-    /// ```
-    ///
-    /// # Error Handling
-    /// Returns `None` if:
-    /// - The string contains invalid UTF-8 (shouldn't happen with Rust strings)
-    /// - Integer overflow occurs (extremely long strings)
-    pub fn calculate_display_width(text: &str) -> Option<usize> {
-        let mut width = 0usize;
-        let mut char_count = 0;
-        const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2 TODO: math other MAX_CHARS?
+    // /// Calculates the display width of a string in terminal columns.
+    // ///
+    // /// # Arguments
+    // /// * `text` - The text to measure
+    // ///
+    // /// # Returns
+    // /// * `Option<usize>` - The width in terminal columns, or None if calculation fails
+    // ///
+    // /// # Examples
+    // /// ```
+    // /// assert_eq!(calculate_display_width("Hello"), Some(5));
+    // /// assert_eq!(calculate_display_width("你好"), Some(4)); // Two double-width characters
+    // /// assert_eq!(calculate_display_width("Hello世界"), Some(9)); // 5 + 2*2
+    // /// ```
+    // ///
+    // /// # Error Handling
+    // /// Returns `None` if:
+    // /// - The string contains invalid UTF-8 (shouldn't happen with Rust strings)
+    // /// - Integer overflow occurs (extremely long strings)
+    // pub fn calculate_display_width(text: &str) -> Option<usize> {
+    //     let mut width = 0usize;
+    //     let mut char_count = 0;
+    //     const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2 TODO: math other MAX_CHARS?
 
-        for c in text.chars() {
-            // Prevent infinite loops with character count limit
-            if char_count >= MAX_CHARS {
-                return None;
-            }
-            char_count += 1;
+    //     for c in text.chars() {
+    //         // Prevent infinite loops with character count limit
+    //         if char_count >= MAX_CHARS {
+    //             return None;
+    //         }
+    //         char_count += 1;
 
-            // Add 2 for double-width, 1 for single-width
-            let char_width = if is_double_width(c) { 2 } else { 1 };
+    //         // Add 2 for double-width, 1 for single-width
+    //         let char_width = if is_double_width(c) { 2 } else { 1 };
 
-            // Check for overflow before adding
-            width = width.checked_add(char_width)?;
-        }
+    //         // Check for overflow before adding
+    //         width = width.checked_add(char_width)?;
+    //     }
 
-        // Defensive assertion: result should be reasonable
-        debug_assert!(
-            width <= text.len() * 2,
-            "Display width should not exceed twice the byte length"
-        );
+    //     // Defensive assertion: result should be reasonable
+    //     debug_assert!(
+    //         width <= text.len() * 2,
+    //         "Display width should not exceed twice the byte length"
+    //     );
 
-        Some(width)
-    }
+    //     Some(width)
+    // }
 }
 
 /// Seeks to a specific line number in the file and returns the byte position
@@ -14845,145 +14738,6 @@ fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io
     Ok(())
 }
 
-/// Deletes single byte at specific file position
-///
-/// # Overview
-///
-/// This helper function removes one byte from a file by shifting all subsequent
-/// bytes left by one position, then truncating the file to new length.
-///
-/// **Operation:**
-/// ```text
-/// Before: [A B C D E F]
-///         Delete byte at position 3
-/// After:  [A B C E F]
-///                 ↑ D removed, E shifted left
-/// ```
-///
-/// # Memory Safety - Stack Allocated Buffer
-///
-/// Uses 8KB stack buffer for shifting bytes after deletion point.
-/// - No heap allocation for data processing
-/// - Fixed-size buffer regardless of file size
-/// - If file has > 8KB after deletion point, shifts occur in 8KB chunks
-///
-/// # Arguments
-///
-/// * `file_path` - Path to target file (read+write access required)
-/// * `position` - Byte offset to delete (0 = first byte, file_size-1 = last byte)
-///
-/// # Returns
-///
-/// * `Ok(())` - Byte deleted successfully, file shortened by 1 byte
-/// * `Err(io::Error)` - File operation failed (open, seek, read, write, truncate, flush)
-///
-/// # Algorithm
-///
-/// 1. Open file in read+write mode
-/// 2. Seek to position+1 (first byte to keep)
-/// 3. Read bytes after deletion point into buffer (up to 8KB)
-/// 4. Seek back to deletion position
-/// 5. Write shifted bytes (from buffer)
-/// 6. Truncate file to new length (original - 1 byte)
-/// 7. Flush to ensure data written to disk
-///
-/// # Edge Cases
-///
-/// **Delete last byte (position == file_size - 1):**
-/// - Read after position+1 returns 0 bytes
-/// - Nothing to shift
-/// - File truncated by 1 byte
-/// - Most efficient case
-///
-/// **Delete first byte (position == 0):**
-/// - Reads entire file into buffer (up to 8KB)
-/// - Writes at position 0 (original position 1 bytes)
-/// - All bytes shifted left
-/// - Most expensive case
-///
-/// **Delete with > 8KB after deletion point:**
-/// - Only first 8KB shifted
-/// - **BUG:** Bytes beyond 8KB not shifted, file corrupted
-/// - Should loop-shift in chunks
-/// - Current implementation assumes remaining bytes < 8KB
-///
-/// **Delete beyond EOF (position >= file_size):**
-/// - Read returns 0 bytes
-/// - Write does nothing
-/// - Truncate sets file size to position (might grow file!)
-/// - Unexpected behavior - should validate position < file_size
-///
-/// **Empty file (file_size == 0):**
-/// - Any position is invalid
-/// - Read returns 0 bytes
-/// - Truncate sets size to position (creates zero-byte file)
-/// - Should error if file empty
-///
-/// # Defensive Programming
-///
-/// - No unwrap calls
-/// - All I/O operations explicitly error-checked
-/// - Truncate ensures file size reflects deletion
-/// - Flush called to ensure disk write
-///
-/// # Performance
-///
-/// - **Time:** O(M) where M = bytes after deletion point (up to 8KB)
-/// - **Space:** O(1) - fixed 8KB stack buffer
-/// - **I/O:** 1 read, 2 seeks, 1 write, 1 truncate, 1 flush = 6 operations
-/// - Not optimized for repeated deletions (each call shifts independently)
-///
-/// # Known Limitations
-///
-/// **8KB shift buffer limit:**
-/// If file has > 8KB bytes after deletion point:
-/// - Only first 8KB shifted correctly
-/// - Data beyond 8KB lost
-/// - Should loop to shift all remaining bytes
-///
-/// **No validation:**
-/// Doesn't check if position is valid (< file_size)
-/// Invalid position causes undefined behavior
-///
-/// **No atomic operation:**
-/// If write or truncate fails mid-operation, file left inconsistent.
-/// No rollback mechanism.
-///
-/// # See Also
-///
-/// * `insert_bytes_at_position()` - Inverse operation (adds bytes)
-/// * `insert_file_at_cursor()` - Caller that uses this for final byte removal
-fn delete_byte_at_position(file_path: &Path, position: u64) -> io::Result<()> {
-    // Open file for read+write
-    // Requires file already exists
-    let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
-
-    // Pre-allocated buffer for bytes after deletion point
-    // 8KB chosen as balance between stack usage and shift efficiency
-    const BUFFER_SIZE: usize = 8192;
-    let mut after_buffer = [0u8; BUFFER_SIZE];
-
-    // Seek to position+1 (skip the byte being deleted)
-    // Read bytes that need to be shifted left
-    file.seek(SeekFrom::Start(position + 1))?;
-    let bytes_after = file.read(&mut after_buffer)?;
-
-    // Seek back to deletion position
-    // Write the shifted bytes starting at deletion position
-    file.seek(SeekFrom::Start(position))?;
-    file.write_all(&after_buffer[..bytes_after])?;
-
-    // Truncate file to new length (original size - 1 byte)
-    // This removes the duplicate byte at end that resulted from shift-left
-    let new_length = position + bytes_after as u64;
-    file.set_len(new_length)?;
-
-    // Flush to ensure data written to disk
-    file.flush()?;
-
-    Ok(())
-}
-
 /// Inserts a chunk of text at cursor position using file operations
 ///
 /// # Overview
@@ -17023,7 +16777,6 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
         EditorMode::Insert => "INSERT",
         EditorMode::VisualSelectMode => "VISUAL",
         EditorMode::PastyMode => "PASTY",
-        EditorMode::MultiCursor => "MULTI",
         EditorMode::HexMode => "HEX",
         EditorMode::RawMode => "RAW",
     };

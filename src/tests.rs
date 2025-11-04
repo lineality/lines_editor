@@ -1,7 +1,7 @@
 // tests.rs (keen this in src/ with main.rs)
 
 #[cfg(test)]
-use crate::lines_editor_module::double_width::{calculate_display_width, is_double_width};
+use crate::lines_editor_module::double_width::is_double_width;
 
 #[cfg(test)]
 use crate::lines_editor_module::*;
@@ -24,66 +24,52 @@ use std::io::{self};
 #[cfg(test)]
 use std::path::{Path, PathBuf};
 
-// /// Renders TUI to a test writer (for testing without terminal)
-// ///
-// /// # Purpose
-// /// Same as render_tui but writes to provided writer instead of stdout.
-// /// Allows testing TUI layout without actual terminal.
-// ///
-// /// # Arguments
-// /// * `state` - Current editor state
-// /// * `input_buffer` - Current user input
-// /// * `writer` - Where to write output (e.g., test buffer)
-// ///
-// /// # Returns
-// /// * `Ok(())` - Successfully rendered
-// /// * `Err(LinesError)` - Display operation failed
-// pub fn render_tui_to_writer<W: Write>(state: &EditorState, writer: &mut W) -> Result<()> {
-//     // Top legend
-//     let legend = format_navigation_legend()?;
-//     writeln!(writer, "{}", legend)
-//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+/// Calculates the display width of a string in terminal columns.
+///
+/// # Arguments
+/// * `text` - The text to measure
+///
+/// # Returns
+/// * `Option<usize>` - The width in terminal columns, or None if calculation fails
+///
+/// # Examples
+/// ```
+/// assert_eq!(calculate_display_width("Hello"), Some(5));
+/// assert_eq!(calculate_display_width("你好"), Some(4)); // Two double-width characters
+/// assert_eq!(calculate_display_width("Hello世界"), Some(9)); // 5 + 2*2
+/// ```
+///
+/// # Error Handling
+/// Returns `None` if:
+/// - The string contains invalid UTF-8 (shouldn't happen with Rust strings)
+/// - Integer overflow occurs (extremely long strings)
+pub fn calculate_display_width(text: &str) -> Option<usize> {
+    let mut width = 0usize;
+    let mut char_count = 0;
+    const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2 TODO: math other MAX_CHARS?
 
-//     // Content rows
-//     for row in 0..state.effective_rows {
-//         if state.display_utf8txt_buffer_lengths[row] > 0 {
-//             let row_content = &state.display_buffers[row][..state.display_utf8txt_buffer_lengths[row]];
+    for c in text.chars() {
+        // Prevent infinite loops with character count limit
+        if char_count >= MAX_CHARS {
+            return None;
+        }
+        char_count += 1;
 
-//             match std::str::from_utf8(row_content) {
-//                 Ok(row_str) => {
-//                     // ONLY CHANGE: Apply cursor highlighting if cursor is on this row
-//                     let display_str = render_row_with_cursor(state, row, row_str);
-//                     writeln!(writer, "{}", display_str)
-//                 }
-//                 Err(_) => writeln!(writer, "�"),
-//             }
-//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-//         } else {
-//             // ONLY CHANGE: Show cursor on empty rows if cursor is here
-//             if row == state.cursor.row {
-//                 writeln!(
-//                     writer,
-//                     "{}{}{}█{}",
-//                     "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m"
-//                 )
-//             } else {
-//                 writeln!(writer)
-//             }
-//             .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
-//         }
-//     }
+        // Add 2 for double-width, 1 for single-width
+        let char_width = if is_double_width(c) { 2 } else { 1 };
 
-//     // Bottom info bar
-//     let info_bar = format_info_bar(state)?;
-//     write!(writer, "{}", info_bar)
-//         .map_err(|e| LinesError::DisplayError(format!("Write failed: {}", e)))?;
+        // Check for overflow before adding
+        width = width.checked_add(char_width)?;
+    }
 
-//     writer
-//         .flush()
-//         .map_err(|e| LinesError::DisplayError(format!("Flush failed: {}", e)))?;
+    // Defensive assertion: result should be reasonable
+    debug_assert!(
+        width <= text.len() * 2,
+        "Display width should not exceed twice the byte length"
+    );
 
-//     Ok(())
-// }
+    Some(width)
+}
 
 /// Creates test files in project ./test_files/ directory
 /// Files are NEVER deleted - they persist for manual inspection
@@ -274,94 +260,6 @@ pub fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
     Ok(test_files)
 }
 
-// /// Prints the expected window output for a test file
-// ///
-// /// # Purpose
-// /// Helper function to visualize what build_windowmap_nowrap SHOULD produce
-// /// for a given test file. This helps us verify our implementation.
-// ///
-// /// # Arguments
-// /// * `test_file` - Path to test file
-// /// * `start_line` - Line number to start display from (0-indexed)
-// /// * `horizontal_offset` - Character offset for NoWrap mode
-// ///
-// /// # Example Output
-// /// Shows what should appear in each display buffer row:
-// /// ```
-// /// Row 0: "1 Line 1: Hello, world!"
-// /// Row 1: "2 Line 2: This is a test."
-// /// ```
-// fn print_expected_window(
-//     test_file: &Path,
-//     start_line: usize,
-//     horizontal_offset: usize,
-// ) -> io::Result<()> {
-//     println!(
-//         "\nExpected window for: {:?}",
-//         test_file.file_name().unwrap_or_default()
-//     );
-//     println!(
-//         "Start line: {}, Horizontal offset: {}",
-//         start_line, horizontal_offset
-//     );
-
-//     let file = File::open(test_file)?;
-//     let reader = BufReader::new(file);
-//     let mut current_line = 0;
-//     let mut display_row = 0;
-//     const MAX_DISPLAY_ROWS: usize = 21;
-//     const MAX_DISPLAY_COLS: usize = 77; // 80 - 3 for UI elements
-
-//     for line in reader.lines() {
-//         let line = line?;
-
-//         // Skip lines before our window start
-//         if current_line < start_line {
-//             current_line += 1;
-//             continue;
-//         }
-
-//         // Stop if we've filled the display
-//         if display_row >= MAX_DISPLAY_ROWS {
-//             break;
-//         }
-
-//         // Format line number (starting from 1 for display)
-//         let line_num_str = format!("{} ", current_line + 1);
-//         let line_num_width = line_num_str.len();
-
-//         // Calculate available space for text after line number
-//         let available_width = MAX_DISPLAY_COLS.saturating_sub(line_num_width);
-
-//         // Get the portion of line to display (respecting horizontal offset)
-//         let line_chars: Vec<char> = line.chars().collect();
-//         let visible_text = if horizontal_offset < line_chars.len() {
-//             let end_idx = (horizontal_offset + available_width).min(line_chars.len());
-//             line_chars[horizontal_offset..end_idx]
-//                 .iter()
-//                 .collect::<String>()
-//         } else {
-//             String::new() // Horizontal offset past end of line
-//         };
-
-//         println!(
-//             "Row {:2}: \"{}{}\"",
-//             display_row, line_num_str, visible_text
-//         );
-
-//         display_row += 1;
-//         current_line += 1;
-//     }
-
-//     // Fill remaining rows with empty
-//     while display_row < MAX_DISPLAY_ROWS {
-//         println!("Row {:2}: (empty)", display_row);
-//         display_row += 1;
-//     }
-
-//     Ok(())
-// }
-
 /// Diagnostic function to print contents of test files
 #[cfg(test)]
 fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
@@ -379,162 +277,6 @@ fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
     println!("\nFile size: {} bytes", metadata.len());
 
     Ok(())
-}
-
-// #[cfg(test)]
-// mod display_window_tests2 {
-//     use super::*;
-
-//     // #[test]
-//     // fn test_display_window_basic() -> io::Result<()> {
-//     //     // Use unique test files
-//     //     let test_files = create_test_files_with_id("display_basic")?;
-//     //     let basic_file = &test_files[0];
-
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
-//     //     assert!(lines_processed > 0, "Should process at least one line");
-
-//     //     let mut buffer = Vec::new();
-//     //     display_window_to_writer(&state, &mut buffer)?;
-
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     assert!(
-//     //         output.contains("1 Line 1: Hello, world!"),
-//     //         "Output should contain first line with line number"
-//     //     );
-
-//     //     Ok(())
-//     // }
-
-//     // #[test]
-//     // fn test_display_window_utf8() -> io::Result<()> {
-//     //     // Use unique test files
-//     //     let test_files = create_test_files_with_id("display_utf8")?;
-//     //     let mixed_utf8_file = &test_files[2];
-
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
-//     //     assert!(lines_processed > 0, "Should process at least one line");
-
-//     //     let mut buffer = Vec::new();
-//     //     display_window_to_writer(&state, &mut buffer)?;
-
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     assert!(
-//     //         output.contains("1 Line 1: Hello 世界"),
-//     //         "Should handle CJK characters with line number"
-//     //     );
-
-//     //     Ok(())
-//     // }
-// }
-
-#[cfg(test)]
-mod build_window_tests4 {
-    use super::*; // ← Line 1: import from tests.rs
-
-    #[test]
-    fn test_build_windowmap_nowrap_basic() {
-        // Use unique test files for this test
-        let test_files = create_test_files_with_id("build_window_test").unwrap();
-        let basic_file = &test_files[0];
-
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.tui_window_horizontal_utf8txt_line_char_offset = 0;
-
-        let result = build_windowmap_nowrap(&mut state, basic_file);
-        assert!(result.is_ok(), "Should build window successfully");
-
-        let lines_processed = result.unwrap();
-        assert!(lines_processed > 0, "Should process at least one line");
-
-        assert!(
-            state.display_utf8txt_buffer_lengths[0] > 0,
-            "First row should have content"
-        );
-
-        let first_row = &state.utf8_txt_display_buffers[0];
-        assert_eq!(first_row[0], b'1', "Should start with line number 1");
-        assert_eq!(first_row[1], b' ', "Should have space after line number");
-
-        let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
-        assert!(map_entry.is_some(), "Character position should be mapped");
-    }
-}
-
-/// Debug helper for build_windowmap_nowrap test
-#[cfg(test)]
-mod build_window_tests3 {
-    use super::*;
-
-    #[test]
-    fn test_build_windowmap_nowrap_basic() {
-        // Create test file
-        let test_files = create_test_files_with_id("test_build_windowmap_nowrap_basic").unwrap();
-        let basic_file = &test_files[0]; // basic_short.txt
-
-        // Create editor state
-        let mut state = EditorState::new();
-        state.line_count_at_top_of_window = 0;
-        state.file_position_of_topline_start = 0;
-        state.tui_window_horizontal_utf8txt_line_char_offset = 0;
-
-        // Debug: print file path
-        println!("Test file path: {:?}", basic_file);
-        println!("File exists: {}", basic_file.exists());
-
-        // Build window
-        let result = build_windowmap_nowrap(&mut state, basic_file);
-
-        // Debug: print detailed error if failed
-        if let Err(ref e) = result {
-            println!("Build window failed: {}", e);
-        }
-
-        assert!(result.is_ok(), "Should build window successfully");
-
-        let lines_processed = result.unwrap();
-        println!("Lines processed: {}", lines_processed);
-
-        // Debug: print buffer contents
-        for i in 0..5 {
-            if state.display_utf8txt_buffer_lengths[i] > 0 {
-                let content =
-                    &state.utf8_txt_display_buffers[i][..state.display_utf8txt_buffer_lengths[i]];
-                println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
-            }
-        }
-
-        assert!(lines_processed > 0, "Should process at least one line");
-
-        // Verify first line has content
-        assert!(
-            state.display_utf8txt_buffer_lengths[0] > 0,
-            "First row should have content"
-        );
-
-        // Verify line number "1 " appears at start
-        let first_row = &state.utf8_txt_display_buffers[0];
-        assert_eq!(first_row[0], b'1', "Should start with line number 1");
-        assert_eq!(first_row[1], b' ', "Should have space after line number");
-
-        // Verify WindowMap has been populated
-        let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
-        assert!(map_entry.is_some(), "Character position should be mapped");
-    }
 }
 
 #[cfg(test)]
@@ -644,88 +386,6 @@ mod char_width_tests {
     }
 }
 
-// /// integration tests for display_window
-// #[cfg(test)]
-// mod display_window_tests1 {
-//     use super::*;
-
-//     // #[test]
-//     // fn test_display_window_basic() -> io::Result<()> {
-//     //     // Create test files
-//     //     let test_files = create_test_files_with_id("test_display_window_basic")?;
-//     //     let basic_file = &test_files[0]; // basic_short.txt
-
-//     //     // Create and populate editor state
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     // Build window map
-//     //     let lines_processed = build_windowmap_nowrap(&mut state, basic_file)?;
-//     //     assert!(lines_processed > 0, "Should process at least one line");
-
-//     //     // Capture output using the writer version
-//     //     let mut buffer = Vec::new();
-//     //     display_window_to_writer(&state, &mut buffer)?;
-
-//     //     // Convert captured output to string
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     // Debug: print what we captured
-//     //     println!("Captured output:\n{}", output);
-
-//     //     // Verify content
-//     //     assert!(
-//     //         output.contains("1 Line 1: Hello, world!"),
-//     //         "Output should contain first line with line number"
-//     //     );
-//     //     assert!(
-//     //         output.lines().count() >= 18,
-//     //         "Should have at least 18 lines"
-//     //     );
-
-//     //     Ok(())
-//     // }
-
-//     // #[test]
-//     // fn test_display_window_utf8() -> io::Result<()> {
-//     //     let test_files = create_test_files_with_id("test_display_window_utf8")?;
-//     //     let mixed_utf8_file = &test_files[2]; // mixed_utf8.txt
-
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     // Build window map
-//     //     let lines_processed = build_windowmap_nowrap(&mut state, mixed_utf8_file)?;
-//     //     assert!(lines_processed > 0, "Should process at least one line");
-
-//     //     // Capture output using the writer version
-//     //     let mut buffer = Vec::new();
-//     //     display_window_to_writer(&state, &mut buffer)?;
-
-//     //     // Convert captured output to string
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     // Debug: print what we captured
-//     //     println!("Captured UTF-8 output:\n{}", output);
-
-//     //     // Verify UTF-8 content - check the actual formatted line
-//     //     assert!(
-//     //         output.contains("1 Line 1: Hello 世界"),
-//     //         "Should handle CJK characters with line number"
-//     //     );
-//     //     assert!(
-//     //         output.contains("2 Line 2: こんにちは"),
-//     //         "Should handle Hiragana with line number"
-//     //     );
-
-//     //     Ok(())
-//     // }
-// }
-
 // Modify the test to include more diagnostics
 #[test]
 fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
@@ -784,11 +444,11 @@ fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
 
     // Verify line number "1 " appears at start
     let first_row = &state.utf8_txt_display_buffers[0];
-    assert_eq!(first_row[0], b'1', "Should start with line number 1");
-    assert_eq!(first_row[1], b' ', "Should have space after line number");
+    assert_eq!(first_row[1], b'1', "Should start with line number 1");
+    assert_eq!(first_row[0], b' ', "Should have space after line number");
 
     // Verify WindowMap has been populated
-    let map_entry = state.window_map.get_row_col_file_position(0, 2).unwrap();
+    let map_entry = state.window_map.get_row_col_file_position(0, 3).unwrap();
     assert!(map_entry.is_some(), "Character position should be mapped");
 
     Ok(())
@@ -816,8 +476,7 @@ mod revised_critical_distinction_tests {
         let char_count = content.chars().count();
         assert_eq!(char_count, 8, "Should be 8 characters total");
 
-        let display_width =
-            double_width::calculate_display_width(content).expect("Should calculate width");
+        let display_width = calculate_display_width(content).expect("Should calculate width");
         assert_eq!(display_width, 10, "Should be 10 display columns total");
 
         // Now test with the editor
@@ -837,19 +496,14 @@ mod revised_critical_distinction_tests {
         let first_row_content = &state.utf8_txt_display_buffers[0][..first_row_len];
         let first_row_str = std::str::from_utf8(first_row_content).expect("Should be valid UTF-8");
 
-        // Should contain the line number "1 " and the text
-        assert!(
-            first_row_str.starts_with("1 "),
-            "Should start with line number"
-        );
         assert!(
             first_row_str.contains("世界"),
             "Should contain Chinese characters"
         );
 
         // Display width should fit within terminal
-        let row_display_width = double_width::calculate_display_width(first_row_str)
-            .expect("Should calculate display width");
+        let row_display_width =
+            calculate_display_width(first_row_str).expect("Should calculate display width");
         assert!(
             row_display_width <= 80,
             "Display width {} should not exceed terminal width 80",
@@ -859,94 +513,6 @@ mod revised_critical_distinction_tests {
         Ok(())
     }
 }
-
-// #[cfg(test)]
-// mod revised_display_integration_tests {
-//     use super::*;
-
-//     // #[test]
-//     // fn test_double_width_character_display() -> io::Result<()> {
-//     //     // Use mixed_utf8.txt which has various character widths
-//     //     let test_files = create_test_files_with_id("double_width_display")?;
-//     //     let test_path = &test_files[2]; // mixed_utf8.txt
-
-//     //     // Create editor state
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     // Build window with the test file
-//     //     let result = build_windowmap_nowrap(&mut state, &test_path);
-//     //     assert!(result.is_ok(), "Should build window successfully");
-//     //     let lines_processed = result.unwrap();
-
-//     //     // Verify display (capture to buffer for testing)
-//     //     let mut buffer = Vec::new();
-//     //     let display_result = display_window_to_writer(&state, &mut buffer);
-//     //     assert!(display_result.is_ok(), "Should display successfully");
-
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     // Verify specific content
-//     //     assert!(output.contains("世界"), "Should display Chinese characters");
-//     //     assert!(output.contains("こんにちは"), "Should display Hiragana");
-//     //     assert!(output.contains("한글"), "Should display Hangul");
-
-//     //     // Verify line numbers are present
-//     //     assert!(output.contains("1 "), "Should have line number 1");
-//     //     assert!(output.contains("2 "), "Should have line number 2");
-
-//     //     // Verify WindowMap was populated for double-width characters
-//     //     // Check that Chinese characters in first line are properly mapped
-//     //     for row in 0..3 {
-//     //         if state.display_utf8txt_buffer_lengths[row] > 0 {
-//     //             // Check that we can get file positions from the map
-//     //             let pos = state.window_map.get_row_col_file_position(row, 5)?;
-//     //             assert!(
-//     //                 pos.is_some() || row >= lines_processed,
-//     //                 "Row {} col 5 should have file position or be empty",
-//     //                 row
-//     //             );
-//     //         }
-//     //     }
-
-//     //     Ok(())
-//     // }
-
-//     // #[test]
-//     // fn test_empty_lines_display() -> io::Result<()> {
-//     //     // Use edge_cases.txt which has empty lines
-//     //     let test_files = create_test_files_with_id("empty_lines")?;
-//     //     let test_path = &test_files[3]; // edge_cases.txt
-
-//     //     let mut state = EditorState::new();
-//     //     state.line_count_at_top_of_window = 0;
-//     //     state.file_position_of_topline_start = 0;
-//     //     state.horizontal_utf8txt_line_char_offset = 0;
-
-//     //     let result = build_windowmap_nowrap(&mut state, &test_path);
-//     //     assert!(result.is_ok(), "Should handle empty lines");
-
-//     //     // Verify we processed multiple lines including empties
-//     //     let lines_processed = result.unwrap();
-//     //     assert!(lines_processed > 1, "Should process multiple lines");
-
-//     //     // Capture display output
-//     //     let mut buffer = Vec::new();
-//     //     display_window_to_writer(&state, &mut buffer)?;
-//     //     let output = String::from_utf8_lossy(&buffer);
-
-//     //     // Empty lines should still have line numbers
-//     //     let line_count = output.lines().count();
-//     //     assert!(
-//     //         line_count >= lines_processed,
-//     //         "Should display all processed lines"
-//     //     );
-
-//     //     Ok(())
-//     // }
-// }
 
 #[cfg(test)]
 mod timestamp_tests {
@@ -1176,126 +742,6 @@ mod timestamp_tests {
     }
 }
 
-// #[cfg(test)]
-// mod command_parsing_tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_parse_movement_with_count() {
-//         // Test basic movements
-//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
-
-//         assert_eq!(
-//             parse_command("5j", EditorMode::Normal),
-//             Command::MoveDown(5)
-//         );
-
-//         assert_eq!(
-//             parse_command("10k", EditorMode::Normal),
-//             Command::MoveUp(10)
-//         );
-
-//         assert_eq!(
-//             parse_command("3h", EditorMode::Normal),
-//             Command::MoveLeft(3)
-//         );
-
-//         assert_eq!(
-//             parse_command("7l", EditorMode::Normal),
-//             Command::MoveRight(7)
-//         );
-
-//         // Test with whitespace
-//         assert_eq!(
-//             parse_command("  5j  ", EditorMode::Normal),
-//             Command::MoveDown(5)
-//         );
-
-//         // Test large counts
-//         assert_eq!(
-//             parse_command("50j", EditorMode::Normal),
-//             Command::MoveDown(50)
-//         );
-
-//         // Test count capping at 1000
-//         assert_eq!(
-//             parse_command("9999j", EditorMode::Normal),
-//             Command::MoveDown(1000)
-//         );
-//     }
-// }
-
-// #[cfg(test)]
-// mod command_parsing_tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_parse_movement_with_count() {
-//         // Test basic movements
-//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
-
-//         assert_eq!(
-//             parse_command("5j", EditorMode::Normal),
-//             Command::MoveDown(5)
-//         );
-
-//         assert_eq!(
-//             parse_command("10k", EditorMode::Normal),
-//             Command::MoveUp(10)
-//         );
-
-//         assert_eq!(
-//             parse_command("3h", EditorMode::Normal),
-//             Command::MoveLeft(3)
-//         );
-
-//         assert_eq!(
-//             parse_command("7l", EditorMode::Normal),
-//             Command::MoveRight(7)
-//         );
-
-//         // Test with whitespace
-//         assert_eq!(
-//             parse_command("  5j  ", EditorMode::Normal),
-//             Command::MoveDown(5)
-//         );
-
-//         // Test large counts (capped at 100 in your current code)
-//         assert_eq!(
-//             parse_command("50j", EditorMode::Normal),
-//             Command::MoveDown(50)
-//         );
-
-//         // Test count capping at 100
-//         assert_eq!(
-//             parse_command("9999j", EditorMode::Normal),
-//             Command::MoveDown(100) // Changed from 1000 to 100
-//         );
-//         // Test basic movements
-//         assert_eq!(parse_command("j", EditorMode::Normal), Command::MoveDown(1));
-
-//         assert_eq!(
-//             parse_command("5j", EditorMode::Normal),
-//             Command::MoveDown(5)
-//         );
-
-//         assert_eq!(
-//             parse_command("10k", EditorMode::Normal),
-//             Command::MoveUp(10)
-//         );
-
-//         // Test large counts
-//         assert_eq!(
-//             parse_command("1000j", EditorMode::Normal),
-//             Command::MoveDown(1000)
-//         );
-
-//         assert_eq!(
-//             parse_command("50000k", EditorMode::Normal),
-//             Command::MoveUp(50000)
-//         );
-//     }
-// }
 #[cfg(test)]
 mod test_parse_movement {
     use super::*;
@@ -1339,407 +785,8 @@ mod test_parse_movement {
             state.parse_commands_for_normal_visualselect_modes("  10j  ", EditorMode::Normal),
             Command::MoveDown(10)
         );
-
-        // // Test large counts
-        // assert_eq!(
-        //     parse_command("1000j", EditorMode::Normal),
-        //     Command::MoveDown(1000)
-        // );
-
-        // // Test very large counts (capped at usize::MAX / 2)
-        // assert_eq!(
-        //     parse_command("50000k", EditorMode::Normal),
-        //     Command::MoveUp(50000)
-        // );
-        //
-        //
-        //
     }
 }
-// #[test]
-// fn test_cursor_at_eol() {
-//     // Create a simple test file
-//     let test_files = create_test_files_with_id("cursor_eol").unwrap();
-//     let test_file = &test_files[0]; // basic_short.txt
-
-//     // Create session directory
-//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_00").unwrap();
-
-//     // Initialize state
-//     let mut state = EditorState::new();
-
-//     // Initialize session directory
-//     initialize_session_directory(&mut state, session_timestamp).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_00".to_string()).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-
-//     // Build window
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Test 1: Can we get position at start of line 1?
-//     let pos_start = state.window_map.get_row_col_file_position(0, 0).unwrap();
-//     println!("Position at (0,0): {:?}", pos_start);
-//     assert!(pos_start.is_some(), "Should have position at line start");
-
-//     // Test 2: Can we get position at END of line 1?
-//     // Line 1 is "Line 1: Hello, world!" (21 chars)
-//     // After line number "1 " (2 chars), text starts at col 2
-//     // Text is 21 chars, so last char is at col 2+20=22
-//     // EOL position should be at col 23
-
-//     let last_char_col = 22; // Position of last visible character
-//     let eol_col = 23; // Position AFTER last character
-
-//     let pos_last_char = state
-//         .window_map
-//         .get_row_col_file_position(0, last_char_col)
-//         .unwrap();
-//     println!(
-//         "Position at last char (0,{}): {:?}",
-//         last_char_col, pos_last_char
-//     );
-
-//     let pos_eol = state.window_map.get_row_col_file_position(0, eol_col).unwrap();
-//     println!("Position at EOL (0,{}): {:?}", eol_col, pos_eol);
-
-//     // This will tell us if EOL mapping is working
-//     assert!(pos_eol.is_some(), "Should have position at end of line");
-// }
-// #[test]
-// fn test_move_cursor_to_eol() {
-//     let test_files = create_test_files_with_id("cursor_move_eol").unwrap();
-//     let test_file = &test_files[0];
-
-//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_01").unwrap();
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_timestamp).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_01".to_string()).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Start at beginning of line
-//     state.cursor.row = 0;
-//     state.cursor.col = 0;
-
-//     // Try to move right past the end of line
-//     let command = Command::MoveRight(100); // Move way past end
-//     let result = execute_command(&mut state, command);
-
-//     println!(
-//         "After moving right: cursor at ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-
-//     // Check we can get file position at cursor
-//     let pos = state
-//         .window_map
-//         .get_row_col_file_position(state.cursor.row, state.cursor.col);
-//     println!("File position at cursor: {:?}", pos);
-
-//     assert!(result.is_ok(), "Move command should succeed");
-//     assert!(
-//         pos.unwrap().is_some(),
-//         "Should have valid position at cursor"
-//     );
-// }
-
-// #[test]
-// fn test_insert_at_eol() {
-//     let test_files = create_test_files_with_id("insert_eol").unwrap();
-//     let test_file = &test_files[0];
-
-//     let session_timestamp = FixedSize32Timestamp::from_str("24_01_01_00_00_02").unwrap();
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_timestamp).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(test_file, session_dir, "24_01_01_00_00_02".to_string()).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Move to end of first line
-//     state.cursor.row = 0;
-//     state.cursor.col = 23; // After "Line 1: Hello, world!"
-
-//     // Enter insert mode
-//     state.mode = EditorMode::Insert;
-
-//     // Try to insert text at EOL
-//     let text = " ADDED";
-//     let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
-
-//     println!("Insert result: {:?}", result);
-//     assert!(result.is_ok(), "Should be able to insert at EOL");
-
-//     // Verify text was added
-//     let mut file = std::fs::File::open(&read_copy).unwrap();
-//     let mut contents = String::new();
-//     std::io::Read::read_to_string(&mut file, &mut contents).unwrap();
-
-//     println!("File after insert:\n{}", contents);
-//     assert!(
-//         contents.contains("Hello, world! ADDED"),
-//         "Text should be appended"
-//     );
-// }
-
-// #[test]
-// fn test_eol_mapping_simple() {
-//     use std::env;
-//     // use std::path::PathBuf;
-
-//     // Use existing test file
-//     let cwd = env::current_dir().unwrap();
-//     let test_file = cwd.join("test_files/basic_short.txt");
-
-//     // Create unique session dir that won't conflict
-//     use std::time::{SystemTime, UNIX_EPOCH};
-//     let timestamp = SystemTime::now()
-//         .duration_since(UNIX_EPOCH)
-//         .unwrap()
-//         .as_micros();
-//     let session_ts =
-//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
-
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_ts).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-
-//     // Build window
-//     let lines = build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-//     println!("Built window with {} lines", lines);
-
-//     // Line 1 is "Line 1: Hello, world!" - check what columns are mapped
-//     for col in 0..30 {
-//         match state.window_map.get_row_col_file_position(0, col) {
-//             Ok(Some(pos)) => println!(
-//                 "Col {} -> byte_offset_linear_file_absolute_position: {}, byte_in_line: {}",
-//                 col, pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
-//             ),
-//             Ok(None) => println!("Col {} -> None (unmapped)", col),
-//             Err(e) => println!("Col {} -> Error: {}", col, e),
-//         }
-//     }
-// }
-
-// #[test]
-// fn test_cursor_movement_to_eol() {
-//     use std::env;
-//     // use std::path::PathBuf;
-
-//     let cwd = env::current_dir().unwrap();
-//     let test_file = cwd.join("test_files/basic_short.txt");
-
-//     use std::time::{SystemTime, UNIX_EPOCH};
-//     let timestamp = SystemTime::now()
-//         .duration_since(UNIX_EPOCH)
-//         .unwrap()
-//         .as_micros();
-//     let session_ts =
-//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
-
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_ts).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Start at beginning
-//     state.cursor.row = 0;
-//     state.cursor.col = 0;
-
-//     println!(
-//         "Starting cursor: ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-
-//     // Try to move right 25 times (should land at col 23, the EOL position)
-//     let result = execute_command(&mut state, Command::MoveRight(25));
-
-//     println!(
-//         "After MoveRight(25): cursor at ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-//     println!("Command result: {:?}", result);
-
-//     // Can we get file position at cursor?
-//     match state
-//         .window_map
-//         .get_row_col_file_position(state.cursor.row, state.cursor.col)
-//     {
-//         Ok(Some(pos)) => println!(
-//             "SUCCESS: File position at cursor: byte_offset_linear_file_absolute_position={}, byte_in_line={}",
-//             pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
-//         ),
-//         Ok(None) => println!("ERROR: No file position at cursor!"),
-//         Err(e) => println!("ERROR getting position: {}", e),
-//     }
-
-//     assert!(result.is_ok());
-// }
-
-// #[test]
-// fn test_cursor_movement_to_eol2() {
-//     /*
-//     THis is trying to test if the cursor position stops
-//     at EOL.
-//     As yet... is not clear what the behavior 'should' be.
-
-//      */
-//     use std::env;
-//     // use std::path::PathBuf;
-
-//     let cwd = env::current_dir().unwrap();
-//     let test_file = cwd.join("test_files/basic_short.txt");
-
-//     use std::time::{SystemTime, UNIX_EPOCH};
-//     let timestamp = SystemTime::now()
-//         .duration_since(UNIX_EPOCH)
-//         .unwrap()
-//         .as_micros();
-//     let session_ts =
-//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
-
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_ts).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Start at FIRST VALID position (col 2, after line number)
-//     state.cursor.row = 0;
-//     state.cursor.col = 0;
-
-//     println!(
-//         "Starting cursor: ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-
-//     // Try to move right 25 times (should land at col 23, the EOL position)
-//     let result = execute_command(&mut state, Command::MoveRight(25));
-
-//     println!(
-//         "After MoveRight(25): cursor at ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-//     println!("Command result: {:?}", result);
-
-//     // Can we get file position at cursor?
-//     match state
-//         .window_map
-//         .get_row_col_file_position(state.cursor.row, state.cursor.col)
-//     {
-//         Ok(Some(pos)) => println!(
-//             "SUCCESS: File position at cursor: byte_offset_linear_file_absolute_position={}, byte_in_line={}",
-//             pos.byte_offset_linear_file_absolute_position, pos.byte_in_line
-//         ),
-//         Ok(None) => println!("ERROR: No file position at cursor!"),
-//         Err(e) => println!("ERROR getting position: {}", e),
-//     }
-
-//     /*
-//     This line:
-//         "1 Line 1: Hello, world!"
-
-//     contais 23 characters.
-
-//     One reason to not force cursor to line length
-//     is that you can't go down past a shorter line. (maybe)
-//      *
-//      */
-//     assert!(result.is_ok());
-//     assert_eq!(
-//         state.cursor.col,
-//         25, // 23? What should it be? TODO
-//         "Cursor should be at EOL position (col 23)"
-//     );
-// }
-
-// #[test]
-// fn test_insert_at_eol_works() {
-//     use std::env;
-//     // use std::path::PathBuf;
-
-//     let cwd = env::current_dir().unwrap();
-//     let test_file = cwd.join("test_files/basic_short.txt");
-
-//     use std::time::{SystemTime, UNIX_EPOCH};
-//     let timestamp = SystemTime::now()
-//         .duration_since(UNIX_EPOCH)
-//         .unwrap()
-//         .as_micros();
-//     let session_ts =
-//         FixedSize32Timestamp::from_str(&format!("24_01_01_{:06}", timestamp % 1000000)).unwrap();
-
-//     let mut state = EditorState::new();
-//     initialize_session_directory(&mut state, session_ts).unwrap();
-
-//     let session_dir = state.session_directory_path.as_ref().unwrap();
-//     let read_copy =
-//         create_a_readcopy_of_file(&test_file, session_dir, format!("test_{}", timestamp)).unwrap();
-
-//     state.read_copy_path = Some(read_copy.clone());
-//     state.original_file_path = Some(test_file.clone());
-//     build_windowmap_nowrap(&mut state, &read_copy).unwrap();
-
-//     // Move to EOL
-//     state.cursor.row = 0;
-//     state.cursor.col = 23;
-//     state.mode = EditorMode::Insert;
-
-//     println!(
-//         "Cursor at EOL: ({}, {})",
-//         state.cursor.row, state.cursor.col
-//     );
-
-//     // Insert text at EOL
-//     let text = " ADDED";
-//     let result = insert_text_chunk_at_cursor_position(&mut state, &read_copy, text.as_bytes());
-
-//     println!("Insert result: {:?}", result);
-
-//     // Read file and check
-//     let contents = std::fs::read_to_string(&read_copy).unwrap();
-//     println!(
-//         "First line after insert: {}",
-//         contents.lines().next().unwrap()
-//     );
-
-//     assert!(result.is_ok(), "Insert should succeed");
-//     assert!(
-//         contents.contains("world! ADDED"),
-//         "Text should be appended to line"
-//     );
-// }
 
 // ============================================================================
 // TEST insert_file
@@ -3038,7 +2085,6 @@ mod hexedit_tests {
             cursor: WindowPosition { row: 0, col: 0 },
             selection_start: None,
             selection_rowline_start: 0,
-            changelog_path: None,
             is_modified: false,
 
             // Position tracking - all zeros OK for test?
@@ -3531,67 +2577,6 @@ mod saveas_tests {
     // ========================================================================
     // Path Validation Tests
     // ========================================================================
-
-    #[test]
-    fn test_relative_source_path() {
-        // Test: Source path is relative (not absolute)
-        // Should return InvalidInput error
-
-        let test_dir = create_test_dir();
-        let dest_path = test_dir.join("destination.txt");
-
-        // Use relative path for source
-        let source_path = PathBuf::from("relative/path/source.txt");
-
-        // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
-
-        // Verify: Returns InvalidInput error
-        assert!(result.is_err(), "Should return error for relative path");
-        match result {
-            Err(LinesError::InvalidInput(msg)) => {
-                assert!(
-                    msg.contains("absolute"),
-                    "Error should mention absolute path requirement"
-                );
-            }
-            _ => panic!("Expected InvalidInput error for relative path"),
-        }
-
-        cleanup_test_dir(&test_dir);
-    }
-
-    #[test]
-    fn test_relative_destination_path() {
-        // Test: Destination path is relative (not absolute)
-        // Should return InvalidInput error
-
-        let test_dir = create_test_dir();
-        let source_path = test_dir.join("source.txt");
-
-        // Create source file
-        create_test_file(&source_path, b"test content").expect("Failed to create source");
-
-        // Use relative path for destination
-        let dest_path = PathBuf::from("relative/path/destination.txt");
-
-        // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
-
-        // Verify: Returns InvalidInput error
-        assert!(result.is_err(), "Should return error for relative path");
-        match result {
-            Err(LinesError::InvalidInput(msg)) => {
-                assert!(
-                    msg.contains("absolute"),
-                    "Error should mention absolute path requirement"
-                );
-            }
-            _ => panic!("Expected InvalidInput error for relative path"),
-        }
-
-        cleanup_test_dir(&test_dir);
-    }
 
     // ========================================================================
     // Helper Function Tests

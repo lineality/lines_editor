@@ -6536,74 +6536,74 @@ pub fn button_make_changeloge_from_user_character_action_level(
     Ok(())
 }
 
-/// Creates a changelog entry for a hex-edit action
-///
-/// # Purpose
-/// Specialized function for hex-edit operations (in-place byte replacement).
-/// Unlike character add/remove, hex-edits don't change file length.
-///
-/// # Arguments
-/// * `target_file` - File being edited (will be converted to absolute path)
-/// * `position` - Position in file where hex-edit occurred (0-indexed)
-/// * `original_byte` - The ORIGINAL byte value before user's edit
-/// * `log_directory_path` - Directory to write changelog file
-///
-/// # Returns
-/// * `ButtonResult<()>` - Success or error
-///
-/// # Inverse Changelog Logic
-/// - User action: HEX-EDIT byte at position (original → new value)
-/// - Log entry: EDT {original} at position (undo restores original)
-///
-/// # Note
-/// This always creates a single log file (hex-edits are always single-byte).
-///
-/// # Examples
-/// ```
-/// // User hex-edited position 42: changed 0xFF to 0x61
-/// button_make_hexedit_changelog(
-///     Path::new("file.txt"),
-///     42,
-///     0xFF,  // Original value before edit
-///     Path::new("./changelog_file")
-/// )?;
-/// ```
-pub fn button_make_hexedit_changelog(
-    target_file: &Path,
-    position: u128,
-    original_byte: u8,
-    log_directory_path: &Path,
-) -> ButtonResult<()> {
-    // Convert paths to absolute
-    let target_file_abs = fs::canonicalize(target_file).map_err(|e| {
-        ButtonError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("Cannot resolve target file path: {}", e),
-        ))
-    })?;
+// /// Creates a changelog entry for a hex-edit action
+// ///
+// /// # Purpose
+// /// Specialized function for hex-edit operations (in-place byte replacement).
+// /// Unlike character add/remove, hex-edits don't change file length.
+// ///
+// /// # Arguments
+// /// * `target_file` - File being edited (will be converted to absolute path)
+// /// * `position` - Position in file where hex-edit occurred (0-indexed)
+// /// * `original_byte` - The ORIGINAL byte value before user's edit
+// /// * `log_directory_path` - Directory to write changelog file
+// ///
+// /// # Returns
+// /// * `ButtonResult<()>` - Success or error
+// ///
+// /// # Inverse Changelog Logic
+// /// - User action: HEX-EDIT byte at position (original → new value)
+// /// - Log entry: EDT {original} at position (undo restores original)
+// ///
+// /// # Note
+// /// This always creates a single log file (hex-edits are always single-byte).
+// ///
+// /// # Examples
+// /// ```
+// /// // User hex-edited position 42: changed 0xFF to 0x61
+// /// button_make_hexedit_changelog(
+// ///     Path::new("file.txt"),
+// ///     42,
+// ///     0xFF,  // Original value before edit
+// ///     Path::new("./changelog_file")
+// /// )?;
+// /// ```
+// pub fn button_make_hexedit_changelog(
+//     target_file: &Path,
+//     position: u128,
+//     original_byte: u8,
+//     log_directory_path: &Path,
+// ) -> ButtonResult<()> {
+//     // Convert paths to absolute
+//     let target_file_abs = fs::canonicalize(target_file).map_err(|e| {
+//         ButtonError::Io(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             format!("Cannot resolve target file path: {}", e),
+//         ))
+//     })?;
 
-    let log_dir_abs = if log_directory_path.exists() {
-        fs::canonicalize(log_directory_path).map_err(|e| ButtonError::Io(e))?
-    } else {
-        // Create directory and then canonicalize
-        fs::create_dir_all(log_directory_path).map_err(|e| ButtonError::Io(e))?;
-        fs::canonicalize(log_directory_path).map_err(|e| ButtonError::Io(e))?
-    };
+//     let log_dir_abs = if log_directory_path.exists() {
+//         fs::canonicalize(log_directory_path).map_err(|e| ButtonError::Io(e))?
+//     } else {
+//         // Create directory and then canonicalize
+//         fs::create_dir_all(log_directory_path).map_err(|e| ButtonError::Io(e))?;
+//         fs::canonicalize(log_directory_path).map_err(|e| ButtonError::Io(e))?
+//     };
 
-    #[cfg(debug_assertions)]
-    println!(
-        "Creating hex-edit changelog at position {} (original: 0x{:02X})",
-        position, original_byte
-    );
+//     #[cfg(debug_assertions)]
+//     println!(
+//         "Creating hex-edit changelog at position {} (original: 0x{:02X})",
+//         position, original_byte
+//     );
 
-    // Hex-edits are always single-byte
-    button_hexeditinplace_byte_make_log_file(
-        &target_file_abs,
-        position,
-        original_byte,
-        &log_dir_abs,
-    )
-}
+//     // Hex-edits are always single-byte
+//     button_hexeditinplace_byte_make_log_file(
+//         &target_file_abs,
+//         position,
+//         original_byte,
+//         &log_dir_abs,
+//     )
+// }
 
 // ============================================================================
 // REDO SUPPORT - HELPER FUNCTIONS
@@ -8032,7 +8032,7 @@ mod redoclear_tests {
         // This test requires a valid test file setup
         // Implementation depends on your test infrastructure
 
-        let test_file = PathBuf::from("/tmp/test_file.txt");
+        let _ = PathBuf::from("/tmp/test_file.txt");
 
         // Test should verify:
         // 1. Function returns Ok(true) on success
@@ -8190,29 +8190,29 @@ mod router_tests {
         let _ = fs::remove_dir_all(&test_dir);
     }
 
-    #[test]
-    fn test_button_make_hexedit_changelog() {
-        let test_dir = env::temp_dir().join("button_test_router_hexedit");
-        let _ = fs::remove_dir_all(&test_dir);
-        fs::create_dir_all(&test_dir).unwrap();
+    // #[test]
+    // fn test_button_make_hexedit_changelog() {
+    //     let test_dir = env::temp_dir().join("button_test_router_hexedit");
+    //     let _ = fs::remove_dir_all(&test_dir);
+    //     fs::create_dir_all(&test_dir).unwrap();
 
-        let target_file = test_dir.join("target.txt");
-        fs::write(&target_file, b"ABCD").unwrap();
+    //     let target_file = test_dir.join("target.txt");
+    //     fs::write(&target_file, b"ABCD").unwrap();
 
-        let log_dir = test_dir.join("logs");
+    //     let log_dir = test_dir.join("logs");
 
-        // User hex-edited position 2: 0x43 ('C') to something else
-        button_make_hexedit_changelog(&target_file, 2, 0x43, &log_dir).unwrap();
+    //     // User hex-edited position 2: 0x43 ('C') to something else
+    //     button_make_hexedit_changelog(&target_file, 2, 0x43, &log_dir).unwrap();
 
-        // Should create one "edit" log
-        assert!(log_dir.join("0").exists());
+    //     // Should create one "edit" log
+    //     assert!(log_dir.join("0").exists());
 
-        let content = fs::read_to_string(log_dir.join("0")).unwrap();
-        assert!(content.contains("edt"));
-        assert!(content.contains("43"));
+    //     let content = fs::read_to_string(log_dir.join("0")).unwrap();
+    //     assert!(content.contains("edt"));
+    //     assert!(content.contains("43"));
 
-        let _ = fs::remove_dir_all(&test_dir);
-    }
+    //     let _ = fs::remove_dir_all(&test_dir);
+    // }
 
     #[test]
     fn test_button_undo_next_changelog_lifo_single_byte() {
