@@ -1259,7 +1259,7 @@ pub fn log_error(error_msg: &str, context: Option<&str>) {
     }
 
     // Get current timestamp
-    let timestamp = match get_timestamp() {
+    let timestamp = match get_short_underscore_timestamp() {
         Ok(ts) => ts,
         Err(_) => String::from("UNKNOWN_TIME"),
     };
@@ -1291,7 +1291,7 @@ pub fn log_error(error_msg: &str, context: Option<&str>) {
 /// Gets the path to today's error log file
 fn get_error_log_path() -> io::Result<PathBuf> {
     let home = get_home_directory()?;
-    let timestamp = get_timestamp()?;
+    let timestamp = get_short_underscore_timestamp()?;
 
     let mut log_path = home;
     log_path.push("Documents");
@@ -2783,38 +2783,131 @@ pub fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
     (year, month, day)
 }
 
-/// Creates a timestamp with optional microsecond precision for uniqueness
+// /// Creates a timestamp with optional microsecond precision for uniqueness
+// ///
+// /// # Purpose
+// /// When multiple archives might be created in the same second, this
+// /// adds microsecond precision to ensure unique filenames.
+// ///
+// /// # Arguments
+// /// * `time` - The SystemTime to format
+// /// * `include_microseconds` - Whether to append microseconds
+// ///
+// /// # Returns
+// /// * `String` - Timestamp, optionally with microseconds appended
+// ///
+// /// # Format
+// /// - Without microseconds: "YY_MM_DD_HH_MM_SS"
+// /// - With microseconds: "YY_MM_DD_HH_MM_SS_UUUUUU"
+// pub fn createarchive_timestamp_with_precision(
+//     time: SystemTime,
+//     include_microseconds: bool,
+// ) -> String {
+//     let base_timestamp = create_archive_timestamp(time);
+
+//     if !include_microseconds {
+//         return base_timestamp;
+//     }
+
+//     // Get microseconds component
+//     let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
+//         Ok(duration) => duration,
+//         Err(_) => return base_timestamp, // Fall back to base timestamp
+//     };
+
+//     let microseconds = duration_since_epoch.as_micros() % 1_000_000;
+
+//     format!("{}_{:06}", base_timestamp, microseconds)
+// }
+
+/// Creates a timestamp with full year and optional microsecond precision
 ///
 /// # Purpose
 /// When multiple archives might be created in the same second, this
-/// adds microsecond precision to ensure unique filenames.
+/// adds microsecond precision to ensure unique filenames. Includes
+/// full 4-digit year prefix for better year identification.
 ///
 /// # Arguments
 /// * `time` - The SystemTime to format
 /// * `include_microseconds` - Whether to append microseconds
 ///
 /// # Returns
-/// * `String` - Timestamp, optionally with microseconds appended
+/// * `String` - Timestamp with YYYY prefix, optionally with microseconds appended
 ///
 /// # Format
-/// - Without microseconds: "YY_MM_DD_HH_MM_SS"
-/// - With microseconds: "YY_MM_DD_HH_MM_SS_UUUUUU"
+/// - Without microseconds: "YYYY_YY_MM_DD_HH_MM_SS"
+/// - With microseconds: "YYYY_YY_MM_DD_HH_MM_SS_UUUUUU"
+///
+/// # Examples
+/// - "2024_24_01_15_14_30_45" (without microseconds)
+/// - "2024_24_01_15_14_30_45_123456" (with microseconds)
 pub fn createarchive_timestamp_with_precision(
     time: SystemTime,
     include_microseconds: bool,
 ) -> String {
-    let base_timestamp = create_archive_timestamp(time);
+    // Get duration since Unix epoch
+    let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(_) => {
+            eprintln!("Warning: System time is before Unix epoch, using fallback timestamp");
+            if include_microseconds {
+                return String::from("1970_70_01_01_00_00_00_000000");
+            } else {
+                return String::from("1970_70_01_01_00_00_00");
+            }
+        }
+    };
+
+    let total_seconds = duration_since_epoch.as_secs();
+
+    // Use the accurate date calculation
+    let (year, month, day, hour, minute, second) =
+        epoch_seconds_to_datetime_components(total_seconds);
+
+    // Validate year range
+    const MAX_REASONABLE_YEAR: u32 = 9999;
+    if year > MAX_REASONABLE_YEAR {
+        eprintln!(
+            "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
+            year, MAX_REASONABLE_YEAR
+        );
+        if include_microseconds {
+            return String::from("9999_99_12_31_23_59_59_999999");
+        } else {
+            return String::from("9999_99_12_31_23_59_59");
+        }
+    }
+
+    // Validate all components are in expected ranges
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        eprintln!(
+            "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        );
+        if include_microseconds {
+            return String::from("1970_70_01_01_00_00_00_000000");
+        } else {
+            return String::from("1970_70_01_01_00_00_00");
+        }
+    }
+
+    // Build base timestamp with YYYY prefix
+    let base_timestamp = format!(
+        "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+        year,       // Four-digit year
+        year % 100, // Two-digit year
+        month,
+        day,
+        hour,
+        minute,
+        second
+    );
 
     if !include_microseconds {
         return base_timestamp;
     }
 
-    // Get microseconds component
-    let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration,
-        Err(_) => return base_timestamp, // Fall back to base timestamp
-    };
-
+    // Add microseconds component
     let microseconds = duration_since_epoch.as_micros() % 1_000_000;
 
     format!("{}_{:06}", base_timestamp, microseconds)
@@ -7119,7 +7212,7 @@ impl EditorState {
 }
 
 /// Gets a timestamp string in yyyy_mm_dd format using only standard library
-fn get_timestamp() -> io::Result<String> {
+fn get_short_underscore_timestamp() -> io::Result<String> {
     let time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -7516,7 +7609,7 @@ pub fn get_default_filepath(custom_name: Option<&str>) -> io::Result<PathBuf> {
     fs::create_dir_all(&base_path)?;
 
     // Get timestamp for filename
-    let timestamp = get_timestamp()?;
+    let timestamp = get_short_underscore_timestamp()?;
 
     // Create filename based on whether custom_name is provided
     let filename = match custom_name {
