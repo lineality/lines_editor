@@ -3184,3 +3184,665 @@ mod hexedit_tests {
         cleanup_test_file(&file_path);
     }
 }
+
+// ============================================================================
+// SAVE-AS-COPY OPERATION: Test Suite (start)
+// ============================================================================
+
+#[cfg(test)]
+mod saveas_tests {
+    use super::*;
+    use std::fs;
+    use std::io::{ErrorKind, Write};
+    use std::path::PathBuf;
+
+    // ========================================================================
+    // Test Helper Functions
+    // ========================================================================
+
+    /// Creates a temporary directory for test isolation
+    ///
+    /// # Purpose
+    /// Provides isolated filesystem space for each test to prevent
+    /// cross-test contamination. Uses OS temp directory with unique names.
+    ///
+    /// # Returns
+    /// Absolute path to temporary directory (created, empty, writable)
+    ///
+    /// # Cleanup
+    /// Caller responsible for cleanup (use `cleanup_test_dir()`)
+    fn create_test_dir() -> PathBuf {
+        let mut temp_dir = std::env::temp_dir();
+        // Add unique identifier to prevent collision between parallel tests
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("System time error")
+            .as_nanos();
+        temp_dir.push(format!("lines_test_{}", unique_id));
+
+        fs::create_dir_all(&temp_dir).expect("Failed to create test directory");
+        temp_dir
+    }
+
+    /// Removes test directory and all contents
+    ///
+    /// # Purpose
+    /// Cleans up test artifacts after test completes.
+    /// Best-effort cleanup: ignores errors (test isolation is goal).
+    ///
+    /// # Arguments
+    /// * `dir` - Directory to remove (should be test directory)
+    fn cleanup_test_dir(dir: &PathBuf) {
+        // Best-effort cleanup: ignore errors
+        // Tests run in isolated temp directories, cleanup failures aren't critical
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Creates a test file with specified content
+    ///
+    /// # Purpose
+    /// Creates test fixture files with known content for verification.
+    ///
+    /// # Arguments
+    /// * `path` - Where to create file (must be absolute)
+    /// * `content` - Content to write to file
+    ///
+    /// # Returns
+    /// * `Ok(())` - File created successfully
+    /// * `Err(io::Error)` - Creation or write failed
+    fn create_test_file(path: &PathBuf, content: &[u8]) -> io::Result<()> {
+        let mut file = File::create(path)?;
+        file.write_all(content)?;
+        file.flush()?;
+        Ok(())
+    }
+
+    /// Reads entire file content into Vec
+    ///
+    /// # Purpose
+    /// Reads test files for content verification after copy.
+    ///
+    /// # Arguments
+    /// * `path` - File to read
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - File content
+    /// * `Err(io::Error)` - Read failed
+    ///
+    /// # Note
+    /// Only for test files (small sizes). Production code uses chunked reading.
+    fn read_test_file(path: &PathBuf) -> io::Result<Vec<u8>> {
+        fs::read(path)
+    }
+
+    // ========================================================================
+    // Success Case Tests
+    // ========================================================================
+
+    #[test]
+    fn test_copy_simple_text_file() {
+        // Test: Successful copy of simple text file
+        // Validates: Basic copy operation, content preservation, status code
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source.txt");
+        let dest_path = test_dir.join("destination.txt");
+
+        // Create source file with test content
+        let test_content = b"Hello, Lines Editor!\nThis is a test file.\n";
+        create_test_file(&source_path, test_content).expect("Failed to create test source file");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Operation succeeded with Copied status
+        assert!(result.is_ok(), "Copy operation should succeed");
+        let (status, message) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::Copied);
+        assert_eq!(message, "copied");
+
+        // Verify: Destination file exists
+        assert!(dest_path.exists(), "Destination file should exist");
+
+        // Verify: Content matches exactly
+        let dest_content = read_test_file(&dest_path).expect("Failed to read destination file");
+        assert_eq!(
+            dest_content, test_content,
+            "Destination content should match source"
+        );
+
+        // Verify: Source file unchanged
+        let source_content = read_test_file(&source_path).expect("Failed to read source file");
+        assert_eq!(
+            source_content, test_content,
+            "Source file should be unchanged"
+        );
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_copy_empty_file() {
+        // Test: Copy empty file (0 bytes)
+        // Edge case: Validates EOF detection on first read
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("empty.txt");
+        let dest_path = test_dir.join("empty_copy.txt");
+
+        // Create empty source file
+        create_test_file(&source_path, b"").expect("Failed to create empty source file");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Operation succeeded
+        assert!(result.is_ok(), "Empty file copy should succeed");
+        let (status, _) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::Copied);
+
+        // Verify: Destination exists and is empty
+        assert!(dest_path.exists(), "Destination should exist");
+        let dest_content = read_test_file(&dest_path).expect("Failed to read destination");
+        assert_eq!(dest_content.len(), 0, "Destination should be empty");
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_copy_binary_file() {
+        // Test: Copy file with binary (non-UTF8) content
+        // Validates: Binary safety, no text assumptions
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("binary.dat");
+        let dest_path = test_dir.join("binary_copy.dat");
+
+        // Create binary content (not valid UTF-8)
+        let binary_content: Vec<u8> = (0..=255).collect();
+        create_test_file(&source_path, &binary_content)
+            .expect("Failed to create binary source file");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Operation succeeded
+        assert!(result.is_ok(), "Binary file copy should succeed");
+        let (status, _) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::Copied);
+
+        // Verify: Binary content preserved exactly
+        let dest_content = read_test_file(&dest_path).expect("Failed to read destination");
+        assert_eq!(
+            dest_content, binary_content,
+            "Binary content should match exactly"
+        );
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_copy_multi_chunk_file() {
+        // Test: Copy file larger than buffer size (requires multiple chunks)
+        // Validates: Chunked reading/writing, loop logic, EOF detection
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("large.txt");
+        let dest_path = test_dir.join("large_copy.txt");
+
+        // Create content larger than buffer (8KB buffer, make 20KB file)
+        let chunk_size = 1024; // 1KB
+        let num_chunks = 20; // 20KB total
+        let mut large_content = Vec::with_capacity(chunk_size * num_chunks);
+        for i in 0..num_chunks {
+            // Create varied content to detect corruption
+            let line = format!("Line {} in chunk {}\n", i, i / 10);
+            large_content.extend_from_slice(line.as_bytes());
+            // Pad to 1KB
+            while large_content.len() < (i + 1) * chunk_size {
+                large_content.push(b'x');
+            }
+        }
+
+        create_test_file(&source_path, &large_content).expect("Failed to create large source file");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Operation succeeded
+        assert!(result.is_ok(), "Large file copy should succeed");
+        let (status, _) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::Copied);
+
+        // Verify: All content copied correctly
+        let dest_content = read_test_file(&dest_path).expect("Failed to read destination");
+        assert_eq!(
+            dest_content.len(),
+            large_content.len(),
+            "Destination size should match source"
+        );
+        assert_eq!(
+            dest_content, large_content,
+            "Large file content should match exactly"
+        );
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    // ========================================================================
+    // Predicated Outcome Tests (Expected Non-Error Cases)
+    // ========================================================================
+
+    #[test]
+    fn test_source_not_found() {
+        // Test: Source file doesn't exist
+        // Predicated outcome: Should return OriginalNotFound status, not error
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("nonexistent.txt");
+        let dest_path = test_dir.join("destination.txt");
+
+        // Do NOT create source file - it doesn't exist
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Returns Ok with OriginalNotFound status (not an error)
+        assert!(result.is_ok(), "Should return Ok for predicated outcome");
+        let (status, message) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::OriginalNotFound);
+        assert_eq!(message, "original not found");
+
+        // Verify: Destination was not created
+        assert!(
+            !dest_path.exists(),
+            "Destination should not be created when source missing"
+        );
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_destination_already_exists() {
+        // Test: Destination file already exists (no-overwrite policy)
+        // Predicated outcome: Should return AlreadyExisted status, not error
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source.txt");
+        let dest_path = test_dir.join("destination.txt");
+
+        // Create both source and destination files
+        let source_content = b"Source content";
+        let dest_content = b"Existing destination content - should not be overwritten";
+        create_test_file(&source_path, source_content).expect("Failed to create source");
+        create_test_file(&dest_path, dest_content).expect("Failed to create destination");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Returns Ok with AlreadyExisted status (not an error)
+        assert!(result.is_ok(), "Should return Ok for predicated outcome");
+        let (status, message) = result.unwrap();
+        assert_eq!(status, FileOperationStatus::AlreadyExisted);
+        assert_eq!(message, "already existed");
+
+        // Verify: Destination content unchanged (no overwrite)
+        let final_dest_content = read_test_file(&dest_path).expect("Failed to read destination");
+        assert_eq!(
+            final_dest_content, dest_content,
+            "Destination should be unchanged (no overwrite)"
+        );
+
+        // Verify: Source content unchanged
+        let final_source_content = read_test_file(&source_path).expect("Failed to read source");
+        assert_eq!(
+            final_source_content, source_content,
+            "Source should be unchanged"
+        );
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_source_is_directory() {
+        // Test: Source path points to directory, not file
+        // Edge case: Should return error (not a valid file)
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source_dir");
+        let dest_path = test_dir.join("destination.txt");
+
+        // Create directory at source path
+        fs::create_dir(&source_path).expect("Failed to create source directory");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Returns error (not a file)
+        assert!(result.is_err(), "Should return error for directory source");
+        match result {
+            Err(LinesError::InvalidInput(_)) => { /* Expected */ }
+            _ => panic!("Expected InvalidInput error for directory source"),
+        }
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    // ========================================================================
+    // Path Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_relative_source_path() {
+        // Test: Source path is relative (not absolute)
+        // Should return InvalidInput error
+
+        let test_dir = create_test_dir();
+        let dest_path = test_dir.join("destination.txt");
+
+        // Use relative path for source
+        let source_path = PathBuf::from("relative/path/source.txt");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Returns InvalidInput error
+        assert!(result.is_err(), "Should return error for relative path");
+        match result {
+            Err(LinesError::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("absolute"),
+                    "Error should mention absolute path requirement"
+                );
+            }
+            _ => panic!("Expected InvalidInput error for relative path"),
+        }
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_relative_destination_path() {
+        // Test: Destination path is relative (not absolute)
+        // Should return InvalidInput error
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source.txt");
+
+        // Create source file
+        create_test_file(&source_path, b"test content").expect("Failed to create source");
+
+        // Use relative path for destination
+        let dest_path = PathBuf::from("relative/path/destination.txt");
+
+        // Execute copy operation
+        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+
+        // Verify: Returns InvalidInput error
+        assert!(result.is_err(), "Should return error for relative path");
+        match result {
+            Err(LinesError::InvalidInput(msg)) => {
+                assert!(
+                    msg.contains("absolute"),
+                    "Error should mention absolute path requirement"
+                );
+            }
+            _ => panic!("Expected InvalidInput error for relative path"),
+        }
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    // ========================================================================
+    // Helper Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_retryable_error_interrupted() {
+        // Test: ErrorKind::Interrupted is retryable
+        let error = io::Error::new(ErrorKind::Interrupted, "test");
+        assert!(
+            is_retryable_error(&error),
+            "Interrupted should be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_would_block() {
+        // Test: ErrorKind::WouldBlock is retryable
+        let error = io::Error::new(ErrorKind::WouldBlock, "test");
+        assert!(is_retryable_error(&error), "WouldBlock should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_error_timed_out() {
+        // Test: ErrorKind::TimedOut is retryable
+        let error = io::Error::new(ErrorKind::TimedOut, "test");
+        assert!(is_retryable_error(&error), "TimedOut should be retryable");
+    }
+
+    #[test]
+    fn test_is_retryable_error_not_found() {
+        // Test: ErrorKind::NotFound is NOT retryable
+        let error = io::Error::new(ErrorKind::NotFound, "test");
+        assert!(
+            !is_retryable_error(&error),
+            "NotFound should not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_permission_denied() {
+        // Test: ErrorKind::PermissionDenied is NOT retryable
+        let error = io::Error::new(ErrorKind::PermissionDenied, "test");
+        assert!(
+            !is_retryable_error(&error),
+            "PermissionDenied should not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_is_retryable_error_already_exists() {
+        // Test: ErrorKind::AlreadyExists is NOT retryable
+        let error = io::Error::new(ErrorKind::AlreadyExists, "test");
+        assert!(
+            !is_retryable_error(&error),
+            "AlreadyExists should not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_retry_operation_success_first_try() {
+        // Test: Operation succeeds on first attempt
+        let mut attempts = 0;
+        let result = retry_operation(
+            || {
+                attempts += 1;
+                Ok::<i32, io::Error>(42)
+            },
+            3,
+        );
+
+        assert!(result.is_ok(), "Should succeed on first try");
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 1, "Should only attempt once");
+    }
+
+    #[test]
+    fn test_retry_operation_success_after_retry() {
+        // Test: Operation fails once with retryable error, then succeeds
+        let mut attempts = 0;
+        let result = retry_operation(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(io::Error::new(ErrorKind::Interrupted, "retry me"))
+                } else {
+                    Ok::<i32, io::Error>(42)
+                }
+            },
+            3,
+        );
+
+        assert!(result.is_ok(), "Should succeed after retry");
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts, 2, "Should attempt twice");
+    }
+
+    #[test]
+    fn test_retry_operation_permanent_error() {
+        // Test: Operation fails with permanent error (should not retry)
+        let mut attempts = 0;
+        let result = retry_operation(
+            || {
+                attempts += 1;
+                Err::<i32, io::Error>(io::Error::new(ErrorKind::NotFound, "permanent"))
+            },
+            3,
+        );
+
+        assert!(result.is_err(), "Should fail with permanent error");
+        assert_eq!(attempts, 1, "Should not retry permanent errors");
+    }
+
+    #[test]
+    fn test_retry_operation_exhausted_retries() {
+        // Test: Operation fails with retryable error all 3 times
+        let mut attempts = 0;
+        let result = retry_operation(
+            || {
+                attempts += 1;
+                Err::<i32, io::Error>(io::Error::new(ErrorKind::Interrupted, "always fails"))
+            },
+            3,
+        );
+
+        assert!(result.is_err(), "Should fail after exhausting retries");
+        assert_eq!(attempts, 3, "Should attempt max times");
+    }
+
+    #[test]
+    #[should_panic(expected = "max_attempts must be greater than 0")]
+    fn test_retry_operation_zero_attempts_debug() {
+        // Test: Zero max_attempts should trigger debug_assert in debug builds
+        // Note: This only panics in debug builds
+        let result = retry_operation(|| Ok::<i32, io::Error>(42), 0);
+        // In release builds, this returns error instead of panicking
+        let _ = result;
+    }
+
+    // ========================================================================
+    // FileOperationStatus Tests
+    // ========================================================================
+
+    #[test]
+    fn test_file_operation_status_display() {
+        // Test: Display trait implementation for all status codes
+        assert_eq!(format!("{}", FileOperationStatus::Copied), "copied");
+        assert_eq!(
+            format!("{}", FileOperationStatus::AlreadyExisted),
+            "already existed"
+        );
+        assert_eq!(
+            format!("{}", FileOperationStatus::OriginalNotFound),
+            "original not found"
+        );
+        assert_eq!(
+            format!("{}", FileOperationStatus::OriginalUnavailable),
+            "original unavailable"
+        );
+        assert_eq!(
+            format!("{}", FileOperationStatus::DestinationUnavailable),
+            "destination unavailable"
+        );
+    }
+
+    #[test]
+    fn test_file_operation_status_equality() {
+        // Test: Equality comparison for status codes
+        assert_eq!(FileOperationStatus::Copied, FileOperationStatus::Copied);
+        assert_ne!(
+            FileOperationStatus::Copied,
+            FileOperationStatus::AlreadyExisted
+        );
+    }
+
+    #[test]
+    fn test_file_operation_status_clone() {
+        // Test: Clone trait (should be cheap copy)
+        let status = FileOperationStatus::Copied;
+        let cloned = status.clone();
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_file_operation_status_debug() {
+        // Test: Debug trait implementation
+        let status = FileOperationStatus::Copied;
+        let debug_str = format!("{:?}", status);
+        assert!(debug_str.contains("Copied"));
+    }
+
+    // ========================================================================
+    // Integration Tests (Full Workflow)
+    // ========================================================================
+
+    #[test]
+    fn test_multiple_copies_same_source() {
+        // Test: Copy same source to multiple destinations
+        // Validates: Source can be read multiple times
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source.txt");
+        let dest1_path = test_dir.join("dest1.txt");
+        let dest2_path = test_dir.join("dest2.txt");
+
+        let content = b"Shared source content";
+        create_test_file(&source_path, content).expect("Failed to create source");
+
+        // Copy to first destination
+        let result1 = save_file_as_newfile_with_newname(&source_path, &dest1_path);
+        assert!(result1.is_ok());
+        assert_eq!(result1.unwrap().0, FileOperationStatus::Copied);
+
+        // Copy to second destination (same source)
+        let result2 = save_file_as_newfile_with_newname(&source_path, &dest2_path);
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap().0, FileOperationStatus::Copied);
+
+        // Verify both destinations have correct content
+        let dest1_content = read_test_file(&dest1_path).expect("Read dest1");
+        let dest2_content = read_test_file(&dest2_path).expect("Read dest2");
+        assert_eq!(dest1_content, content);
+        assert_eq!(dest2_content, content);
+
+        cleanup_test_dir(&test_dir);
+    }
+
+    #[test]
+    fn test_copy_then_copy_again() {
+        // Test: Attempt to copy again to same destination (should get AlreadyExisted)
+
+        let test_dir = create_test_dir();
+        let source_path = test_dir.join("source.txt");
+        let dest_path = test_dir.join("destination.txt");
+
+        create_test_file(&source_path, b"content").expect("Failed to create source");
+
+        // First copy: should succeed
+        let result1 = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        assert!(result1.is_ok());
+        assert_eq!(result1.unwrap().0, FileOperationStatus::Copied);
+
+        // Second copy to same destination: should get AlreadyExisted
+        let result2 = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        assert!(result2.is_ok());
+        assert_eq!(result2.unwrap().0, FileOperationStatus::AlreadyExisted);
+
+        cleanup_test_dir(&test_dir);
+    }
+}
+
+// ============================================================================
+// (end) SAVE-AS-COPY OPERATION: Test Suite
+// ============================================================================

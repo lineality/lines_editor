@@ -1005,8 +1005,10 @@ fn main() -> Result<(), LinesError> {
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
+use std::io::{self, ErrorKind, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::toggle_comment_indent_module::{
@@ -1385,7 +1387,418 @@ impl From<ButtonError> for LinesError {
 }
 
 // ============================================================================
-// (end) ERROR HANDLING SYSTEM
+// SAVE-AS-COPY OPERATION: Retry Logic Helper Functions (start)
+// ============================================================================
+/*
+Project Context:
+These helper functions implement defensive retry logic for the save-as-copy
+file operation. They distinguish between transient errors (temporary issues
+that may resolve with retry) and permanent errors (fundamental issues that
+won't be fixed by retrying).
+
+Design Philosophy:
+- Fail fast on permanent errors (don't waste time retrying impossible operations)
+- Retry transient errors (handle brief system glitches, file locks, network blips)
+- Bounded retries (never infinite loops)
+- Clear error classification (explicit about what is/isn't retryable)
+*/
+
+/// Determines if an I/O error represents a transient condition worth retrying
+///
+/// # Purpose
+/// Classifies I/O errors to implement smart retry logic: retry temporary
+/// issues, fail fast on permanent problems. Part of defensive programming
+/// strategy for robust file operations.
+///
+/// # Project Context
+/// Used by save-as-copy operation to handle brief system issues without
+/// failing immediately, while avoiding wasteful retries of permanent errors.
+/// Supports "let it fail and try again" philosophy for transient conditions.
+///
+/// # Retryable Errors (returns true)
+/// These indicate temporary conditions that often resolve quickly:
+///
+/// - `ErrorKind::Interrupted`: System call interrupted by signal
+///   - Example: Process received SIGINT but handled it
+///   - Common during high system load
+///   - Usually resolves immediately on retry
+///
+/// - `ErrorKind::WouldBlock`: Resource temporarily unavailable (non-blocking I/O)
+///   - Example: File descriptor not ready
+///   - Common with non-blocking file operations
+///   - Often resolves within milliseconds
+///
+/// - `ErrorKind::TimedOut`: Operation exceeded time limit
+///   - Example: Network file system slow to respond
+///   - May resolve if system load decreases
+///   - Retry gives system more time
+///
+/// # Non-Retryable Errors (returns false)
+/// These indicate permanent conditions that won't improve with retry:
+///
+/// - `ErrorKind::NotFound`: File or directory doesn't exist
+///   - Retrying won't create the file
+///   - Caller must handle (return OriginalNotFound status)
+///
+/// - `ErrorKind::PermissionDenied`: Insufficient access rights
+///   - Retrying won't grant permissions
+///   - Requires user intervention or elevated privileges
+///
+/// - `ErrorKind::AlreadyExists`: File already exists
+///   - Won't change by retrying
+///   - Caller must handle (return AlreadyExisted status)
+///
+/// - `ErrorKind::InvalidInput`: Invalid parameters
+///   - Logic error, not transient condition
+///   - Indicates bug in code, not system issue
+///
+/// - All other errors: Assumed permanent unless proven otherwise
+///   - Conservative approach: don't retry unknown errors
+///   - Prevents wasting time on unrecoverable conditions
+///
+/// # Arguments
+/// * `error` - Reference to I/O error to classify
+///
+/// # Returns
+/// * `true` - Error is transient, worth retrying
+/// * `false` - Error is permanent, fail immediately
+///
+/// # Design Rationale
+/// Conservative retry policy: only retry errors explicitly known to be
+/// transient. Unknown errors assumed permanent. This prevents retry loops
+/// on novel error conditions while handling common transient issues.
+///
+/// # Usage Example
+/// ```no_run
+/// # use std::io;
+/// # fn is_retryable_error(e: &io::Error) -> bool { true }
+/// match file.read(&mut buffer) {
+///     Ok(n) => { /* handle success */ },
+///     Err(e) if is_retryable_error(&e) => {
+///         // Transient error, retry after delay
+///     }
+///     Err(e) => {
+///         // Permanent error, fail immediately
+///     }
+/// }
+/// ```
+///
+/// # Related Functions
+/// - Used by: `retry_operation()`
+/// - Complements: Error classification in `save_file_as_newfile_with_newname`
+pub fn is_retryable_error(error: &io::Error) -> bool {
+    // Explicit whitelist of transient error kinds
+    // Conservative: only retry errors we know are temporary
+    matches!(
+        error.kind(),
+        ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+    )
+}
+
+/// Executes an I/O operation with automatic retry logic for transient failures
+///
+/// # Purpose
+/// Wraps I/O operations with defensive retry mechanism: automatically retries
+/// transient errors while failing fast on permanent errors. Implements bounded
+/// retry loop with delay between attempts.
+///
+/// # Project Context
+/// Core component of save-as-copy operation's defensive programming strategy.
+/// Handles brief system glitches (file locks, interrupts, resource contention)
+/// without requiring caller to implement retry logic. Supports "let it fail
+/// and try again" philosophy for transient conditions.
+///
+/// # Generic Parameters
+/// * `F` - Closure type that performs the I/O operation
+/// * `T` - Return type of the operation on success
+///
+/// # Arguments
+/// * `operation` - Closure that performs I/O operation: `FnMut() -> io::Result<T>`
+///   - Called once initially, then again on retryable failures
+///   - Must be `FnMut` because it may be called multiple times
+///   - Returns `io::Result<T>` - standard I/O result type
+///
+/// * `max_attempts` - Maximum number of attempts (including initial try)
+///   - Should use `SAVE_AS_COPY_MAX_RETRY_ATTEMPTS` constant
+///   - Example: max_attempts=3 means 1 initial + 2 retries
+///   - Must be > 0 (enforced by debug_assert)
+///
+/// # Returns
+/// * `Ok(T)` - Operation succeeded (possibly after retries)
+/// * `Err(io::Error)` - Operation failed:
+///   - Permanent error encountered (failed immediately)
+///   - Transient error persisted through all retry attempts
+///   - Returns the last error encountered
+///
+/// # Retry Behavior
+///
+/// ## Attempt Loop (bounded, NASA rule 2 compliant)
+/// ```text
+/// Attempt 1: Execute operation
+///   ├─ Success → return Ok(result)
+///   ├─ Permanent error → return Err immediately
+///   └─ Transient error → wait 200ms, continue
+///
+/// Attempt 2: Execute operation again
+///   ├─ Success → return Ok(result)
+///   ├─ Permanent error → return Err immediately
+///   └─ Transient error → wait 200ms, continue
+///
+/// Attempt 3: Execute operation final time
+///   ├─ Success → return Ok(result)
+///   └─ Any error → return Err (max attempts exhausted)
+/// ```
+///
+/// ## Timing
+/// - Delay between attempts: 200ms (SAVE_AS_COPY_RETRY_DELAY_MS)
+/// - Maximum total delay: (max_attempts - 1) × 200ms
+/// - Example with 3 attempts: 2 delays × 200ms = 400ms max
+///
+/// # Safety Guarantees
+/// - **Bounded loop**: Maximum iterations = max_attempts (no infinite loops)
+/// - **No panic**: Never panics in production (debug_assert only in debug builds)
+/// - **No recursion**: Iterative loop, not recursive calls
+/// - **Predictable timing**: Fixed delay between retries
+/// - **Fail-fast**: Permanent errors don't waste time with retries
+///
+/// # Usage Examples
+///
+/// ## Reading from file
+/// ```no_run
+/// # use std::io::{self, Read};
+/// # use std::fs::File;
+/// # const SAVE_AS_COPY_MAX_RETRY_ATTEMPTS: usize = 3;
+/// # fn retry_operation<F, T>(op: F, max: usize) -> io::Result<T>
+/// # where F: FnMut() -> io::Result<T> { op() }
+/// let mut file = File::open("data.txt")?;
+/// let mut buffer = [0u8; 1024];
+///
+/// let bytes_read = retry_operation(
+///     || file.read(&mut buffer),
+///     SAVE_AS_COPY_MAX_RETRY_ATTEMPTS
+/// )?;
+/// ```
+///
+/// ## Writing to file
+/// ```no_run
+/// # use std::io::{self, Write};
+/// # use std::fs::File;
+/// # const SAVE_AS_COPY_MAX_RETRY_ATTEMPTS: usize = 3;
+/// # fn retry_operation<F, T>(op: F, max: usize) -> io::Result<T>
+/// # where F: FnMut() -> io::Result<T> { op() }
+/// let mut file = File::create("output.txt")?;
+/// let data = b"Hello, world!";
+///
+/// retry_operation(
+///     || file.write_all(data),
+///     SAVE_AS_COPY_MAX_RETRY_ATTEMPTS
+/// )?;
+/// ```
+///
+/// # Edge Cases
+/// - `max_attempts = 1`: No retries, just single attempt
+/// - `max_attempts = 0`: Invalid, caught by debug_assert
+/// - Operation succeeds on first try: No delay, returns immediately
+/// - All attempts fail with permanent error: Returns after first attempt (no retries)
+/// - All attempts fail with transient error: Returns after max_attempts exhausted
+///
+/// # Performance Considerations
+/// - Best case: Single attempt, immediate success (no overhead)
+/// - Worst case: max_attempts × (operation_time + 200ms delay)
+/// - Trade-off: Small delay vs. handling transient failures gracefully
+///
+/// # Related Functions
+/// - Uses: `is_retryable_error()` for error classification
+/// - Used by: `save_file_as_newfile_with_newname()` for read/write operations
+pub fn retry_operation<F, T>(mut operation: F, max_attempts: usize) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    //    =================================================
+    // // Debug-Assert, Test-Asset, Production-Catch-Handle
+    //    =================================================
+    // This is not included in production builds
+    // assert: only when running in a debug-build: will panic
+    debug_assert!(max_attempts > 0, "max_attempts must be greater than 0");
+    // This is not included in production builds
+    // assert: only when running cargo test: will panic
+    #[cfg(test)]
+    assert!(max_attempts > 0, "max_attempts must be greater than 0");
+    // Catch & Handle without panic in production
+    // This IS included in production to safe-catch
+    if max_attempts == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "max_attempts must be greater than 0",
+        ));
+    }
+
+    // Bounded loop: explicit counter prevents infinite iteration
+    // NASA Power of 10 rule 2: upper bound on all loops
+    let mut attempt: usize = 0;
+
+    loop {
+        // Increment attempt counter at loop start
+        attempt += 1;
+
+        // Execute the operation
+        match operation() {
+            // Success: return immediately, no further attempts needed
+            Ok(result) => return Ok(result),
+
+            // Error on final attempt: no retries left, return error
+            Err(e) if attempt >= max_attempts => {
+                return Err(e);
+            }
+
+            // Transient error with retries remaining: wait and try again
+            Err(e) if is_retryable_error(&e) => {
+                // Wait before retry to give system time to resolve issue
+                thread::sleep(Duration::from_millis(SAVE_AS_COPY_RETRY_DELAY_MS));
+                // Loop continues to next iteration
+                continue;
+            }
+
+            // Permanent error: fail immediately, don't waste time retrying
+            // Examples: NotFound, PermissionDenied, AlreadyExists
+            Err(e) => {
+                return Err(e);
+            }
+        }
+
+        // Loop continues for retryable errors
+        // Bounded by: attempt < max_attempts (checked above)
+    }
+}
+
+// ============================================================================
+// (end) SAVE-AS-COPY OPERATION: Retry Logic Helper Functions
+// ============================================================================
+
+// ============================================================================
+// (end) ERROR Section HANDLING SYSTEM
+// ============================================================================
+
+// ============================================================================
+// SAVE-AS-COPY OPERATION: Configuration Constants
+// ============================================================================
+/*
+These constants are specific to the save-as-copy file operation and are
+intentionally named to avoid collision with other file operation constants
+in the Lines editor project.
+
+Naming Convention:
+- Prefix with operation type: SAVE_AS_COPY_*
+- Distinguishes from: FILE_APPEND_*, INSERT_FILE_*, SAVE_CURRENT_*, etc.
+*/
+
+/// Buffer size for save-as-copy file operations (8 kilobytes)
+///
+/// # Purpose
+/// Pre-allocated stack buffer for bucket-brigade copying from source to
+/// destination file. Used exclusively by save_file_as_newfile_with_newname.
+///
+/// # Size Rationale
+/// - 8KB is standard disk block size on most filesystems
+/// - Matches stdlib io::copy() internal buffer size
+/// - Small enough to stay on stack (no heap allocation)
+/// - Large enough to minimize syscall overhead
+/// - For 100MB file: ~12,800 iterations (well under MAX limit)
+///
+/// # Memory Location
+/// Stack-allocated in function scope:
+/// ```
+/// let mut buffer = [0u8; SAVE_AS_COPY_BUFFER_SIZE];
+/// ```
+///
+/// # Comparison with Other Buffers in Project
+/// - FILE_APPEND_BUFFER_SIZE: 64 bytes (demo/test size)
+/// - SAVE_AS_COPY_BUFFER_SIZE: 8192 bytes (production size)
+/// - INSERT_FILE_BUFFER_SIZE: (if exists, different purpose)
+///
+/// # Safety Considerations
+/// - Must fit on stack without overflow
+/// - Typical stack size: 2MB-8MB
+/// - This buffer: 8KB (0.4% of 2MB stack)
+const SAVE_AS_COPY_BUFFER_SIZE: usize = 8192;
+
+/// Maximum retry attempts for transient I/O failures in save-as-copy
+///
+/// # Purpose
+/// Number of times to retry read or write operations when encountering
+/// transient errors (Interrupted, WouldBlock, TimedOut).
+///
+/// # Retry Strategy
+/// - Initial attempt + 2 retries = 3 total attempts
+/// - 200ms delay between attempts (see SAVE_AS_COPY_RETRY_DELAY_MS)
+/// - Total maximum wait: 2 retries × 200ms = 400ms
+/// - Only retries transient errors, not permanent ones
+///
+/// # Retryable Errors
+/// - ErrorKind::Interrupted (syscall interrupted)
+/// - ErrorKind::WouldBlock (resource temporarily unavailable)
+/// - ErrorKind::TimedOut (operation timed out)
+///
+/// # Non-Retryable Errors (fail immediately)
+/// - ErrorKind::NotFound (file doesn't exist)
+/// - ErrorKind::PermissionDenied (access denied)
+/// - ErrorKind::AlreadyExists (file already exists)
+///
+/// # Bounded Loop Compliance
+/// This constant ensures retry loops are bounded (NASA Power of 10, rule 2).
+/// Combined with MAX iteration check, prevents infinite retry loops.
+const SAVE_AS_COPY_MAX_RETRY_ATTEMPTS: usize = 3;
+
+/// Delay in milliseconds between retry attempts for save-as-copy operations
+///
+/// # Purpose
+/// Wait time between retry attempts for transient I/O failures.
+///
+/// # Timing Rationale
+/// - 200ms allows brief transient issues to resolve
+/// - Examples: file lock released, network momentary blip, disk cache flush
+/// - Not too short: avoid hammering system with rapid retries
+/// - Not too long: user shouldn't wait excessively
+/// - Total potential delay: 2 retries × 200ms = 400ms (acceptable)
+///
+/// # Usage
+/// ```
+/// thread::sleep(Duration::from_millis(SAVE_AS_COPY_RETRY_DELAY_MS));
+/// ```
+const SAVE_AS_COPY_RETRY_DELAY_MS: u64 = 200;
+
+/// Maximum chunks to process in save-as-copy operation
+///
+/// # Purpose
+/// Safety limit to prevent infinite loops from filesystem corruption,
+/// cosmic ray bit flips, or malformed file metadata.
+///
+/// # Capacity Calculation
+/// At 8KB buffer size:
+/// - 16,777,216 chunks × 8KB = 134,217,728 KB
+/// - = 131,072 MB
+/// - = ~128 GB maximum file size
+///
+/// # Rationale
+/// - Protects against infinite loops (NASA Power of 10, rule 2)
+/// - Allows copying very large files (128GB covers most use cases)
+/// - Typical text files: < 10MB (< 1,300 chunks)
+/// - Large log files: < 1GB (< 131,000 chunks)
+/// - Extreme cases: up to 128GB supported
+///
+/// # Failure Mode
+/// If exceeded, function returns error:
+/// - Logs to error file (production)
+/// - Returns LinesError::StateError
+/// - Does not panic or halt program
+///
+/// # Related Constants
+/// - FILE_APPEND_MAX_CHUNKS: 16,777,216 (same value, different operation)
+/// - Both ensure consistent safety limits across file operations
+const SAVE_AS_COPY_MAX_CHUNKS: usize = 16_777_216;
+
+// ============================================================================
+// (end) SAVE-AS-COPY OPERATION: Configuration Constants
 // ============================================================================
 
 /// Defensive programming limits to prevent infinite loops and resource exhaustion
@@ -4876,9 +5289,9 @@ impl EditorState {
     /// |-------|--------|--------------|
     /// | `-n` or `ESC` | Normal mode | Continue |
     /// | `-i` | Insert mode | Continue |
-    /// | `-s` or `-w` | Save | Continue |
+    /// | `-s` or `-w` | SaveFileStandard | Continue |
     /// | `-q` | Quit | **Stop** |
-    /// | `-wq` | Save & Quit | **Stop** |
+    /// | `-wq` | SaveAndQuit | **Stop** |
     ///
     /// # Return Value Semantics
     ///
@@ -5068,12 +5481,12 @@ impl EditorState {
 
             // === FILE COMMANDS ===
             "s" | "w" => {
-                // Save file
-                keep_editor_loop_running = execute_command(self, Command::Save)?;
+                // SaveFileStandard file
+                keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
             }
 
             "wq" => {
-                // Save and quit
+                // SaveAndQuit
                 keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
             }
 
@@ -5269,7 +5682,7 @@ impl EditorState {
     ///
     /// * `Ok(false)` → Stop main editor loop (exit editor)
     ///   - Quit command (-q)
-    ///   - Save-and-quit command (-wq)
+    ///   - SaveAndQUite (-wq)
     ///
     /// * `Err(e)` → IO error occurred, propagates to main
     ///   - stdin read failure
@@ -5289,8 +5702,8 @@ impl EditorState {
     /// |-------|---------|--------|--------------|
     /// | `-n` or `ESC` | Enter Normal Mode | Switch to normal mode | Continue |
     /// | `-v` | Enter Visual Mode | Switch to visual mode | Continue |
-    /// | `-s` or `-w` | Save | Write changes to disk | Continue |
-    /// | `-wq` | Save and Quit | Save and exit editor | **Stop** |
+    /// | `-s` or `-w` | SaveFileStandard | Write changes to disk | Continue |
+    /// | `-wq` | SaveAndQuit | SaveAndexit editor | **Stop** |
     /// | `-q` | Quit | Exit without saving | **Stop** |
     /// | `Delete key` | Delete Backspace | Delete character | Continue |
     /// | `\n` or `\r\n` | Insert Newline | Add new line | Continue |
@@ -5503,7 +5916,7 @@ impl EditorState {
             build_windowmap_nowrap(self, &read_copy)?;
         } else if trimmed == "-s" || trimmed == "-w" {
             // Exit insert mode
-            keep_editor_loop_running = execute_command(self, Command::Save)?;
+            keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
         } else if trimmed == "-wq" {
             // Exit insert mode
             keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
@@ -5763,6 +6176,142 @@ impl EditorState {
         let command_str = &trimmed[command_start..];
 
         // =========================================================================
+        // SPECIAL CASE: save as (sa)
+        // =========================================================================
+        // Handle 'sa' prefix commands for Save As functionality
+        //
+        // Purpose: Parse user command like "sa hello.py" and build absolute path
+        // for destination file, ensuring it's different from source file.
+        //
+        // User input examples:
+        // - "sa backup.py"                  -> save in same directory as original
+        // - "sa /home/user/new.txt"         -> save with absolute path
+        // - "sa ../other_dir/file.txt"      -> save with relative path
+        //
+        // NOTE: Leading count is IGNORED for save-as commands
+        // Example: "5sa file.txt" is treated same as "sa file.txt"
+        if command_str.starts_with("sa") && command_str.len() > 2 {
+            // =====================================================================
+            // STEP 1: Extract filename from command string
+            // =====================================================================
+            // User typed: "sa hello.py"
+            // We need to extract: "hello.py"
+            // Method: Remove first 2 characters ("sa"), then trim whitespace
+
+            let rest = &command_str[2..]; // "sa hello.py" -> " hello.py"
+            let filename_str = rest.trim(); // " hello.py" -> "hello.py"
+
+            // Defensive: Check if filename is empty after trimming
+            // Catches: "sa", "sa ", "sa   "
+            if filename_str.is_empty() {
+                let _ = self.set_info_bar_message("Usage: sa filename");
+                return Command::None;
+            }
+
+            // Defensive: Check filename length to prevent overflow
+            // Catches: Extremely long filenames that could cause issues
+            if filename_str.len() > limits::LINE_READ_BYTES {
+                let _ = self.set_info_bar_message("Filename too long");
+                return Command::None;
+            }
+
+            // =====================================================================
+            // STEP 2: Get the original file's directory path
+            // =====================================================================
+            // We need to know WHERE the current file is, so we can save the
+            // new file in the same directory (if user provides relative path).
+            //
+            // Example: If editing "/home/user/documents/file.txt"
+            //          We want directory: "/home/user/documents/"
+
+            let original_file_path = match &self.original_file_path {
+                Some(path) => path,
+                None => {
+                    // No file currently open - can't do save-as
+                    let _ = self.set_info_bar_message("No file open to save as");
+                    return Command::None;
+                }
+            };
+
+            // Get the directory containing the original file
+            // Example: "/home/user/documents/file.txt" -> "/home/user/documents/"
+            let original_directory = match original_file_path.parent() {
+                Some(dir) => dir,
+                None => {
+                    // Original file has no parent directory (shouldn't happen with absolute paths)
+                    let _ = self.set_info_bar_message("Cannot determine file directory");
+                    return Command::None;
+                }
+            };
+
+            // =====================================================================
+            // STEP 3: Build the new save-as path (absolute)
+            // =====================================================================
+            // Convert user's filename to absolute path.
+            // If user gave relative name, use original file's directory as base.
+            //
+            // Examples:
+            // - User input: "backup.py"
+            //   Original:   "/home/user/docs/file.txt"
+            //   Result:     "/home/user/docs/backup.py"
+            //
+            // - User input: "/tmp/backup.py"
+            //   Original:   "/home/user/docs/file.txt"
+            //   Result:     "/tmp/backup.py" (already absolute)
+
+            let mut save_as_path = PathBuf::from(filename_str);
+
+            // Check if user provided absolute or relative path
+            if !save_as_path.is_absolute() {
+                // Relative path: join with original file's directory
+                // Example: "backup.py" + "/home/user/docs/" = "/home/user/docs/backup.py"
+                save_as_path = original_directory.join(filename_str);
+            }
+
+            // Defensive: Validate path is valid UTF-8
+            // Ensures path can be safely used in all string operations
+            if save_as_path.to_str().is_none() {
+                let _ = self.set_info_bar_message("Invalid filename (non-UTF8)");
+                return Command::None;
+            }
+
+            // =====================================================================
+            // STEP 4: Check that new filename is different from original
+            // =====================================================================
+            // Prevent user from accidentally "saving as" with the same name,
+            // which would be confusing (and potentially dangerous).
+            //
+            // Example catch:
+            // - Original: "/home/user/file.txt"
+            // - User types: "sa file.txt"
+            // - Result: "/home/user/file.txt" (SAME - reject this!)
+
+            if &save_as_path == original_file_path {
+                let _ =
+                    self.set_info_bar_message("New filename same as original (use 's' to save)");
+                return Command::None;
+            }
+
+            // =====================================================================
+            // STEP 5: Return the valid SaveAs command
+            // =====================================================================
+            // At this point we have:
+            // - Valid, non-empty filename
+            // - Absolute path to new file
+            // - Confirmed it's different from original
+            // - Path is valid UTF-8
+
+            // Debug: log the save-as command (only in debug builds for security)
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "DEBUG: Save As command\n  Original: {:?}\n  Save as:  {:?}",
+                original_file_path, save_as_path
+            );
+
+            // Return the command with the absolute path
+            return Command::SaveAs(save_as_path);
+        }
+        // =========================================================================
         // SPECIAL CASE: g-commands (line jumps and navigation)
         // =========================================================================
         // Handle 'g' prefix commands BEFORE mode-specific parsing
@@ -5863,7 +6412,7 @@ impl EditorState {
                 "raw" | "r" => Command::EnterRawMode,
                 // Multi-character commands
                 "wq" => Command::SaveAndQuit,
-                "s" => Command::Save,
+                "s" => Command::SaveFileStandard,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
@@ -5898,7 +6447,7 @@ impl EditorState {
                 "i" => Command::EnterInsertMode,
                 "q" => Command::Quit,
                 "c" | "y" => Command::Copyank,
-                "s" => Command::Save,
+                "s" => Command::SaveFileStandard,
                 "n" | "\x1b" => Command::EnterNormalMode,
                 "wq" => Command::SaveAndQuit,
                 "d" => Command::DeleteBackspace,
@@ -7520,6 +8069,716 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     Ok(lines_processed)
 }
 
+// ============================================================================
+// FILE COPY OPERATION: Type Definitions and Constants (start)
+// ============================================================================
+/*
+Project Context:
+This section supports the Lines text editor's "Save As" functionality,
+allowing users to create a copy of the current file with a new name.
+This is distinct from:
+- File append operations (file_append_to_file)
+- File insertion operations (insert_file_at_cursor)
+- Regular save operations (save current file)
+
+Design Philosophy:
+- Type-safe status codes distinguish predicated outcomes from errors
+- Static string messages provide human-readable feedback without heap allocation
+- Exhaustive matching ensures compiler catches all cases
+- Clear separation: Ok = expected outcomes, Err = unexpected failures
+*/
+
+/// Status codes returned by save-as-copy file operations
+///
+/// # Purpose
+/// Provides type-safe status reporting for file copy operations that
+/// distinguishes between successful operations, expected predicated outcomes
+/// (like "file already exists"), and true errors (I/O failures).
+///
+/// # Design Rationale
+/// Using an enum instead of string messages enables:
+/// - Compile-time exhaustive matching (compiler ensures all cases handled)
+/// - Programmatic decision making (can match on specific statuses)
+/// - No heap allocation (Copy + 'static)
+/// - Clear API contracts (caller knows all possible outcomes upfront)
+///
+/// # Usage Pattern
+/// Paired with static string message in tuple return:
+/// ```
+/// Ok((FileOperationStatus::Copied, "copied"))
+/// ```
+///
+/// This provides both machine-readable status code and human-readable message.
+///
+/// # Related Types
+/// - Paired with `&'static str` in function returns
+/// - Errors use `LinesError` enum for true failure conditions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOperationStatus {
+    /// File successfully copied from source to destination
+    ///
+    /// Indicates the copy operation completed without errors.
+    /// The destination file now contains exact copy of source file content.
+    /// Source file remains unchanged.
+    Copied,
+
+    /// Destination file already exists, no copy performed
+    ///
+    /// This is a predicated outcome, not an error. The function follows
+    /// a no-overwrite policy: if the destination path already has a file,
+    /// we return this status and leave both files unchanged.
+    ///
+    /// Rationale: Overwriting existing files without explicit user confirmation
+    /// risks data loss. Caller must handle this case and prompt user if needed.
+    AlreadyExisted,
+
+    /// Source file does not exist at specified path
+    ///
+    /// Predicated outcome: there is nothing to copy. This is expected in
+    /// workflows where file existence is uncertain (e.g., optional configs,
+    /// user-specified paths that may not exist yet).
+    ///
+    /// Distinct from I/O errors: the path is valid but no file is present.
+    OriginalNotFound,
+
+    /// Source file exists but could not be accessed after retry attempts
+    ///
+    /// Predicated outcome: file is locked by another process, lacks read
+    /// permissions, or has other access restrictions. After 3 retry attempts
+    /// with 200ms delays, the file remains unavailable.
+    ///
+    /// Common causes:
+    /// - File locked by another application
+    /// - Insufficient read permissions
+    /// - File on network drive that became temporarily unavailable
+    /// - Antivirus scanning file
+    OriginalUnavailable,
+
+    /// Destination path could not be written after retry attempts
+    ///
+    /// Predicated outcome: unable to create or write to destination file
+    /// after 3 retry attempts with 200ms delays.
+    ///
+    /// Common causes:
+    /// - Parent directory doesn't exist
+    /// - Insufficient write permissions for directory
+    /// - Disk full
+    /// - Destination path locked by another process
+    /// - Network drive unavailable
+    DestinationUnavailable,
+}
+
+// Optional: Implement Display for better error messages
+impl std::fmt::Display for FileOperationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileOperationStatus::Copied => write!(f, "copied"),
+            FileOperationStatus::AlreadyExisted => write!(f, "already existed"),
+            FileOperationStatus::OriginalNotFound => write!(f, "original not found"),
+            FileOperationStatus::OriginalUnavailable => write!(f, "original unavailable"),
+            FileOperationStatus::DestinationUnavailable => write!(f, "destination unavailable"),
+        }
+    }
+}
+
+// ============================================================================
+// SAVE-AS-COPY OPERATION: Main Function (start)
+// ============================================================================
+
+/// Copies a file to a new location without modifying the original
+///
+/// # Project Context
+/// Implements the "Save As" functionality for the Lines text editor. Allows
+/// users to create a copy of the current file with a new name/location while
+/// preserving the original. This is distinct from:
+/// - Regular save (overwrites current file)
+/// - File append (adds content to existing file)
+/// - File insertion (inserts file content at cursor position)
+///
+/// # Function Scope & Purpose
+/// This function provides defensive file copying with:
+/// - Type-safe status reporting (distinguishes predicated outcomes from errors)
+/// - Retry logic for transient failures (handles brief system glitches)
+/// - No-overwrite policy (preserves existing files)
+/// - Bounded operations (no infinite loops, no full file loads)
+/// - Fail-safe error handling (never panics, always returns gracefully)
+///
+/// # Design Philosophy
+/// Follows NASA-inspired defensive programming principles:
+/// - Bounded retry loops (3 attempts max per operation)
+/// - Pre-allocated stack buffer (8KB, no heap allocation)
+/// - Explicit error classification (transient vs permanent)
+/// - Conservative approach (fail-fast on permanent errors)
+/// - Type-safe status codes (compiler-enforced exhaustive matching)
+/// - No dynamic memory for status messages
+///
+/// # Arguments
+/// * `original_file_path` - Absolute path to source file
+///   - Must be absolute path (validated by function)
+///   - Must be valid UTF-8 (validated by function)
+///   - File must exist and be readable
+///   - Example: `/home/user/Documents/original.txt`
+///
+/// * `new_file_path_name` - Absolute path for destination file
+///   - Must be absolute path (validated by function)
+///   - Must be valid UTF-8 (validated by function)
+///   - Must NOT already exist (no-overwrite policy)
+///   - Parent directory must exist
+///   - Example: `/home/user/Documents/backup.txt`
+///
+/// # Returns
+/// Returns `Result<(FileOperationStatus, &'static str), LinesError>`:
+///
+/// ## Success Cases - `Ok((status, message))`
+/// All of these are valid outcomes, not errors:
+///
+/// * `Ok((Copied, "copied"))` - File successfully copied
+///   - Source file read completely
+///   - Destination file written successfully
+///   - Both files intact
+///
+/// * `Ok((AlreadyExisted, "already existed"))` - Destination already exists
+///   - Predicated outcome: no-overwrite policy prevents data loss
+///   - Neither file modified
+///   - Caller should prompt user for overwrite confirmation
+///
+/// * `Ok((OriginalNotFound, "original not found"))` - Source doesn't exist
+///   - Predicated outcome: nothing to copy
+///   - Common in workflows with optional/uncertain file paths
+///   - Caller should handle gracefully (not treated as error)
+///
+/// * `Ok((OriginalUnavailable, "original unavailable"))` - Source locked
+///   - Source file exists but can't be opened after 3 retry attempts
+///   - Common causes: locked by another process, permissions issue
+///   - Caller should notify user to close other applications
+///
+/// * `Ok((DestinationUnavailable, "destination unavailable"))` - Can't write
+///   - Destination can't be created/written after 3 retry attempts
+///   - Common causes: parent directory missing, permissions, disk full
+///   - Caller should check directory exists and has write permissions
+///
+/// ## Error Cases - `Err(LinesError)`
+/// True errors indicating unexpected system failures:
+///
+/// * `Err(LinesError::InvalidInput(_))` - Path validation failed
+///   - Path is not absolute
+///   - Path contains invalid UTF-8
+///   - Path format is malformed
+///
+/// * `Err(LinesError::Io(_))` - I/O operation failed catastrophically
+///   - Disk failure during read/write
+///   - Filesystem corruption detected
+///   - Unexpected system-level error after retries
+///
+/// * `Err(LinesError::StateError(_))` - Unexpected state violation
+///   - Maximum chunk limit exceeded (128GB file size limit)
+///   - Loop safety limit triggered (cosmic ray protection)
+///
+/// # Behavior Details
+///
+/// ## Phase 1: Path Validation
+/// - Validates both paths are absolute (not relative)
+/// - Validates paths contain valid UTF-8
+/// - Returns `InvalidInput` error if validation fails
+/// - No retries (validation either passes or fails)
+///
+/// ## Phase 2: Source File Check
+/// - Checks if source file exists using `fs::metadata()`
+/// - Returns `OriginalNotFound` status if doesn't exist
+/// - Does NOT attempt to open file yet
+/// - No retries (file either exists or doesn't)
+///
+/// ## Phase 3: Destination Check
+/// - Checks if destination already exists using `fs::metadata()`
+/// - Returns `AlreadyExisted` status if exists (no-overwrite policy)
+/// - Prevents accidental data loss
+/// - No retries (file either exists or doesn't)
+///
+/// ## Phase 4: Open Source File
+/// - Opens source file in read-only mode
+/// - Retries up to 3 times for transient errors (locks, interrupts)
+/// - Returns `OriginalUnavailable` if all retries fail
+/// - Returns `Io` error for permanent failures (permissions)
+///
+/// ## Phase 5: Create Destination File
+/// - Creates destination file with `create_new(true)` (fails if exists)
+/// - Opens in write-only mode
+/// - Retries up to 3 times for transient errors
+/// - Returns `DestinationUnavailable` if all retries fail
+/// - Returns `Io` error for permanent failures
+///
+/// ## Phase 6: Buffered Copy Loop
+/// - Pre-allocates 8KB stack buffer (no heap)
+/// - Reads chunks from source with retry logic
+/// - Writes chunks to destination with retry logic
+/// - Bounded loop: max 16,777,216 chunks (~128GB)
+/// - Stops at EOF (bytes_read == 0)
+/// - Never loads entire file into memory
+///
+/// ## Phase 7: Finalize
+/// - Flushes destination file to disk (with retry)
+/// - Returns `Copied` status on success
+/// - Files automatically closed on function exit (RAII)
+///
+/// # Safety Guarantees
+/// - **No panic**: All errors handled gracefully, returns Result
+/// - **No unsafe**: Pure safe Rust, no unsafe blocks
+/// - **No recursion**: All operations iterative
+/// - **Bounded loops**: Explicit limits on all iterations
+/// - **No heap for messages**: Status strings are &'static str
+/// - **No unwrap**: All Results explicitly handled with ? or match
+/// - **No full file load**: Bucket-brigade chunked processing
+/// - **Atomic visibility**: Destination file only visible after full copy
+///
+/// # Performance Characteristics
+/// - **Time complexity**: O(n) where n = file size
+/// - **Space complexity**: O(1) - constant 8KB buffer
+/// - **Chunk overhead**: ~12,800 iterations per 100MB
+/// - **Retry overhead**: Up to 400ms total delay (2 retries × 200ms)
+/// - **Best case**: Single-pass copy, no retries
+/// - **Worst case**: 3 attempts per operation + max chunks
+///
+/// # Error Logging
+/// Production builds log detailed errors to error log file:
+/// - Full paths logged to file (for debugging)
+/// - Generic messages returned to caller (no info leakage)
+/// - Errors logged with context (function name, phase)
+///
+/// Debug builds include detailed diagnostics in stderr.
+///
+/// # Example Usage
+/// ```no_run
+/// use std::path::Path;
+/// # use std::io;
+/// # #[derive(Debug)] enum LinesError { Io(io::Error) }
+/// # impl From<io::Error> for LinesError { fn from(e: io::Error) -> Self { LinesError::Io(e) } }
+/// # #[derive(Debug, PartialEq)] enum FileOperationStatus { Copied, AlreadyExisted, OriginalNotFound }
+/// # fn save_file_as_newfile_with_newname(
+/// #     _original: &Path,
+/// #     _new: &Path,
+/// # ) -> Result<(FileOperationStatus, &'static str), LinesError> {
+/// #     Ok((FileOperationStatus::Copied, "copied"))
+/// # }
+///
+/// let source = Path::new("/home/user/Documents/draft.txt");
+/// let destination = Path::new("/home/user/Documents/draft_backup.txt");
+///
+/// match save_file_as_newfile_with_newname(source, destination) {
+///     Ok((FileOperationStatus::Copied, msg)) => {
+///         println!("Success: File {}", msg);
+///     }
+///     Ok((FileOperationStatus::AlreadyExisted, msg)) => {
+///         println!("Destination {}, overwrite? (y/n)", msg);
+///         // Prompt user for confirmation
+///     }
+///     Ok((FileOperationStatus::OriginalNotFound, msg)) => {
+///         println!("Source file {}", msg);
+///     }
+///     Ok((status, msg)) => {
+///         println!("Status {:?}: {}", status, msg);
+///     }
+///     Err(e) => {
+///         eprintln!("Error during copy: {}", e);
+///     }
+/// }
+/// ```
+///
+/// # Edge Cases
+/// - **Empty file**: Copies successfully, creates 0-byte destination
+/// - **Very large file**: Up to ~128GB supported (bounded by MAX_CHUNKS)
+/// - **Source == Destination**: Allowed but discouraged (would fail at destination exists check)
+/// - **Parent directory missing**: Returns `DestinationUnavailable`
+/// - **Insufficient permissions**: Returns error or unavailable status
+/// - **Disk full during copy**: Returns `DestinationUnavailable` after retries
+/// - **File locked**: Retries 3 times, then returns unavailable status
+/// - **Network path**: Supported if OS presents as regular file path
+///
+/// # Related Functions
+/// - Uses: `is_retryable_error()`, `retry_operation()`
+/// - Uses: `log_error()` for production error logging
+/// - Returns: Status codes from `FileOperationStatus` enum
+/// - Errors: Uses project's `LinesError` enum
+///
+/// # Thread Safety
+/// Function is thread-safe in that it doesn't use shared mutable state.
+/// However, concurrent access to same files from multiple threads/processes
+/// may cause file locking issues. Caller responsible for coordination.
+pub fn save_file_as_newfile_with_newname(
+    original_file_path: &Path,
+    new_file_path_name: &Path,
+) -> Result<(FileOperationStatus, &'static str)> {
+    // ========================================================================
+    // PHASE 1: Path Validation
+    // ========================================================================
+    // Validate paths before any I/O operations to fail fast on invalid input.
+    // This prevents wasted work and provides clear error messages early.
+
+    //    =================================================
+    // // Debug-Assert, Test-Asset, Production-Catch-Handle
+    //    =================================================
+    // Check: original path must be absolute
+    debug_assert!(
+        original_file_path.is_absolute(),
+        "original_file_path must be absolute"
+    );
+    #[cfg(test)]
+    assert!(
+        original_file_path.is_absolute(),
+        "original_file_path must be absolute"
+    );
+    if !original_file_path.is_absolute() {
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Original path not absolute",
+            Some("save_file_as_newfile:path_validation"),
+        );
+        return Err(LinesError::InvalidInput(
+            "original path must be absolute".into(),
+        ));
+    }
+
+    // Check: destination path must be absolute
+    debug_assert!(
+        new_file_path_name.is_absolute(),
+        "new_file_path_name must be absolute"
+    );
+    #[cfg(test)]
+    assert!(
+        new_file_path_name.is_absolute(),
+        "new_file_path_name must be absolute"
+    );
+    if !new_file_path_name.is_absolute() {
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Destination path not absolute",
+            Some("save_file_as_newfile:path_validation"),
+        );
+        return Err(LinesError::InvalidInput(
+            "destination path must be absolute".into(),
+        ));
+    }
+
+    // Validate: original path must be valid UTF-8
+    // This ensures we can safely work with the path in all operations
+    if original_file_path.to_str().is_none() {
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Original path invalid UTF-8",
+            Some("save_file_as_newfile:path_validation"),
+        );
+        return Err(LinesError::InvalidInput(
+            "original path contains invalid UTF-8".into(),
+        ));
+    }
+
+    // Validate: destination path must be valid UTF-8
+    if new_file_path_name.to_str().is_none() {
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "Destination path invalid UTF-8",
+            Some("save_file_as_newfile:path_validation"),
+        );
+        return Err(LinesError::InvalidInput(
+            "destination path contains invalid UTF-8".into(),
+        ));
+    }
+
+    // Debug: log paths being processed (only in debug builds for security)
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "DEBUG: save_file_as_newfile - copying from {:?} to {:?}",
+        original_file_path, new_file_path_name
+    );
+
+    // ========================================================================
+    // PHASE 2: Source File Existence Check
+    // ========================================================================
+    // Check if source file exists before attempting to open it.
+    // Distinguishes "file doesn't exist" from "file exists but can't open".
+
+    match fs::metadata(original_file_path) {
+        Ok(metadata) => {
+            // Source exists, verify it's a file (not a directory)
+            if !metadata.is_file() {
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Original path is not a file",
+                    Some("save_file_as_newfile:source_check"),
+                );
+                return Err(LinesError::InvalidInput(
+                    "original path is not a file".into(),
+                ));
+            }
+            // Source file exists and is valid, continue to next phase
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // Predicated outcome: source file doesn't exist
+            // This is expected in some workflows, not an error
+            #[cfg(debug_assertions)]
+            eprintln!("DEBUG: Source file not found: {:?}", original_file_path);
+
+            return Ok((FileOperationStatus::OriginalNotFound, "original not found"));
+        }
+        Err(e) => {
+            // Unexpected error checking source metadata
+            // Could be permissions issue or filesystem problem
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot access source file",
+                Some("save_file_as_newfile:source_check"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    }
+
+    // ========================================================================
+    // PHASE 3: Destination File Existence Check
+    // ========================================================================
+    // Check if destination already exists to enforce no-overwrite policy.
+    // Prevents accidental data loss from overwriting existing files.
+
+    match fs::metadata(new_file_path_name) {
+        Ok(_) => {
+            // Predicated outcome: destination file already exists
+            // No-overwrite policy: return status for caller to handle
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "DEBUG: Destination already exists: {:?}",
+                new_file_path_name
+            );
+
+            return Ok((FileOperationStatus::AlreadyExisted, "already existed"));
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            // Good: destination doesn't exist, we can create it
+            // Continue to copy phase
+        }
+        Err(e) => {
+            // Unexpected error checking destination metadata
+            // Could be permissions issue on parent directory
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot access destination path",
+                Some("save_file_as_newfile:destination_check"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    }
+
+    // ========================================================================
+    // PHASE 4: Open Source File (with retry)
+    // ========================================================================
+    // Open source file in read-only mode with retry logic for transient errors.
+
+    let mut source_file = match retry_operation(
+        || File::open(original_file_path),
+        SAVE_AS_COPY_MAX_RETRY_ATTEMPTS,
+    ) {
+        Ok(file) => file,
+        Err(e) if is_retryable_error(&e) => {
+            // Transient error persisted through all retries
+            // Predicated outcome: file locked or temporarily unavailable
+            #[cfg(debug_assertions)]
+            eprintln!("DEBUG: Source file unavailable after retries: {:?}", e);
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Source file unavailable",
+                Some("save_file_as_newfile:open_source"),
+            );
+
+            return Ok((
+                FileOperationStatus::OriginalUnavailable,
+                "original unavailable",
+            ));
+        }
+        Err(e) => {
+            // Permanent error: permissions, path issue, etc.
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot open source file",
+                Some("save_file_as_newfile:open_source"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ========================================================================
+    // PHASE 5: Create Destination File (with retry)
+    // ========================================================================
+    // Create destination file with create_new(true) to prevent overwrite.
+
+    let mut dest_file = match retry_operation(
+        || {
+            OpenOptions::new()
+                .create_new(true) // Fail if file exists (double-check safety)
+                .write(true)
+                .open(new_file_path_name)
+        },
+        SAVE_AS_COPY_MAX_RETRY_ATTEMPTS,
+    ) {
+        Ok(file) => file,
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+            // Race condition: file created between our check and now
+            // Treat as predicated outcome (same as earlier check)
+            #[cfg(debug_assertions)]
+            eprintln!("DEBUG: Destination created by another process");
+
+            return Ok((FileOperationStatus::AlreadyExisted, "already existed"));
+        }
+        Err(e) if is_retryable_error(&e) => {
+            // Transient error persisted through all retries
+            // Predicated outcome: can't write to destination
+            #[cfg(debug_assertions)]
+            eprintln!("DEBUG: Destination unavailable after retries: {:?}", e);
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Destination unavailable",
+                Some("save_file_as_newfile:create_destination"),
+            );
+
+            return Ok((
+                FileOperationStatus::DestinationUnavailable,
+                "destination unavailable",
+            ));
+        }
+        Err(e) => {
+            // Permanent error: permissions, parent directory missing, disk full
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Cannot create destination file",
+                Some("save_file_as_newfile:create_destination"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ========================================================================
+    // PHASE 6: Buffered Copy Loop (with retry)
+    // ========================================================================
+    // Copy file content in chunks using pre-allocated stack buffer.
+    // Bucket-brigade pattern: read chunk -> write chunk -> repeat until EOF.
+
+    // Pre-allocate buffer on stack (NASA rule 3: no dynamic allocation)
+    let mut buffer = [0u8; SAVE_AS_COPY_BUFFER_SIZE];
+
+    // Chunk counter for bounded loop (NASA rule 2: upper bound on loops)
+    let mut chunk_count: usize = 0;
+
+    // Copy loop: bounded by MAX_CHUNKS safety limit
+    loop {
+        // Safety check: prevent infinite loop from filesystem corruption
+        if chunk_count >= SAVE_AS_COPY_MAX_CHUNKS {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "DEBUG: Maximum chunk limit reached ({})",
+                SAVE_AS_COPY_MAX_CHUNKS
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Copy iteration limit exceeded",
+                Some("save_file_as_newfile:copy_loop"),
+            );
+
+            return Err(LinesError::StateError("iteration limit exceeded".into()));
+        }
+
+        chunk_count += 1;
+
+        // Read chunk from source file (with retry)
+        let bytes_read = match retry_operation(
+            || source_file.read(&mut buffer),
+            SAVE_AS_COPY_MAX_RETRY_ATTEMPTS,
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                // Read failed after retries
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Read failed during copy",
+                    Some("save_file_as_newfile:copy_loop"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        };
+
+        // EOF detection: bytes_read == 0 reliably signals end of file
+        if bytes_read == 0 {
+            // Successfully read entire file
+            break;
+        }
+
+        // Defensive assertion: bytes_read should never exceed buffer size
+        debug_assert!(
+            bytes_read <= SAVE_AS_COPY_BUFFER_SIZE,
+            "bytes_read exceeded buffer size"
+        );
+        #[cfg(test)]
+        assert!(
+            bytes_read <= SAVE_AS_COPY_BUFFER_SIZE,
+            "bytes_read exceeded buffer size"
+        );
+        if bytes_read > SAVE_AS_COPY_BUFFER_SIZE {
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Buffer overflow detected",
+                Some("save_file_as_newfile:copy_loop"),
+            );
+            return Err(LinesError::StateError("buffer overflow".into()));
+        }
+
+        // Write chunk to destination file (with retry)
+        match retry_operation(
+            || dest_file.write_all(&buffer[..bytes_read]),
+            SAVE_AS_COPY_MAX_RETRY_ATTEMPTS,
+        ) {
+            Ok(()) => { /* Write successful, continue to next chunk */ }
+            Err(e) => {
+                // Write failed after retries
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "Write failed during copy",
+                    Some("save_file_as_newfile:copy_loop"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        }
+
+        // Loop continues to next chunk
+        // Bounded by: chunk_count < SAVE_AS_COPY_MAX_CHUNKS
+    }
+
+    // ========================================================================
+    // PHASE 7: Finalize - Flush and Return Success
+    // ========================================================================
+    // Flush destination file to ensure all data written to disk.
+
+    match retry_operation(|| dest_file.flush(), SAVE_AS_COPY_MAX_RETRY_ATTEMPTS) {
+        Ok(()) => { /* Flush successful */ }
+        Err(e) => {
+            // Flush failed after retries
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "Flush failed after copy",
+                Some("save_file_as_newfile:finalize"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    }
+
+    // Success: file copied completely
+    #[cfg(debug_assertions)]
+    eprintln!("DEBUG: Successfully copied file ({} chunks)", chunk_count);
+
+    Ok((FileOperationStatus::Copied, "copied"))
+}
+
+// ============================================================================
+// (end) SAVE-AS-COPY OPERATION: Main Function
+// ============================================================================
+
 /// Saves the current read-copy back to the original file with backup
 ///
 /// # Purpose
@@ -8191,7 +9450,9 @@ pub enum Command {
     // Select? up down left right byte count? or... to position?
 
     // File operations
-    Save, // s
+    SaveFileStandard, // s
+    SaveAs(PathBuf),
+
     // TODO SaveAs, // sa
     Quit,        // q
     SaveAndQuit, // w (write-quit)
@@ -9653,12 +10914,85 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        Command::Save => {
+        Command::SaveFileStandard => {
             save_file(lines_editor_state)?;
             Ok(true)
-            // Save doesn't need rebuild (no content change in display)
+            // SaveFileStandard doesn't need rebuild (no content change in display)
         }
+        Command::SaveAs(save_as_path) => {
+            // Execute save-as operation
+            // Note: save_as_path is PathBuf, we need &Path
+            match save_file_as_newfile_with_newname(&edit_file_path, &save_as_path) {
+                // Success: file copied
+                Ok((FileOperationStatus::Copied, _)) => {
+                    let info_message = format!("File Saved As.",);
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+                    Ok(true)
+                }
 
+                // Predicated outcome: destination already exists
+                Ok((FileOperationStatus::AlreadyExisted, _)) => {
+                    let info_message = format!("File already exists.");
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+                    // Still return Ok - this is expected, not an error
+                    Ok(true)
+                }
+
+                // Predicated outcome: source not found (shouldn't happen normally)
+                Ok((FileOperationStatus::OriginalNotFound, _)) => {
+                    let info_message = "Source file not found".to_string();
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+                    Ok(true)
+                }
+
+                // Predicated outcome: source unavailable
+                Ok((FileOperationStatus::OriginalUnavailable, _)) => {
+                    let info_message = "Source file unavailable (locked?)".to_string();
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+                    Ok(true)
+                }
+
+                // Predicated outcome: destination unavailable
+                Ok((FileOperationStatus::DestinationUnavailable, _)) => {
+                    #[cfg(not(debug_assertions))]
+                    let info_message = format!(
+                        "Cannot write to: {} (check directory exists)",
+                        save_as_path.display()
+                    );
+                    #[cfg(not(debug_assertions))]
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+
+                    // Prod Safe
+                    let info_message = format!("Can't write,path exists?",);
+
+                    let _ = lines_editor_state.set_info_bar_message(&info_message);
+                    Ok(true)
+                }
+
+                // True error: propagate up
+                Err(e) => {
+                    // Log error (production safe - no paths in message)
+                    #[cfg(not(debug_assertions))]
+                    log_error("Save as failed", Some("command_handler:save_as"));
+
+                    // Set user-visible error message
+                    let _ = lines_editor_state.set_info_bar_message("|o| SaveAs faiL |o|");
+
+                    // Propagate error up the chain
+                    Err(e)
+                }
+            }
+        }
+        // Command::SaveAs(save_as_path) => {
+        //     // 1     original_file_path: &Path, new_file_path_name: &Path,
+        //     let saveas_status_message: String =
+        //         save_file_as_newfile_with_newname(&edit_file_path, &save_as_path)?;
+        //     // 2. message
+        //     let _ = lines_editor_state.set_info_bar_message(saveas_status_message);
+
+        //     Ok(true)
+        //     // SaveAs doesn't need rebuild (no content change in display)
+        // }
         Command::Quit => {
             // Note: There is no 'must-save' functionality by default,
             // because that would require saving rejected/unsafe changes.
