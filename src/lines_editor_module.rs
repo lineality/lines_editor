@@ -1013,8 +1013,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::toggle_comment_indent_module::{
     ToggleCommentError, ToggleIndentError, indent_line, indent_range,
-    toggle_basic_singleline_comment, toggle_block_comment,
-    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
+    toggle_basic_singleline_comment, toggle_block_comment, toggle_range_basic_comments,
+    toggle_range_rust_docstring, toggle_rust_docstring_singleline_comment, unindent_line,
+    unindent_range,
 };
 
 use super::buttons_reversible_edit_changelog_module::{
@@ -1905,649 +1906,9 @@ fn is_syntax_char(byte: u8) -> Result<bool> {
     }
 }
 
-/// Moves cursor to position BEFORE next syntax character (Vim-style 'e' command)
-///
-/// # Purpose
-/// Implements 'e' command for word navigation. Moves cursor forward to the
-/// position BEFORE the next syntax character. This positions cursor at the
-/// last non-syntax character of current word.
-/// Also counts newlines to allow window scrolling without rebuild.
-///
-/// # Algorithm
-/// 1. Move forward 2 bytes (assumption: next byte is syntax, skip it)
-/// 2. Loop (max 64 iterations):
-///    - Peek ahead 1 byte (look at next position)
-///    - If next byte is syntax OR EOF → STOP (cursor is positioned)
-///    - If next byte is non-syntax → move cursor forward 1 byte, continue
-///    - If newline encountered during move: increment counter
-/// 3. Return final byte offset AND newline count
-///
-/// # Arguments
-/// * `file_path` - Absolute path to file being edited
-/// * `current_byte_offset` - Current cursor position (0-indexed byte offset)
-/// * `file_size` - Total file size in bytes (for EOF detection)
-///
-/// # Returns
-/// * `Ok((new_byte_offset, newlines_crossed))` where:
-///   - `new_byte_offset` - Position before next syntax char (or EOF)
-///   - `newlines_crossed` - Number of 0x0A bytes encountered during move
-/// * `Err(LinesError)` - File read error
-///
-/// # Edge Cases
-/// - Cursor at EOF: returns `(EOF_pos, 0)` (no movement possible)
-/// - Cursor already before syntax: moves past it to next word end
-/// - Multiple syntax chars in row: skips first, stops at next
-/// - Crosses newline: counts it, positions before next syntax
-/// - File with no syntax: moves 64+ bytes forward (iteration limit)
-///
-/// # Memory Safety
-/// - Stack-only: 1-byte read buffer
-/// - No dynamic allocation
-/// - Bounded iterations (max 64)
-///
-/// # Defensive Programming
-/// - Iteration limit prevents infinite loops (NASA Rule #2)
-/// - All read errors propagated
-/// - Saturating arithmetic prevents underflow/overflow
-/// - Peek-ahead safely handles EOF (no buffer overflow)
-/// - Byte-level syntax check safe for UTF-8
-///
-/// # Example
-/// ```ignore
-/// // File: "hello world"
-/// // Cursor at byte 0 (on 'h')
-/// let (new_pos, newlines) = move_word_end(path, 0, 11)?;
-/// // Moves forward 2 (to 'l'), then peeks at 'l' (non-syntax)
-/// // Continues moving: 'l'->'o'->space (stop before space)
-/// // Returns (4, 0) - positioned on 'o'
-/// ```
-pub fn move_word_end(
-    file_path: &Path,
-    current_byte_offset: u64,
-    file_size: u64,
-) -> Result<(u64, usize)> {
-    // Returns: (new_byte_offset, newlines_crossed)
-
-    // =========================================================================
-    // INPUT VALIDATION
-    // =========================================================================
-
-    // Debug assert: path should be valid
-    debug_assert!(
-        !file_path.as_os_str().is_empty(),
-        "File path cannot be empty"
-    );
-
-    // Test assert: path should be valid
-    #[cfg(test)]
-    assert!(
-        !file_path.as_os_str().is_empty(),
-        "File path cannot be empty"
-    );
-
-    // Production check: path empty
-    if file_path.as_os_str().is_empty() {
-        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
-    }
-
-    // Debug assert: offset should not exceed file size
-    debug_assert!(
-        current_byte_offset <= file_size,
-        "Cursor offset {} exceeds file size {}",
-        current_byte_offset,
-        file_size
-    );
-
-    // Test assert: offset should not exceed file size
-    #[cfg(test)]
-    assert!(
-        current_byte_offset <= file_size,
-        "Cursor offset {} exceeds file size {}",
-        current_byte_offset,
-        file_size
-    );
-
-    // Production check: offset exceeds file size
-    if current_byte_offset > file_size {
-        return Err(LinesError::InvalidInput(format!(
-            "Cursor offset {} exceeds file size {}",
-            current_byte_offset, file_size
-        )));
-    }
-
-    // =========================================================================
-    // EARLY RETURN: ALREADY AT EOF
-    // =========================================================================
-
-    // If cursor already at EOF, nowhere to move to
-    if current_byte_offset >= file_size {
-        return Ok((current_byte_offset, 0)); // Stay at EOF, no newlines
-    }
-
-    // =========================================================================
-    // OPEN FILE FOR READING
-    // =========================================================================
-
-    let mut file = File::open(file_path).map_err(|e| {
-        log_error(
-            &format!("Cannot open file for word end movement: {}", e),
-            Some("move_word_end"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    // =========================================================================
-    // INITIALIZE STATE
-    // =========================================================================
-
-    // Pre-allocated 1-byte buffer (stack only, no allocation)
-    let mut byte_buffer: [u8; 1] = [0];
-
-    // Current position during iteration
-    let mut current_pos: u64 = current_byte_offset;
-
-    // Newline counter (for window scrolling)
-    let mut newlines_crossed: usize = 0;
-
-    // =========================================================================
-    // STEP 1: MOVE FORWARD 2 BYTES (ASSUMPTION: NEXT IS SYNTAX, SKIP IT)
-    // =========================================================================
-
-    // First move: skip 1 byte
-    current_pos = current_pos.saturating_add(1);
-    if current_pos >= file_size {
-        return Ok((current_pos, newlines_crossed));
-    }
-
-    // Second move: skip another byte (assumption: it's syntax)
-    // But we need to track if it's a newline
-    file.seek(io::SeekFrom::Start(current_pos)).map_err(|e| {
-        log_error(
-            &format!(
-                "Cannot seek to byte {} for word end initial move: {}",
-                current_pos, e
-            ),
-            Some("move_word_end"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    match file.read(&mut byte_buffer) {
-        Ok(0) => {
-            // EOF at this position
-            return Ok((current_pos, newlines_crossed));
-        }
-        Ok(1) => {
-            // Track if we're moving past a newline
-            if byte_buffer[0] == b'\n' {
-                newlines_crossed += 1;
-            }
-            current_pos = current_pos.saturating_add(1);
-        }
-        Ok(n) => {
-            let error_msg = format!(
-                "Unexpected read count {} at byte {} (expected 0 or 1)",
-                n, current_pos
-            );
-            log_error(&error_msg, Some("move_word_end"));
-            return Err(LinesError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                error_msg,
-            )));
-        }
-        Err(e) => {
-            log_error(
-                &format!("Read error at byte {}: {}", current_pos, e),
-                Some("move_word_end"),
-            );
-            return Err(LinesError::Io(e));
-        }
-    }
-
-    // Check if we've gone past EOF after second move
-    if current_pos >= file_size {
-        return Ok((current_pos, newlines_crossed));
-    }
-
-    // =========================================================================
-    // MAIN LOOP: PEEK AHEAD UNTIL NEXT BYTE IS SYNTAX
-    // =========================================================================
-
-    let mut iteration: usize = 0;
-
-    loop {
-        // Defensive: Check iteration limit
-        if iteration >= WORD_MOVE_MAX_ITERATIONS {
-            // Hit iteration limit - stop here
-            log_error(
-                &format!(
-                    "Word end movement hit iteration limit at byte {}",
-                    current_pos
-                ),
-                Some("move_word_end"),
-            );
-            return Ok((current_pos, newlines_crossed));
-        }
-
-        iteration += 1;
-
-        // ===================================================================
-        // PEEK AHEAD TO NEXT BYTE (BEFORE MOVING)
-        // ===================================================================
-
-        // Calculate next position
-        let next_pos = current_pos.saturating_add(1);
-
-        // Check if next position would be past EOF
-        if next_pos >= file_size {
-            // Next byte would be past EOF - stop here (cursor at current position)
-            return Ok((current_pos, newlines_crossed));
-        }
-
-        // ===================================================================
-        // READ NEXT BYTE (PEEK AHEAD)
-        // ===================================================================
-
-        // Seek to next position
-        file.seek(io::SeekFrom::Start(next_pos)).map_err(|e| {
-            log_error(
-                &format!("Cannot seek to byte {} for word end peek: {}", next_pos, e),
-                Some("move_word_end"),
-            );
-            LinesError::Io(e)
-        })?;
-
-        // Read one byte
-        match file.read(&mut byte_buffer) {
-            Ok(0) => {
-                // EOF at next position - stop here
-                return Ok((current_pos, newlines_crossed));
-            }
-            Ok(1) => {
-                // Got one byte - check if it's syntax
-                let next_byte = byte_buffer[0];
-
-                match is_syntax_char(next_byte) {
-                    Ok(true) => {
-                        // Next byte IS syntax - STOP HERE (cursor stays before it)
-                        return Ok((current_pos, newlines_crossed));
-                    }
-                    Ok(false) => {
-                        // Next byte is non-syntax - move cursor forward to it
-                        current_pos = next_pos;
-
-                        // Check if we just moved through a newline
-                        if next_byte == b'\n' {
-                            newlines_crossed += 1;
-                        }
-
-                        // Continue loop to peek at the byte after this one
-                        continue;
-                    }
-                    Err(e) => {
-                        // Error checking syntax (shouldn't happen, but handle it)
-                        log_error(
-                            &format!("Error checking syntax at byte {}: {}", next_pos, e),
-                            Some("move_word_end"),
-                        );
-                        return Err(e);
-                    }
-                }
-            }
-            Ok(n) => {
-                // Unexpected: read() returned more than 1 byte for 1-byte buffer
-                let error_msg = format!(
-                    "Unexpected read count {} at byte {} (expected 0 or 1)",
-                    n, next_pos
-                );
-                log_error(&error_msg, Some("move_word_end"));
-                return Err(LinesError::Io(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    error_msg,
-                )));
-            }
-            Err(e) => {
-                // Read error - propagate
-                log_error(
-                    &format!("Read error at byte {}: {}", next_pos, e),
-                    Some("move_word_end"),
-                );
-                return Err(LinesError::Io(e));
-            }
-        }
-    }
-}
-/// Checks if the byte at a specific file position is a newline character
-///
-/// # Purpose
-/// Safe, defensive helper function for peek-ahead operations. Used by movement
-/// commands to detect when cursor would cross a line boundary without
-/// moving or modifying state.
-///
-/// # Design Philosophy
-/// - Single responsibility: just peek at one byte, answer yes/no
-/// - Fail-safe: returns false on any error (doesn't panic or halt)
-/// - Memory safe: no allocation, bounded I/O
-/// - Used by: move_word_forward, move_word_end, move_word_back, and any other
-///   movement that needs to detect line boundaries
-///
-/// # Arguments
-/// * `file_path` - Absolute path to file being checked
-///   - Must exist and be readable
-///   - Defensive: caller responsible for validation
-/// * `byte_pos` - Byte offset to check (0-indexed)
-///   - Can be any value including >= file_size
-///   - Defensive: out-of-bounds positions safely return false
-/// * `file_size` - Total file size in bytes
-///   - Used to validate byte_pos is in range
-///   - If byte_pos >= file_size, returns false (EOF, not newline)
-///
-/// # Returns
-/// * `Ok(true)` - Byte at position is 0x0A (newline)
-/// * `Ok(false)` - Byte at position is not newline (any other byte or out-of-bounds)
-/// * `Err(LinesError::Io)` - File operations failed (open, seek, read errors)
-///
-/// # Edge Cases Handled
-/// - `byte_pos >= file_size` → returns `Ok(false)` (EOF is not newline)
-/// - `byte_pos == file_size - 1` → reads last byte correctly
-/// - File read returns 0 bytes → returns `Ok(false)` (EOF, not newline)
-/// - File seek fails → returns `Err` (I/O error, logged)
-/// - File read fails mid-operation → returns `Err` (I/O error, logged)
-/// - Empty file (size 0) → returns `Ok(false)` (no bytes to read)
-///
-/// # Memory Safety
-/// - Stack-only: 1-byte buffer allocated on stack
-/// - No dynamic allocation
-/// - No heap growth
-/// - Single file open/seek/read/close per call
-/// - Safe for UTF-8: newline is ASCII 0x0A, no multi-byte collision possible
-///
-/// # Performance
-/// - Time: O(1) - single byte read (or fail fast)
-/// - Space: O(1) - fixed 1-byte buffer
-/// - I/O: 1 file open, 1 seek, 1 read, 1 close
-/// - Suitable for calling in loops (bounded, cached pattern: peek before move)
-///
-/// # Defensive Programming
-/// - All I/O errors logged with context
-/// - No unwrap() or panic() calls
-/// - Saturating arithmetic prevents overflow
-/// - Early returns for out-of-bounds
-/// - No assumptions about file state
-///
-/// # Use Cases
-///
-/// **Case 1: Peek-ahead in word movement**
-/// ```ignore
-/// // Before moving cursor, check if next byte is newline
-/// if is_newline_at_position(&file_path, current_pos + 1, file_size)? {
-///     // Crossed line boundary - use line nav instead
-///     execute_command(state, Command::GotoLineStart)?;
-///     execute_command(state, Command::MoveDown(1))?;
-/// } else {
-///     // Normal character movement
-///     cursor.col += 1;
-/// }
-/// ```
-///
-/// **Case 2: Loop detection in move_word_forward**
-/// ```ignore
-/// while remaining_moves > 0 {
-///     let next_pos = current_pos + 1;
-///
-///     if is_newline_at_position(&file_path, next_pos, file_size)? {
-///         // Hit newline - stop or handle line crossing
-///         return Ok((current_pos, newlines_crossed));
-///     }
-///
-///     current_pos = next_pos;
-///     remaining_moves -= 1;
-/// }
-/// ```
-///
-/// **Case 3: Integration with MoveRight command**
-/// ```ignore
-/// // In MoveRight loop: peek before scrolling right
-/// if is_newline_at_position(&file_path, next_byte_pos, file_size)? {
-///     execute_command(state, Command::GotoLineStart)?;
-///     execute_command(state, Command::MoveDown(1))?;
-/// } else {
-///     state.tui_window_horizontal_utf8txt_line_char_offset += 1;
-/// }
-/// ```
-///
-/// # Integration Points
-/// - `move_word_forward()`: Peek ahead to detect line crossing
-/// - `move_word_end()`: Peek in loop to stop at syntax on next line
-/// - `move_word_back()`: Peek backward to detect line crossing (reverse)
-/// - `Command::MoveRight`: Peek before scrolling right (existing code)
-/// - Any future movement command that needs line boundary detection
-///
-/// # Testing Strategy
-/// Test with:
-/// - File with newlines at various positions
-/// - Empty file (no bytes)
-/// - File with no newlines (single line)
-/// - File with multiple consecutive newlines
-/// - Position at EOF
-/// - Position past EOF
-/// - Position 0 (start of file)
-/// - Last byte of file (EOF-1)
-/// - Read-only files
-/// - Binary files containing 0x0A bytes (not text)
-///
-/// # Performance Characteristics
-/// - Suitable for per-move peek operations
-/// - Not suitable for bulk newline scanning (use count_lines_in_file for that)
-/// - Cost-benefit: single byte I/O vs. avoiding line-crossing bugs
-///
-/// # Error Policy
-/// Following project error handling philosophy:
-/// - File errors propagated (caller handles via ?)
-/// - Logging happens before returning error
-/// - Never silently swallows errors
-/// - Caller responsible for retry/recovery logic
-///
-/// # Future Enhancement
-/// Could cache results if same file peeked repeatedly, but:
-/// - File may change between edits
-/// - Invalidation logic complex
-/// - Current per-call overhead minimal
-/// - Premature optimization: keep simple unless profiling shows issue
-///
-pub fn is_newline_at_position(file_path: &Path, byte_pos: u64, file_size: u64) -> Result<bool> {
-    // =========================================================================
-    // INPUT VALIDATION
-    // =========================================================================
-
-    // Debug assert: path should be valid
-    debug_assert!(
-        !file_path.as_os_str().is_empty(),
-        "File path cannot be empty in is_newline_at_position"
-    );
-
-    // Test assert: path should be valid
-    #[cfg(test)]
-    assert!(
-        !file_path.as_os_str().is_empty(),
-        "File path cannot be empty in is_newline_at_position"
-    );
-
-    // Production check: path empty
-    if file_path.as_os_str().is_empty() {
-        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
-    }
-
-    // =========================================================================
-    // EARLY RETURN: OUT OF BOUNDS
-    // =========================================================================
-
-    // Defensive: If position is at or past EOF, it's not a newline
-    // This is the most common "false" case
-    if byte_pos >= file_size {
-        return Ok(false);
-    }
-
-    // =========================================================================
-    // OPEN FILE FOR READING
-    // =========================================================================
-
-    let mut file = File::open(file_path).map_err(|e| {
-        log_error(
-            &format!(
-                "Cannot open file to check for newline at byte {}: {}",
-                byte_pos, e
-            ),
-            Some("is_newline_at_position"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    // =========================================================================
-    // SEEK TO POSITION AND READ SINGLE BYTE
-    // =========================================================================
-
-    // Pre-allocated 1-byte buffer (stack only, no allocation)
-    let mut byte_buffer: [u8; 1] = [0];
-
-    // Seek to the position we want to check
-    file.seek(io::SeekFrom::Start(byte_pos)).map_err(|e| {
-        log_error(
-            &format!(
-                "Cannot seek to byte {} in is_newline_at_position: {}",
-                byte_pos, e
-            ),
-            Some("is_newline_at_position"),
-        );
-        LinesError::Io(e)
-    })?;
-
-    // Read one byte
-    match file.read(&mut byte_buffer) {
-        Ok(0) => {
-            // EOF reached - no byte at this position (shouldn't happen after bounds check)
-            log_error(
-                &format!(
-                    "Unexpected EOF when reading at byte {} (file_size was {})",
-                    byte_pos, file_size
-                ),
-                Some("is_newline_at_position"),
-            );
-            Ok(false)
-        }
-        Ok(1) => {
-            // Got one byte - check if it's a newline
-            // Newline is ASCII 0x0A - safe single-byte check (no UTF-8 collision)
-            Ok(byte_buffer[0] == b'\n')
-        }
-        Ok(n) => {
-            // Unexpected: read() returned more than 1 byte for 1-byte buffer
-            // This should never happen in safe Rust
-            let error_msg = format!(
-                "Unexpected read count {} at byte {} (expected 0 or 1)",
-                n, byte_pos
-            );
-            log_error(&error_msg, Some("is_newline_at_position"));
-            Err(LinesError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                error_msg,
-            )))
-        }
-        Err(e) => {
-            // Read error - propagate with context
-            log_error(
-                &format!(
-                    "Read error at byte {} in is_newline_at_position: {}",
-                    byte_pos, e
-                ),
-                Some("is_newline_at_position"),
-            );
-            Err(LinesError::Io(e))
-        }
-    }
-}
-
 // =========================
 // End of Movement Functions
 // =========================
-
-/// Creates a timestamp string with full year prefix for archive file naming
-///
-/// # Purpose
-/// Generates a consistent, sortable timestamp string for archive filenames
-/// that works identically across all platforms (Windows, Linux, macOS).
-/// Includes full 4-digit year prefix for better year identification.
-///
-/// # Arguments
-/// * `time` - The SystemTime to format (typically SystemTime::now())
-///
-/// # Returns
-/// * `String` - Timestamp in format: "YYYY_YY_MM_DD_HH_MM_SS"
-///
-/// # Format Specification
-/// - YYYY: Four-digit year (0000-9999)
-/// - YY: Two-digit year (00-99)
-/// - MM: Two-digit month (01-12)
-/// - DD: Two-digit day (01-31)
-/// - HH: Two-digit hour in 24-hour format (00-23)
-/// - MM: Two-digit minute (00-59)
-/// - SS: Two-digit second (00-59)
-///
-/// # Examples
-/// - "2024_24_01_15_14_30_45" for January 15, 2024 at 2:30:45 PM
-/// - "2023_23_12_31_23_59_59" for December 31, 2023 at 11:59:59 PM
-///
-/// # Platform Consistency
-/// This function produces identical output on all platforms by using
-/// epoch-based calculations rather than platform-specific date commands.
-fn create_archive_timestamp(time: SystemTime) -> String {
-    // Get duration since Unix epoch
-    let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration,
-        Err(_) => {
-            // System time before Unix epoch - use fallback
-            eprintln!("Warning: System time is before Unix epoch, using fallback timestamp");
-            return String::from("1970_70_01_01_00_00_00");
-        }
-    };
-
-    let total_seconds = duration_since_epoch.as_secs();
-
-    // Use the accurate date calculation
-    let (year, month, day, hour, minute, second) =
-        epoch_seconds_to_datetime_components(total_seconds);
-
-    // Assertion 1: Validate year range
-    const MAX_REASONABLE_YEAR: u32 = 9999;
-    if year > MAX_REASONABLE_YEAR {
-        eprintln!(
-            "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
-            year, MAX_REASONABLE_YEAR
-        );
-        return String::from("9999_99_12_31_23_59_59");
-    }
-
-    // Assertion 2: Validate all components are in expected ranges
-    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 {
-        eprintln!(
-            "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
-            year, month, day, hour, minute, second
-        );
-        return String::from("1970_70_01_01_00_00_00"); // Safe fallback
-    }
-
-    // Format as YYYY_YY_MM_DD_HH_MM_SS
-    format!(
-        "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
-        year,       // Four-digit year
-        year % 100, // Two-digit year
-        month,
-        day,
-        hour,
-        minute,
-        second
-    )
-}
 
 /// Creates a human-readable timestamp string with UTC indicator
 ///
@@ -3343,7 +2704,7 @@ fn format_navigation_legend() -> Result<String> {
     // Build the legend string with error handling for format operations
     // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
     let formatted = format!(
-        "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}//cmnt {}[]{}idnt {}hjkl{}{}",
+        "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
         // YELLOW, // Overall legend color
         RED,
         YELLOW, // RED q + YELLOW uit
@@ -3377,8 +2738,10 @@ fn format_navigation_legend() -> Result<String> {
         RED,
         YELLOW, // RED str + YELLOW ...
         RED,
-        YELLOW, // RED enter + YELLOW ...
+        YELLOW,
         RED,
+        // YELLOW, // RED enter + YELLOW ...
+        GREEN,  // RED b + YELLOW ack
         YELLOW, // RED enter + YELLOW ...
         RED,
         YELLOW, // RED enter + YELLOW ...
@@ -6607,15 +5970,17 @@ impl EditorState {
                 "\x1b[C" => Command::MoveRight(count), // starboard arrow
                 "k" => Command::MoveUp(count),
                 "\x1b[A" => Command::MoveUp(count), // up arrow -> \x1b[A
-                // toggle RANGE
-                "/" => Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row),
 
                 // toggle RANGE
-                // "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
+                "/" => Command::ToggleBasicCommentlinesRange,
+                "//" | "/block" | "/b" => {
+                    Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row)
+                }
+                "///" => Command::ToggleRustDocstringRange, // zero index
 
                 // indent RANGE
-                // "[" => Command::UnindentOneLine(self.cursor.row), // zero index
-                // "]" => Command::IndentOneLine(self.cursor.row),   // zero index
+                "[" => Command::UnindentRange, // zero index
+                "]" => Command::IndentRange,   // zero index
                 "w" => Command::MoveWordForward(count),
                 "e" => Command::MoveWordEnd(count),
                 "b" => Command::MoveWordBack(count),
@@ -9617,9 +8982,11 @@ pub enum Command {
     ToggleBlockcomments(usize, usize), // start-row, stop-row
     IndentOneLine(usize),              // current line is input
     UnindentOneLine(usize),            // current line is input
-    // IndentRange,
-    // UnIndentRange,
-    //
+    ToggleRustDocstringRange,
+    ToggleBasicCommentlinesRange,
+    IndentRange,
+    UnindentRange,
+
     UndoButtonsCommand,
     RedoButtonsCommand,
 
@@ -11023,13 +10390,201 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
+        Command::UnindentRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            /*
+            pub fn unindent_range(
+                file_path: &str,
+                start_line: usize,
+                end_line: usize,
+            ) -> Result<(), ToggleIndentError> {
+            */
+            let _ = unindent_range(
+                &base_edit_filepath.to_string_lossy(),
+                lines_editor_state.selection_rowline_start,
+                lines_editor_state.cursor.row,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::IndentRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            /*
+            pub fn indent_range(
+                file_path: &str,
+                start_line: usize,
+                end_line: usize,
+            ) -> Result<(), ToggleIndentError> {
+            */
+            let _ = indent_range(
+                &base_edit_filepath.to_string_lossy(),
+                lines_editor_state.selection_rowline_start,
+                lines_editor_state.cursor.row,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::ToggleRustDocstringRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            /*
+            pub fn toggle_range_rust_docstring(
+                file_path: &str,
+                from_line: usize,
+                to_line: usize,
+            ) -> Result<(), ToggleCommentError> {
+            */
+            let _ = toggle_range_rust_docstring(
+                &base_edit_filepath.to_string_lossy(),
+                lines_editor_state.selection_rowline_start,
+                lines_editor_state.cursor.row,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::ToggleBasicCommentlinesRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            /*
+            pub fn toggle_range_basic_comments(
+                file_path: &str,
+                from_line: usize,
+                to_line: usize,
+            ) -> Result<(), ToggleCommentError> {
+            */
+            let _ = toggle_range_basic_comments(
+                &base_edit_filepath.to_string_lossy(),
+                lines_editor_state.selection_rowline_start,
+                lines_editor_state.cursor.row,
+            )?;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
         Command::UnindentOneLine(line_number) => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
             // println!("line_number {line_number}");
             unindent_line(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
         Command::IndentOneLine(line_number) => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Error clearing redo logs: {:?}", e);
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("backspace_style_delete_noload"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
             // println!("line_number {line_number}");
             indent_line(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12581,7 +12136,354 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     Ok(())
 }
 
-// TODO docstring
+/// Deletes explicit byte range from visual selection WITHOUT loading whole file, with undo support
+///
+/// # Overview
+/// Deletes a user-selected byte range using chunked file operations and creates
+/// inverse changelog entries for undo. The range is determined by visual selection
+/// positions stored in editor state. Selected content is saved to a temporary file
+/// before deletion, then changelog entries are created character-by-character using
+/// the "Cheap Trick" button stack approach.
+///
+/// # Key Differences from Line Deletion
+///
+/// **Position-based, not line-based:**
+/// - Range comes from visual selection cursors (start/end positions)
+/// - Deletes exactly the selected bytes (inclusive)
+/// - Respects UTF-8 character boundaries (won't cut mid-character)
+/// - No automatic newline inclusion/exclusion
+///
+/// **UTF-8 Boundary Safety:**
+/// The end position marks the START of the last selected character, which may be
+/// 1-4 bytes long. We detect the character length and extend delete_end to include
+/// the complete character, preventing corruption of multi-byte sequences.
+///
+/// # The "Cheap Trick" Button Stack (Critical for Undo!)
+///
+/// **The Problem We Solve:**
+/// When deleting a range like "pine\nuts" at position 25, we need to create
+/// undo logs that will reconstruct it correctly. Naive approach would be:
+/// ```text
+/// Log: ADD 'p' at 25
+/// Log: ADD 'i' at 26  ← WRONG! Position changes as we add
+/// Log: ADD 'n' at 27
+/// ...
+/// ```
+/// When undo runs backwards (LIFO), it would add last character first at wrong position.
+///
+/// **The Solution: All Logs Use Same Position**
+/// ```text
+/// Log 1.h: ADD 'p' at 25  (first char, highest letter, last to execute)
+/// Log 1.g: ADD 'i' at 25  (same position!)
+/// Log 1.f: ADD 'n' at 25  (same position!)
+/// Log 1.e: ADD 'e' at 25  (same position!)
+/// Log 1.d: ADD '\' at 25  (same position!)
+/// Log 1.c: ADD 'n' at 25  (same position!)
+/// Log 1.b: ADD 'u' at 25  (same position!)
+/// Log 1.a: ADD 't' at 25  (same position!)
+/// Log 1:   ADD 's' at 25  (last char, no letter, first to execute)
+/// ```
+///
+/// **How Button Stack Reconstructs the Range:**
+/// When undo executes (reads files in sorted order: 1, 1.a, 1.b, ..., 1.h):
+/// 1. ADD 's' at 25 → "s" at position 25
+/// 2. ADD 't' at 25 → "ts" at positions 25-26 (pushes s right)
+/// 3. ADD 'u' at 25 → "uts" at 25-26-27 (pushes t,s right)
+/// 4. ADD 'n' at 25 → "nuts" at 25-26-27-28
+/// 5. ... continues pushing right ...
+/// 8. ADD 'e' at 25 → "e\nuts" (all chars pushed right)
+/// 9. ADD 'p' at 25 → "pine\nuts" (reconstruction complete!)
+///
+/// Result: "pine\nuts" perfectly reconstructed!
+///
+/// **Why This Works:**
+/// - LIFO (Last In, First Out): Undo reads logs in reverse order of creation
+/// - Insert-at-same-position: Each insertion pushes previous characters right
+/// - Natural cascading: File operations automatically shift bytes
+/// - Fewer moving parts: No position arithmetic, just one constant position
+/// - UTF-8 safe: Works for multi-byte characters (each byte gets same position)
+///
+/// **Letter Suffixes Enforce Execution Order:**
+/// - No letter (e.g., "1"): Last character in range, executed FIRST by undo
+/// - Letter 'a' (e.g., "1.a"): Second-to-last character, executed second
+/// - Letter 'b' (e.g., "1.b"): Third-to-last, executed third
+/// - ...
+/// - Highest letter (e.g., "1.h"): First character in range, executed LAST by undo
+///
+/// This naming ensures correct LIFO execution order through filesystem sorting.
+///
+/// # Algorithm
+///
+/// **Phase 1: Determine Range from Visual Selection**
+/// 1. Normalize selection range (handle backwards selection)
+///    - Call normalize_sort_sanitize_selection_range()
+///    - Ensures start <= end regardless of selection direction
+/// 2. Validate range against file size
+///    - Read file metadata to get file length
+///    - Reject if start >= file_size or end > file_size
+///    - Return InvalidInput error if out of bounds
+/// 3. Handle UTF-8 character boundary at end position
+///    - Seek to end position
+///    - Read first byte of character at end
+///    - Use detect_utf8_byte_count() to get character length
+///    - Set delete_end = end + char_length (inclusive of complete character)
+///    - If invalid UTF-8: treat as single byte, log error
+///    - If EOF: use end position directly
+/// 4. Set range_start = start (use position directly)
+///
+/// **Phase 2: Save Range to Temp File**
+/// 5. Create temporary file (file.tmp_deleted_range)
+/// 6. Copy range bytes [range_start..delete_end] to temp file (chunked, no heap)
+/// 7. Flush and close temp file
+/// 8. If copy fails: clean up temp file, abort operation
+///
+/// **Phase 3: Delete Range from Source File**
+/// 9. Delete byte range [range_start..delete_end] using chunked operations
+/// 10. If deletion fails: clean up temp file, abort operation
+///
+/// **Phase 4: Create Undo Logs (Button Stack)**
+/// 11. Get changelog directory path
+/// 12. Open temp file for reading
+/// 13. Iterate through temp file character-by-character (chunked)
+/// 14. For each UTF-8 character:
+///     - Position = range_start (NOT range_start + offset!) ← Key insight!
+///     - Call button_make_changeloge_from_user_character_action_level()
+///     - EditType = Rmv (user removed range, inverse adds it back)
+///     - Character = Some(char) (need character for restoration)
+/// 15. Handle UTF-8 boundaries across chunks (carry-over buffer)
+/// 16. Retry each log creation up to 3 times
+/// 17. Continue on logging errors (non-critical, deletion succeeded)
+///
+/// **Phase 5: Cleanup and Update State**
+/// 18. Delete temp file
+/// 19. Mark editor state as modified
+/// 20. Log the edit operation: "DELETE_RANGE bytes:{}-{}"
+/// 21. Move cursor to line start via execute_command(GotoLineStart)
+/// 22. Set info bar message: "Range deleted" (success case)
+///
+/// # Memory Safety
+///
+/// **Stack-only buffers:**
+/// - Range copy buffer: [0u8; 256] - 256 bytes on stack
+/// - UTF-8 carry-over buffer: [0u8; 4] - 4 bytes on stack (max UTF-8 char)
+/// - UTF-8 boundary check buffer: [0u8; 1] - 1 byte on stack
+/// - No heap allocation for data processing
+/// - Temp file on disk (not in memory)
+///
+/// **Bounded iterations:**
+/// - MAX_COPY_ITERATIONS: 1,000,000 (prevents infinite loops)
+/// - MAX_CHUNKS: 16,777,216 (during changelog creation)
+/// - MAX_LOGGING_ERRORS: 100 (stops after too many failures)
+///
+/// # Error Handling Philosophy
+///
+/// **Critical operations (must succeed):**
+/// - Range normalization: Return InvalidInput if positions invalid
+/// - Range validation: Return InvalidInput if exceeds file size
+/// - Range copy to temp: Return Io error, clean up temp file
+/// - Range deletion: Return Io error, clean up temp file
+///
+/// **Non-critical operations (fail gracefully):**
+/// - UTF-8 boundary detection: Treat as single byte if invalid, log error
+/// - Changelog directory creation: Continue without undo
+/// - Temp file re-opening for logging: Continue without undo
+/// - Individual log creation: Retry 3x, then skip and continue
+/// - Temp file cleanup: Log error but don't fail operation
+///
+/// **Undo is a luxury, never blocks deletion.**
+///
+/// # Edge Cases
+///
+/// **Empty range (start == end):**
+/// - Single character deletion
+/// - Character length detected via UTF-8 inspection
+/// - Creates log entries for that character
+///
+/// **Single byte range:**
+/// - Deletes one byte
+/// - If valid UTF-8 start: extends to complete character
+/// - If invalid UTF-8: deletes single byte, logs error
+///
+/// **Range with multi-byte UTF-8 characters:**
+/// - Each character logged separately at same position
+/// - Multi-byte chars handled by button_make_changeloge... function
+/// - Creates letter-suffixed log files (e.g., 1.a, 1.b) automatically
+///
+/// **Range ending mid-character:**
+/// - End position is START of last character
+/// - UTF-8 detection extends to character boundary
+/// - Prevents corruption of multi-byte sequences
+///
+/// **Range at start of file (position 0):**
+/// - range_start = 0 (BOF)
+/// - Works normally, deletes from beginning
+///
+/// **Range at end of file:**
+/// - EOF detected during UTF-8 boundary check
+/// - delete_end = end (no extension)
+/// - Deletes to EOF
+///
+/// **Range spanning entire file:**
+/// - range_start = 0, delete_end = file_size
+/// - Results in empty file
+/// - Undo restores entire file content
+///
+/// **Invalid UTF-8 in range:**
+/// - Logged as error (debug mode) or terse message (production)
+/// - Skips invalid byte(s) during undo logging
+/// - Continues processing rest of range
+/// - Undo will not restore invalid bytes
+///
+/// **Backwards selection (end < start):**
+/// - Normalized by normalize_sort_sanitize_selection_range()
+/// - Automatically swapped to (start, end)
+/// - Works identically to forward selection
+///
+/// **Range longer than MAX_COPY_ITERATIONS × 256 bytes:**
+/// - Copy phase aborts with error
+/// - Deletion does not occur
+/// - No orphan undo logs created
+///
+/// **Logging failures:**
+/// - Each character retried 3 times with 50ms pause
+/// - After 100 total errors: stops creating logs
+/// - Info bar shows "undo log incomplete"
+/// - Deletion still succeeded, undo partially disabled
+///
+/// **Temp file already exists:**
+/// - File::create() truncates existing file
+/// - Not an error, just overwrites
+///
+/// **Range exceeds file size:**
+/// - Detected in Phase 1 validation
+/// - Returns InvalidInput error immediately
+/// - No temp file created, no side effects
+/// - Info bar shows "invalid range"
+///
+/// # Why Temp File Approach?
+///
+/// **Prevents Orphan Logs:**
+/// If we created undo logs BEFORE deletion and deletion failed, we'd have
+/// orphan logs for a delete that never happened. Corrupts undo history.
+///
+/// **Clean Failure Semantics:**
+/// - Save range → fails → abort, no side effects
+/// - Save range → success → Delete range → fails → abort, temp file cleaned up
+/// - Save range → success → Delete range → success → Create logs → can't fail critically
+///
+/// **Reuses Proven Pattern:**
+/// Logging loop is identical to file insertion Phase 6 and line deletion Phase 4.5.
+/// Same UTF-8 handling, same carry-over buffer, same error handling, same retry logic.
+///
+/// # Position Tracking
+///
+/// **Important: byte_offset_in_range is tracked but NOT used for positions!**
+/// ```rust
+/// byte_offset_in_range += char_len;  // Only for error messages
+/// char_position = range_start;        // Always the same position!
+/// ```
+///
+/// This seems counterintuitive but is critical for button stack to work.
+///
+/// # Arguments
+///
+/// * `state` - Editor state containing visual selection positions:
+///   - `file_position_of_vis_select_start` - Start of selected range (byte offset)
+///   - `file_position_of_vis_select_end` - End of selected range (byte offset)
+/// * `file_path` - Path to the file being edited (read-copy, absolute path)
+///
+/// # Returns
+///
+/// * `Ok(())` - Range deleted successfully (with or without undo logs)
+/// * `Err(LinesError::InvalidInput)` - Invalid range (out of bounds, etc.)
+/// * `Err(LinesError::Io)` - I/O operation failed (range NOT deleted)
+/// * `Err(LinesError::GeneralAssertionCatchViolation)` - Assertion catch in production
+///
+/// # Side Effects
+///
+/// - Deletes byte range from file
+/// - Creates multiple changelog files in undo directory
+/// - Creates and deletes temporary file (file.tmp_deleted_range)
+/// - Marks editor state as modified
+/// - Moves cursor to line start via Command::GotoLineStart
+/// - Sets info bar message ("Range deleted", "undo log incomplete", etc.)
+/// - Logs edit operation to state log
+///
+/// # Examples
+///
+/// ```ignore
+/// // User selects "world" in "Hello world!\n" (positions 6-11)
+/// state.file_position_of_vis_select_start = 6;
+/// state.file_position_of_vis_select_end = 11;  // 'd' starts at position 10, ends at 11
+///
+/// delete_position_range_noload(&mut state, &file_path)?;
+///
+/// // Result: "Hello !\n" (6 bytes deleted: "world")
+/// // Logged as: "DELETE_RANGE bytes:6-11"
+///
+/// // Undo logs created (button stack, all at position 6):
+/// // changelog_file/1.e: ADD 'w' at 6
+/// // changelog_file/1.d: ADD 'o' at 6
+/// // changelog_file/1.c: ADD 'r' at 6
+/// // changelog_file/1.b: ADD 'l' at 6
+/// // changelog_file/1.a: ADD 'd' at 6
+/// // changelog_file/1:   ADD ' ' at 6  (space before 'world')
+///
+/// // User presses undo:
+/// // 1. Reads "1" → ADD ' ' at 6 → "Hello  !\n"
+/// // 2. Reads "1.a" → ADD 'd' at 6 → "Hello d !\n"
+/// // 3. Reads "1.b" → ADD 'l' at 6 → "Hello ld !\n"
+/// // ... cascading insertions ...
+/// // 6. Reads "1.e" → ADD 'w' at 6 → "Hello world!\n" ✓
+/// ```
+///
+/// ```ignore
+/// // Multi-byte UTF-8 example: Delete "世界" (6 bytes: 3+3)
+/// state.file_position_of_vis_select_start = 10;
+/// state.file_position_of_vis_select_end = 16;  // '界' starts at 13, ends at 16
+///
+/// delete_position_range_noload(&mut state, &file_path)?;
+///
+/// // UTF-8 boundary detection ensures complete character deletion
+/// // Undo logs preserve multi-byte characters correctly
+/// ```
+///
+/// ```ignore
+/// // Backwards selection (normalized automatically)
+/// state.file_position_of_vis_select_start = 20;  // End cursor
+/// state.file_position_of_vis_select_end = 10;    // Start cursor
+///
+/// delete_position_range_noload(&mut state, &file_path)?;
+/// // Normalized to (10, 20), deletion proceeds normally
+/// ```
+///
+/// # See Also
+///
+/// * `delete_current_line_noload()` - Line-based deletion (finds line boundaries)
+/// * `normalize_sort_sanitize_selection_range()` - Handles backwards selections
+/// * `detect_utf8_byte_count()` - UTF-8 character length detection
+/// * `button_make_changeloge_from_user_character_action_level()` - Creates individual log entries
+/// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
+/// * `delete_byte_range_chunked()` - Performs the actual deletion
+///
+/// # Testing Considerations
+///
+/// Test with ranges containing:
+/// - Empty selection (start == end, single character)
+/// - Single byte ("a")
+/// - ASCII text ("Hello, world!")
+/// - Multi-byte UTF-8 ("你好世界")
+/// - Mixed ASCII and UTF-8 ("Hello 世界")
+/// - Range at start of file (position 0)
+/// - Range at end of file (to EOF)
+/// - Entire file (position 0 to file_size)
+/// - Backwards selection (end < start)
+/// - Invalid UTF-8 bytes
+/// - Very long range (test MAX_COPY_ITERATIONS)
+/// - Range exceeding file size
+/// - Range ending mid-UTF-8 character (boundary extension)
+/// - Range with newlines, tabs, control characters
+/// - Range with mixed line endings (\n, \r\n)
 fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Result<()> {
     // ====================================
     // Get start byte and end-character end

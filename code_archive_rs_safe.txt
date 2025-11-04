@@ -1,0 +1,640 @@
+
+/// Creates a timestamp string with full year prefix for archive file naming
+///
+/// # Purpose
+/// Generates a consistent, sortable timestamp string for archive filenames
+/// that works identically across all platforms (Windows, Linux, macOS).
+/// Includes full 4-digit year prefix for better year identification.
+///
+/// # Arguments
+/// * `time` - The SystemTime to format (typically SystemTime::now())
+///
+/// # Returns
+/// * `String` - Timestamp in format: "YYYY_YY_MM_DD_HH_MM_SS"
+///
+/// # Format Specification
+/// - YYYY: Four-digit year (0000-9999)
+/// - YY: Two-digit year (00-99)
+/// - MM: Two-digit month (01-12)
+/// - DD: Two-digit day (01-31)
+/// - HH: Two-digit hour in 24-hour format (00-23)
+/// - MM: Two-digit minute (00-59)
+/// - SS: Two-digit second (00-59)
+///
+/// # Examples
+/// - "2024_24_01_15_14_30_45" for January 15, 2024 at 2:30:45 PM
+/// - "2023_23_12_31_23_59_59" for December 31, 2023 at 11:59:59 PM
+///
+/// # Platform Consistency
+/// This function produces identical output on all platforms by using
+/// epoch-based calculations rather than platform-specific date commands.
+fn create_archive_timestamp(time: SystemTime) -> String {
+    // Get duration since Unix epoch
+    let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(_) => {
+            // System time before Unix epoch - use fallback
+            eprintln!("Warning: System time is before Unix epoch, using fallback timestamp");
+            return String::from("1970_70_01_01_00_00_00");
+        }
+    };
+
+    let total_seconds = duration_since_epoch.as_secs();
+
+    // Use the accurate date calculation
+    let (year, month, day, hour, minute, second) =
+        epoch_seconds_to_datetime_components(total_seconds);
+
+    // Assertion 1: Validate year range
+    const MAX_REASONABLE_YEAR: u32 = 9999;
+    if year > MAX_REASONABLE_YEAR {
+        eprintln!(
+            "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
+            year, MAX_REASONABLE_YEAR
+        );
+        return String::from("9999_99_12_31_23_59_59");
+    }
+
+    // Assertion 2: Validate all components are in expected ranges
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        eprintln!(
+            "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        );
+        return String::from("1970_70_01_01_00_00_00"); // Safe fallback
+    }
+
+    // Format as YYYY_YY_MM_DD_HH_MM_SS
+    format!(
+        "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+        year,       // Four-digit year
+        year % 100, // Two-digit year
+        month,
+        day,
+        hour,
+        minute,
+        second
+    )
+}
+
+/// Moves cursor to position BEFORE next syntax character (Vim-style 'e' command)
+///
+/// # Purpose
+/// Implements 'e' command for word navigation. Moves cursor forward to the
+/// position BEFORE the next syntax character. This positions cursor at the
+/// last non-syntax character of current word.
+/// Also counts newlines to allow window scrolling without rebuild.
+///
+/// # Algorithm
+/// 1. Move forward 2 bytes (assumption: next byte is syntax, skip it)
+/// 2. Loop (max 64 iterations):
+///    - Peek ahead 1 byte (look at next position)
+///    - If next byte is syntax OR EOF → STOP (cursor is positioned)
+///    - If next byte is non-syntax → move cursor forward 1 byte, continue
+///    - If newline encountered during move: increment counter
+/// 3. Return final byte offset AND newline count
+///
+/// # Arguments
+/// * `file_path` - Absolute path to file being edited
+/// * `current_byte_offset` - Current cursor position (0-indexed byte offset)
+/// * `file_size` - Total file size in bytes (for EOF detection)
+///
+/// # Returns
+/// * `Ok((new_byte_offset, newlines_crossed))` where:
+///   - `new_byte_offset` - Position before next syntax char (or EOF)
+///   - `newlines_crossed` - Number of 0x0A bytes encountered during move
+/// * `Err(LinesError)` - File read error
+///
+/// # Edge Cases
+/// - Cursor at EOF: returns `(EOF_pos, 0)` (no movement possible)
+/// - Cursor already before syntax: moves past it to next word end
+/// - Multiple syntax chars in row: skips first, stops at next
+/// - Crosses newline: counts it, positions before next syntax
+/// - File with no syntax: moves 64+ bytes forward (iteration limit)
+///
+/// # Memory Safety
+/// - Stack-only: 1-byte read buffer
+/// - No dynamic allocation
+/// - Bounded iterations (max 64)
+///
+/// # Defensive Programming
+/// - Iteration limit prevents infinite loops (NASA Rule #2)
+/// - All read errors propagated
+/// - Saturating arithmetic prevents underflow/overflow
+/// - Peek-ahead safely handles EOF (no buffer overflow)
+/// - Byte-level syntax check safe for UTF-8
+///
+/// # Example
+/// ```ignore
+/// // File: "hello world"
+/// // Cursor at byte 0 (on 'h')
+/// let (new_pos, newlines) = move_word_end(path, 0, 11)?;
+/// // Moves forward 2 (to 'l'), then peeks at 'l' (non-syntax)
+/// // Continues moving: 'l'->'o'->space (stop before space)
+/// // Returns (4, 0) - positioned on 'o'
+/// ```
+pub fn move_word_end(
+    file_path: &Path,
+    current_byte_offset: u64,
+    file_size: u64,
+) -> Result<(u64, usize)> {
+    // Returns: (new_byte_offset, newlines_crossed)
+
+    // =========================================================================
+    // INPUT VALIDATION
+    // =========================================================================
+
+    // Debug assert: path should be valid
+    debug_assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Test assert: path should be valid
+    #[cfg(test)]
+    assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty"
+    );
+
+    // Production check: path empty
+    if file_path.as_os_str().is_empty() {
+        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
+    }
+
+    // Debug assert: offset should not exceed file size
+    debug_assert!(
+        current_byte_offset <= file_size,
+        "Cursor offset {} exceeds file size {}",
+        current_byte_offset,
+        file_size
+    );
+
+    // Test assert: offset should not exceed file size
+    #[cfg(test)]
+    assert!(
+        current_byte_offset <= file_size,
+        "Cursor offset {} exceeds file size {}",
+        current_byte_offset,
+        file_size
+    );
+
+    // Production check: offset exceeds file size
+    if current_byte_offset > file_size {
+        return Err(LinesError::InvalidInput(format!(
+            "Cursor offset {} exceeds file size {}",
+            current_byte_offset, file_size
+        )));
+    }
+
+    // =========================================================================
+    // EARLY RETURN: ALREADY AT EOF
+    // =========================================================================
+
+    // If cursor already at EOF, nowhere to move to
+    if current_byte_offset >= file_size {
+        return Ok((current_byte_offset, 0)); // Stay at EOF, no newlines
+    }
+
+    // =========================================================================
+    // OPEN FILE FOR READING
+    // =========================================================================
+
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!("Cannot open file for word end movement: {}", e),
+            Some("move_word_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // =========================================================================
+    // INITIALIZE STATE
+    // =========================================================================
+
+    // Pre-allocated 1-byte buffer (stack only, no allocation)
+    let mut byte_buffer: [u8; 1] = [0];
+
+    // Current position during iteration
+    let mut current_pos: u64 = current_byte_offset;
+
+    // Newline counter (for window scrolling)
+    let mut newlines_crossed: usize = 0;
+
+    // =========================================================================
+    // STEP 1: MOVE FORWARD 2 BYTES (ASSUMPTION: NEXT IS SYNTAX, SKIP IT)
+    // =========================================================================
+
+    // First move: skip 1 byte
+    current_pos = current_pos.saturating_add(1);
+    if current_pos >= file_size {
+        return Ok((current_pos, newlines_crossed));
+    }
+
+    // Second move: skip another byte (assumption: it's syntax)
+    // But we need to track if it's a newline
+    file.seek(io::SeekFrom::Start(current_pos)).map_err(|e| {
+        log_error(
+            &format!(
+                "Cannot seek to byte {} for word end initial move: {}",
+                current_pos, e
+            ),
+            Some("move_word_end"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    match file.read(&mut byte_buffer) {
+        Ok(0) => {
+            // EOF at this position
+            return Ok((current_pos, newlines_crossed));
+        }
+        Ok(1) => {
+            // Track if we're moving past a newline
+            if byte_buffer[0] == b'\n' {
+                newlines_crossed += 1;
+            }
+            current_pos = current_pos.saturating_add(1);
+        }
+        Ok(n) => {
+            let error_msg = format!(
+                "Unexpected read count {} at byte {} (expected 0 or 1)",
+                n, current_pos
+            );
+            log_error(&error_msg, Some("move_word_end"));
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                error_msg,
+            )));
+        }
+        Err(e) => {
+            log_error(
+                &format!("Read error at byte {}: {}", current_pos, e),
+                Some("move_word_end"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    }
+
+    // Check if we've gone past EOF after second move
+    if current_pos >= file_size {
+        return Ok((current_pos, newlines_crossed));
+    }
+
+    // =========================================================================
+    // MAIN LOOP: PEEK AHEAD UNTIL NEXT BYTE IS SYNTAX
+    // =========================================================================
+
+    let mut iteration: usize = 0;
+
+    loop {
+        // Defensive: Check iteration limit
+        if iteration >= WORD_MOVE_MAX_ITERATIONS {
+            // Hit iteration limit - stop here
+            log_error(
+                &format!(
+                    "Word end movement hit iteration limit at byte {}",
+                    current_pos
+                ),
+                Some("move_word_end"),
+            );
+            return Ok((current_pos, newlines_crossed));
+        }
+
+        iteration += 1;
+
+        // ===================================================================
+        // PEEK AHEAD TO NEXT BYTE (BEFORE MOVING)
+        // ===================================================================
+
+        // Calculate next position
+        let next_pos = current_pos.saturating_add(1);
+
+        // Check if next position would be past EOF
+        if next_pos >= file_size {
+            // Next byte would be past EOF - stop here (cursor at current position)
+            return Ok((current_pos, newlines_crossed));
+        }
+
+        // ===================================================================
+        // READ NEXT BYTE (PEEK AHEAD)
+        // ===================================================================
+
+        // Seek to next position
+        file.seek(io::SeekFrom::Start(next_pos)).map_err(|e| {
+            log_error(
+                &format!("Cannot seek to byte {} for word end peek: {}", next_pos, e),
+                Some("move_word_end"),
+            );
+            LinesError::Io(e)
+        })?;
+
+        // Read one byte
+        match file.read(&mut byte_buffer) {
+            Ok(0) => {
+                // EOF at next position - stop here
+                return Ok((current_pos, newlines_crossed));
+            }
+            Ok(1) => {
+                // Got one byte - check if it's syntax
+                let next_byte = byte_buffer[0];
+
+                match is_syntax_char(next_byte) {
+                    Ok(true) => {
+                        // Next byte IS syntax - STOP HERE (cursor stays before it)
+                        return Ok((current_pos, newlines_crossed));
+                    }
+                    Ok(false) => {
+                        // Next byte is non-syntax - move cursor forward to it
+                        current_pos = next_pos;
+
+                        // Check if we just moved through a newline
+                        if next_byte == b'\n' {
+                            newlines_crossed += 1;
+                        }
+
+                        // Continue loop to peek at the byte after this one
+                        continue;
+                    }
+                    Err(e) => {
+                        // Error checking syntax (shouldn't happen, but handle it)
+                        log_error(
+                            &format!("Error checking syntax at byte {}: {}", next_pos, e),
+                            Some("move_word_end"),
+                        );
+                        return Err(e);
+                    }
+                }
+            }
+            Ok(n) => {
+                // Unexpected: read() returned more than 1 byte for 1-byte buffer
+                let error_msg = format!(
+                    "Unexpected read count {} at byte {} (expected 0 or 1)",
+                    n, next_pos
+                );
+                log_error(&error_msg, Some("move_word_end"));
+                return Err(LinesError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    error_msg,
+                )));
+            }
+            Err(e) => {
+                // Read error - propagate
+                log_error(
+                    &format!("Read error at byte {}: {}", next_pos, e),
+                    Some("move_word_end"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        }
+    }
+}
+/// Checks if the byte at a specific file position is a newline character
+///
+/// # Purpose
+/// Safe, defensive helper function for peek-ahead operations. Used by movement
+/// commands to detect when cursor would cross a line boundary without
+/// moving or modifying state.
+///
+/// # Design Philosophy
+/// - Single responsibility: just peek at one byte, answer yes/no
+/// - Fail-safe: returns false on any error (doesn't panic or halt)
+/// - Memory safe: no allocation, bounded I/O
+/// - Used by: move_word_forward, move_word_end, move_word_back, and any other
+///   movement that needs to detect line boundaries
+///
+/// # Arguments
+/// * `file_path` - Absolute path to file being checked
+///   - Must exist and be readable
+///   - Defensive: caller responsible for validation
+/// * `byte_pos` - Byte offset to check (0-indexed)
+///   - Can be any value including >= file_size
+///   - Defensive: out-of-bounds positions safely return false
+/// * `file_size` - Total file size in bytes
+///   - Used to validate byte_pos is in range
+///   - If byte_pos >= file_size, returns false (EOF, not newline)
+///
+/// # Returns
+/// * `Ok(true)` - Byte at position is 0x0A (newline)
+/// * `Ok(false)` - Byte at position is not newline (any other byte or out-of-bounds)
+/// * `Err(LinesError::Io)` - File operations failed (open, seek, read errors)
+///
+/// # Edge Cases Handled
+/// - `byte_pos >= file_size` → returns `Ok(false)` (EOF is not newline)
+/// - `byte_pos == file_size - 1` → reads last byte correctly
+/// - File read returns 0 bytes → returns `Ok(false)` (EOF, not newline)
+/// - File seek fails → returns `Err` (I/O error, logged)
+/// - File read fails mid-operation → returns `Err` (I/O error, logged)
+/// - Empty file (size 0) → returns `Ok(false)` (no bytes to read)
+///
+/// # Memory Safety
+/// - Stack-only: 1-byte buffer allocated on stack
+/// - No dynamic allocation
+/// - No heap growth
+/// - Single file open/seek/read/close per call
+/// - Safe for UTF-8: newline is ASCII 0x0A, no multi-byte collision possible
+///
+/// # Performance
+/// - Time: O(1) - single byte read (or fail fast)
+/// - Space: O(1) - fixed 1-byte buffer
+/// - I/O: 1 file open, 1 seek, 1 read, 1 close
+/// - Suitable for calling in loops (bounded, cached pattern: peek before move)
+///
+/// # Defensive Programming
+/// - All I/O errors logged with context
+/// - No unwrap() or panic() calls
+/// - Saturating arithmetic prevents overflow
+/// - Early returns for out-of-bounds
+/// - No assumptions about file state
+///
+/// # Use Cases
+///
+/// **Case 1: Peek-ahead in word movement**
+/// ```ignore
+/// // Before moving cursor, check if next byte is newline
+/// if is_newline_at_position(&file_path, current_pos + 1, file_size)? {
+///     // Crossed line boundary - use line nav instead
+///     execute_command(state, Command::GotoLineStart)?;
+///     execute_command(state, Command::MoveDown(1))?;
+/// } else {
+///     // Normal character movement
+///     cursor.col += 1;
+/// }
+/// ```
+///
+/// **Case 2: Loop detection in move_word_forward**
+/// ```ignore
+/// while remaining_moves > 0 {
+///     let next_pos = current_pos + 1;
+///
+///     if is_newline_at_position(&file_path, next_pos, file_size)? {
+///         // Hit newline - stop or handle line crossing
+///         return Ok((current_pos, newlines_crossed));
+///     }
+///
+///     current_pos = next_pos;
+///     remaining_moves -= 1;
+/// }
+/// ```
+///
+/// **Case 3: Integration with MoveRight command**
+/// ```ignore
+/// // In MoveRight loop: peek before scrolling right
+/// if is_newline_at_position(&file_path, next_byte_pos, file_size)? {
+///     execute_command(state, Command::GotoLineStart)?;
+///     execute_command(state, Command::MoveDown(1))?;
+/// } else {
+///     state.tui_window_horizontal_utf8txt_line_char_offset += 1;
+/// }
+/// ```
+///
+/// # Integration Points
+/// - `move_word_forward()`: Peek ahead to detect line crossing
+/// - `move_word_end()`: Peek in loop to stop at syntax on next line
+/// - `move_word_back()`: Peek backward to detect line crossing (reverse)
+/// - `Command::MoveRight`: Peek before scrolling right (existing code)
+/// - Any future movement command that needs line boundary detection
+///
+/// # Testing Strategy
+/// Test with:
+/// - File with newlines at various positions
+/// - Empty file (no bytes)
+/// - File with no newlines (single line)
+/// - File with multiple consecutive newlines
+/// - Position at EOF
+/// - Position past EOF
+/// - Position 0 (start of file)
+/// - Last byte of file (EOF-1)
+/// - Read-only files
+/// - Binary files containing 0x0A bytes (not text)
+///
+/// # Performance Characteristics
+/// - Suitable for per-move peek operations
+/// - Not suitable for bulk newline scanning (use count_lines_in_file for that)
+/// - Cost-benefit: single byte I/O vs. avoiding line-crossing bugs
+///
+/// # Error Policy
+/// Following project error handling philosophy:
+/// - File errors propagated (caller handles via ?)
+/// - Logging happens before returning error
+/// - Never silently swallows errors
+/// - Caller responsible for retry/recovery logic
+///
+/// # Future Enhancement
+/// Could cache results if same file peeked repeatedly, but:
+/// - File may change between edits
+/// - Invalidation logic complex
+/// - Current per-call overhead minimal
+/// - Premature optimization: keep simple unless profiling shows issue
+///
+pub fn is_newline_at_position(file_path: &Path, byte_pos: u64, file_size: u64) -> Result<bool> {
+    // =========================================================================
+    // INPUT VALIDATION
+    // =========================================================================
+
+    // Debug assert: path should be valid
+    debug_assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty in is_newline_at_position"
+    );
+
+    // Test assert: path should be valid
+    #[cfg(test)]
+    assert!(
+        !file_path.as_os_str().is_empty(),
+        "File path cannot be empty in is_newline_at_position"
+    );
+
+    // Production check: path empty
+    if file_path.as_os_str().is_empty() {
+        return Err(LinesError::InvalidInput("File path cannot be empty".into()));
+    }
+
+    // =========================================================================
+    // EARLY RETURN: OUT OF BOUNDS
+    // =========================================================================
+
+    // Defensive: If position is at or past EOF, it's not a newline
+    // This is the most common "false" case
+    if byte_pos >= file_size {
+        return Ok(false);
+    }
+
+    // =========================================================================
+    // OPEN FILE FOR READING
+    // =========================================================================
+
+    let mut file = File::open(file_path).map_err(|e| {
+        log_error(
+            &format!(
+                "Cannot open file to check for newline at byte {}: {}",
+                byte_pos, e
+            ),
+            Some("is_newline_at_position"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // =========================================================================
+    // SEEK TO POSITION AND READ SINGLE BYTE
+    // =========================================================================
+
+    // Pre-allocated 1-byte buffer (stack only, no allocation)
+    let mut byte_buffer: [u8; 1] = [0];
+
+    // Seek to the position we want to check
+    file.seek(io::SeekFrom::Start(byte_pos)).map_err(|e| {
+        log_error(
+            &format!(
+                "Cannot seek to byte {} in is_newline_at_position: {}",
+                byte_pos, e
+            ),
+            Some("is_newline_at_position"),
+        );
+        LinesError::Io(e)
+    })?;
+
+    // Read one byte
+    match file.read(&mut byte_buffer) {
+        Ok(0) => {
+            // EOF reached - no byte at this position (shouldn't happen after bounds check)
+            log_error(
+                &format!(
+                    "Unexpected EOF when reading at byte {} (file_size was {})",
+                    byte_pos, file_size
+                ),
+                Some("is_newline_at_position"),
+            );
+            Ok(false)
+        }
+        Ok(1) => {
+            // Got one byte - check if it's a newline
+            // Newline is ASCII 0x0A - safe single-byte check (no UTF-8 collision)
+            Ok(byte_buffer[0] == b'\n')
+        }
+        Ok(n) => {
+            // Unexpected: read() returned more than 1 byte for 1-byte buffer
+            // This should never happen in safe Rust
+            let error_msg = format!(
+                "Unexpected read count {} at byte {} (expected 0 or 1)",
+                n, byte_pos
+            );
+            log_error(&error_msg, Some("is_newline_at_position"));
+            Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                error_msg,
+            )))
+        }
+        Err(e) => {
+            // Read error - propagate with context
+            log_error(
+                &format!(
+                    "Read error at byte {} in is_newline_at_position: {}",
+                    byte_pos, e
+                ),
+                Some("is_newline_at_position"),
+            );
+            Err(LinesError::Io(e))
+        }
+    }
+}
