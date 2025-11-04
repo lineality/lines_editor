@@ -1013,9 +1013,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::toggle_comment_indent_module::{
     ToggleCommentError, ToggleIndentError, indent_line, indent_range,
-    toggle_basic_singleline_comment, toggle_block_comment, toggle_multiple_basic_comments,
-    toggle_multiple_singline_docstrings, toggle_rust_docstring_singleline_comment, unindent_line,
-    unindent_range,
+    toggle_basic_singleline_comment, toggle_block_comment,
+    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
 };
 
 use super::buttons_reversible_edit_changelog_module::{
@@ -2472,19 +2471,21 @@ pub fn is_newline_at_position(file_path: &Path, byte_pos: u64, file_size: u64) -
 // End of Movement Functions
 // =========================
 
-/// Creates a timestamp string specifically for archive file naming
+/// Creates a timestamp string with full year prefix for archive file naming
 ///
 /// # Purpose
 /// Generates a consistent, sortable timestamp string for archive filenames
 /// that works identically across all platforms (Windows, Linux, macOS).
+/// Includes full 4-digit year prefix for better year identification.
 ///
 /// # Arguments
 /// * `time` - The SystemTime to format (typically SystemTime::now())
 ///
 /// # Returns
-/// * `String` - Timestamp in format: "YY_MM_DD_HH_MM_SS"
+/// * `String` - Timestamp in format: "YYYY_YY_MM_DD_HH_MM_SS"
 ///
 /// # Format Specification
+/// - YYYY: Four-digit year (0000-9999)
 /// - YY: Two-digit year (00-99)
 /// - MM: Two-digit month (01-12)
 /// - DD: Two-digit day (01-31)
@@ -2493,8 +2494,8 @@ pub fn is_newline_at_position(file_path: &Path, byte_pos: u64, file_size: u64) -
 /// - SS: Two-digit second (00-59)
 ///
 /// # Examples
-/// - "24_01_15_14_30_45" for January 15, 2024 at 2:30:45 PM
-/// - "23_12_31_23_59_59" for December 31, 2023 at 11:59:59 PM
+/// - "2024_24_01_15_14_30_45" for January 15, 2024 at 2:30:45 PM
+/// - "2023_23_12_31_23_59_59" for December 31, 2023 at 11:59:59 PM
 ///
 /// # Platform Consistency
 /// This function produces identical output on all platforms by using
@@ -2506,7 +2507,7 @@ fn create_archive_timestamp(time: SystemTime) -> String {
         Err(_) => {
             // System time before Unix epoch - use fallback
             eprintln!("Warning: System time is before Unix epoch, using fallback timestamp");
-            return String::from("70_01_01_00_00_00");
+            return String::from("1970_70_01_01_00_00_00");
         }
     };
 
@@ -2523,7 +2524,7 @@ fn create_archive_timestamp(time: SystemTime) -> String {
             "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
             year, MAX_REASONABLE_YEAR
         );
-        return String::from("99_12_31_23_59_59");
+        return String::from("9999_99_12_31_23_59_59");
     }
 
     // Assertion 2: Validate all components are in expected ranges
@@ -2532,18 +2533,96 @@ fn create_archive_timestamp(time: SystemTime) -> String {
             "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
             year, month, day, hour, minute, second
         );
-        return String::from("70_01_01_00_00_00"); // Safe fallback
+        return String::from("1970_70_01_01_00_00_00"); // Safe fallback
     }
 
-    // Format as YY_MM_DD_HH_MM_SS
+    // Format as YYYY_YY_MM_DD_HH_MM_SS
     format!(
-        "{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+        "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+        year,       // Four-digit year
         year % 100, // Two-digit year
         month,
         day,
         hour,
         minute,
         second
+    )
+}
+
+/// Creates a human-readable timestamp string with UTC indicator
+///
+/// # Purpose
+/// Generates a human-readable timestamp string that is still suitable for
+/// archive filenames on most platforms. More readable than compact formats
+/// while maintaining sortability.
+///
+/// # Arguments
+/// * `time` - The SystemTime to format (typically SystemTime::now())
+///
+/// # Returns
+/// * `String` - Timestamp in format: "YYYY-MM-DD, HH-MM-SS UTC"
+///
+/// # Format Specification
+/// - YYYY: Four-digit year (0000-9999)
+/// - MM: Two-digit month (01-12)
+/// - DD: Two-digit day (01-31)
+/// - HH: Two-digit hour in 24-hour format (00-23)
+/// - MM: Two-digit minute (00-59)
+/// - SS: Two-digit second (00-59)
+/// - UTC: Explicit timezone indicator
+///
+/// # Examples
+/// - "2024-01-15, 14-30-45 UTC" for January 15, 2024 at 2:30:45 PM
+/// - "2023-12-31, 23-59-59 UTC" for December 31, 2023 at 11:59:59 PM
+///
+/// # Note
+/// The comma and space make this more human-readable. While this works
+/// on most filesystems, some may have restrictions. The format remains
+/// sortable when used consistently.
+///
+/// # Platform Consistency
+/// This function produces identical output on all platforms by using
+/// epoch-based calculations rather than platform-specific date commands.
+fn create_readable_archive_timestamp(time: SystemTime) -> String {
+    // Get duration since Unix epoch
+    let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration,
+        Err(_) => {
+            // System time before Unix epoch - use fallback
+            eprintln!("Warning: System time is before Unix epoch, using fallback timestamp");
+            return String::from("1970-01-01, 00-00-00 UTC");
+        }
+    };
+
+    let total_seconds = duration_since_epoch.as_secs();
+
+    // Use the accurate date calculation
+    let (year, month, day, hour, minute, second) =
+        epoch_seconds_to_datetime_components(total_seconds);
+
+    // Assertion 1: Validate year range
+    const MAX_REASONABLE_YEAR: u32 = 9999;
+    if year > MAX_REASONABLE_YEAR {
+        eprintln!(
+            "Warning: Year {} exceeds maximum reasonable value {}. Using fallback.",
+            year, MAX_REASONABLE_YEAR
+        );
+        return String::from("9999-12-31, 23-59-59 UTC");
+    }
+
+    // Assertion 2: Validate all components are in expected ranges
+    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        eprintln!(
+            "Warning: Invalid date/time components: {}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        );
+        return String::from("1970-01-01, 00-00-00 UTC"); // Safe fallback
+    }
+
+    // Format as YYYY-MM-DD, HH-MM-SS UTC
+    format!(
+        "{:04}-{:02}-{:02}, {:02}-{:02}-{:02} UTC",
+        year, month, day, hour, minute, second
     )
 }
 
@@ -7155,14 +7234,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
 
     // Create file with simple timestamp header if it doesn't exist
     if !original_file_path.exists() {
-        // Simple timestamp header (no external file loading)
-        let timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-            Ok(duration) => {
-                let secs = duration.as_secs();
-                format!("# Created: {} (unix timestamp)\n", secs)
-            }
-            Err(_) => String::from("# Created: [timestamp unavailable]\n"),
-        };
+        let timestamp = create_readable_archive_timestamp(SystemTime::now());
 
         // Create file with timestamp header
         let mut file = OpenOptions::new()
@@ -17779,21 +17851,15 @@ pub fn full_lines_editor(
 
     // Create file if it doesn't exist
     if !target_path.exists() {
-        // // Diagnostic
-        // println!("Creating new file...");
-
-        // new file header = timestamp
-        let timestamp = get_timestamp()?;
-        let header = format!("# {}", timestamp);
+        // new file header = longer readable timestamp
+        let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
+        let header = format!("# {}", header_readable_timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
         writeln!(file, "{}", header)?;
         writeln!(file)?; // Empty line after header
         file.flush()?;
-
-        // // Diagnostic
-        // println!("Created new file with header");
     }
 
     // Initialize editor state
