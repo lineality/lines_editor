@@ -2083,6 +2083,7 @@ mod hexedit_tests {
             security_mode: false,
             window_map: WindowMapStruct::new(),
             cursor: WindowPosition { row: 0, col: 0 },
+            next_move_right_is_past_newline: false,
             selection_start: None,
             selection_rowline_start: 0,
             is_modified: false,

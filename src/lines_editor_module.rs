@@ -3541,6 +3541,10 @@ pub struct EditorState {
     /// File position of top-left corner of window
     // pub window_start: FilePosition,
 
+    /// Flag signaling that next move right
+    /// should bump down to next line down.
+    pub next_move_right_is_past_newline: bool,
+
     /// Visual mode selection start (if in visual mode)
     pub selection_start: Option<FilePosition>, // end is 'current' one
     pub selection_rowline_start: usize, // end is 'current' one
@@ -3637,6 +3641,8 @@ impl EditorState {
             //     line_number: 0,
             //     byte_in_line: 0,
             // },
+            //
+            next_move_right_is_past_newline: false,
             selection_start: None,
             selection_rowline_start: 0,
             is_modified: false,
@@ -8957,46 +8963,8 @@ fn process_line_with_offset(
             // ═══════════════════════════════════════════════════════════════
             // WINDOW MAP: Create file position mapping for this character
             // ═══════════════════════════════════════════════════════════════
-            // Map each display column this character occupies to its starting file byte.
-            // For double-width characters, BOTH columns map to the same file byte.
             //
-            // Example: '世' at file byte 100
-            //   Display column 10 → file byte 100
-            //   Display column 11 → file byte 100 (still part of same character)
-
-            // let file_pos = FilePosition {
-            //     byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
-            //     line_number: current_line_number, // ← FIXED: use actual line number
-            //     byte_in_line: byte_index,
-            // };
-
-            // #[cfg(debug_assertions)]
-            // {
-            //     if char_len > 1 {
-            //         eprintln!(
-            //             "  Mapping: display_cols [{}, {}] → file_byte={}, line_number={}, byte_in_line={}",
-            //             display_col,
-            //             display_col + display_width - 1,
-            //             file_line_start + byte_index as u64,
-            //             current_line_number,
-            //             byte_index
-            //         );
-            //     }
-            // }
-
-            // // Map all display columns this character occupies
-            // for i in 0..display_width {
-            //     state
-            //         .window_map
-            //         .set_file_position(row, display_col + i, Some(file_pos))?;
-            // }
-
-            // bytes_written += char_len;
-            // display_col += display_width;
-
-            // ═══════════════════════════════════════════════════════════════
-            // WINDOW MAP: Create file position mapping for this character
-            // ═══════════════════════════════════════════════════════════════
+            // bytes, pixels, characters, are not the same.
             //
             // Each character maps to ONE cursor position, regardless of display width.
             //
@@ -9955,7 +9923,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             let this_row = lines_editor_state.cursor.row;
             #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
-
             #[cfg(debug_assertions)]
             {
                 println!(
@@ -9995,28 +9962,49 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                // ===================================================================
-                // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
-                // ===================================================================
                 let is_next_newline = lines_editor_state.is_next_byte_newline()?;
+                // ===============================================
+                // First Check if Next Move Right should Jump Down
+                // ================================================
+                if lines_editor_state.next_move_right_is_past_newline {
+                    // reset
+                    lines_editor_state.next_move_right_is_past_newline = false;
 
-                if is_next_newline {
+                    // === Jump Down ===
                     // Move to start of current line
                     execute_command(lines_editor_state, Command::GotoLineStart)?;
-
                     // Move down one line
                     execute_command(lines_editor_state, Command::MoveDown(1))?;
 
                     remaining_moves -= 1;
                     needs_rebuild = true;
                     continue;
+                } else if is_next_newline {
+                    // ===========================================
+                    // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
+                    // ===========================================
+                    // let is_next_newline = lines_editor_state.is_next_byte_newline()?;
+
+                    // // Move to start of current line
+                    // execute_command(lines_editor_state, Command::GotoLineStart)?;
+
+                    // // Move down one line
+                    // execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+                    // There is Room For One More Move-Right
+                    lines_editor_state.next_move_right_is_past_newline = true;
+
+                    lines_editor_state.cursor.col += 1;
+                    remaining_moves -= 1;
+                    needs_rebuild = true;
+                    // continue;
                 }
 
                 // Calculate space available before right edge
                 // Reserve 1 column to prevent display overflow
                 let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-                if lines_editor_state.cursor.col < right_edge {
+                if lines_editor_state.cursor.col < (right_edge) {
                     // Cursor can move right within visible window
                     let space_available = right_edge - lines_editor_state.cursor.col;
                     let cursor_moves = remaining_moves.min(space_available);
@@ -10032,6 +10020,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     remaining_moves -= cursor_moves;
                 } else {
+                    // Edge Scroll Right
                     if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
                         < limits::CURSOR_MOVEMENT_STEPS
                     {
@@ -10160,6 +10149,20 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     let cursor_moves = remaining_moves.min(space_available);
                     lines_editor_state.cursor.row += cursor_moves;
+
+                    let line_num_width = calculate_line_number_width(
+                        lines_editor_state.line_count_at_top_of_window,
+                        lines_editor_state.cursor.row,
+                        lines_editor_state.effective_rows,
+                    );
+
+                    // if col is in the number-zone to the left of the text
+                    // bump it over
+                    if lines_editor_state.cursor.col < line_num_width {
+                        lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                        build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+                    }
+
                     remaining_moves -= cursor_moves;
                 } else {
                     // Cursor at bottom edge, try: scroll window down
