@@ -3204,6 +3204,7 @@ impl WindowMapStruct {
 
         Ok(())
     }
+
     #[cfg(test)]
     /// Retrieves the byte range for a display row
     ///
@@ -3988,22 +3989,48 @@ impl EditorState {
         Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
     }
 
-    /// Determines if the next byte in the file is a newline character (line-end detection).
+    // ============================================================================
+    // LINE END DETECTION (UTF-8-Aware Cursor Movement Support)
+    // ============================================================================
+
+    /// Determines if the next byte in the file is a newline character (line-end detection)
     ///
     /// # Purpose (Project Context)
     /// This function supports text editor cursor movement in the MoveRight command.
     /// When the cursor reaches the end of a line, the next byte is a newline character,
     /// which signals that MoveRight should wrap to the next line instead of continuing right.
     ///
-    /// # Scope - Graceful Out-of-Bounds Handling (Primary Purpose)
+    /// # Multi-byte UTF-8 Support (PRIMARY FIX)
+    /// The critical insight: "next byte after cursor" depends on character size.
+    ///
+    /// For ASCII 'a' (1 byte):
+    /// ```text
+    /// Position: [10='a', 11='\n']
+    /// Cursor at 'a': cursor_byte=10, char_length=1, char_end=10
+    /// Next byte after 'a' is at position 11 (the newline)
+    /// ```
+    ///
+    /// For Chinese '世' (3 bytes: E4 B8 96):
+    /// ```text
+    /// Position: [10=E4, 11=B8, 12=96, 13='\n']
+    /// Cursor at '世': cursor_byte=10, char_length=3, char_end=12
+    /// Next byte after '世' is at position 13 (the newline)
+    /// ```
+    ///
+    /// **Previous Bug:** Compared `cursor_byte` (10) to `line_end_byte` (12) → FALSE ❌
+    /// **Fixed Logic:** Compare `cursor_char_end_byte` (12) to `line_end_byte` (12) → TRUE ✓
+    ///
+    /// # Scope - Graceful Out-of-Bounds Handling
     /// **This function exists specifically to handle out-of-bounds conditions safely.**
     /// Instead of crashing when the cursor is at invalid positions, it returns safe
     /// default values that allow the application to continue operating:
     ///
+    /// - No read-copy file path → Returns `Ok(false)` (cannot analyze, not at newline)
     /// - Cursor row beyond file line count → Returns `Ok(false)` (treat as not at newline)
     /// - Cursor column beyond line length → Returns `Ok(false)` (treat as not at newline)
     /// - Line byte range not initialized → Returns `Ok(false)` (treat as not at newline)
     /// - Cursor position unmapped in window → Returns `Ok(false)` (treat as not at newline)
+    /// - UTF-8 character read fails → Returns `Ok(false)` (cannot determine, not at newline)
     ///
     /// The philosophy: **When in doubt about boundaries, assume we're NOT at a newline.**
     /// This prevents cursor movement commands from incorrectly wrapping lines, which is
@@ -4018,8 +4045,56 @@ impl EditorState {
     ///
     /// Note: Out-of-bounds conditions return `Ok(false)`, not errors. This allows the
     /// application to continue safely without crashing on boundary conditions.
+    ///
+    /// # Algorithm
+    /// 1. Validate cursor row is within window bounds
+    /// 2. Get cursor's byte position in file from window map
+    /// 3. **Read UTF-8 character at cursor to get byte length**
+    /// 4. **Calculate last byte of cursor's character**
+    /// 5. Get line's end byte position from window map
+    /// 6. **Compare character-end to line-end** (not character-start)
+    /// 7. Return true if they match (next byte is newline)
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // ASCII at line end
+    /// // File: "ab\n" where line_end_byte=11 (byte before newline)
+    /// // Cursor on 'b' at byte 11
+    /// let result = state.is_next_byte_newline()?;
+    /// assert_eq!(result, true); // Next byte (12) is newline
+    ///
+    /// // Multi-byte UTF-8 at line end
+    /// // File: "a世\n" where 世 is bytes 11-13, line_end_byte=13
+    /// // Cursor on '世' starting at byte 11
+    /// let result = state.is_next_byte_newline()?;
+    /// assert_eq!(result, true); // Character ends at 13, next byte (14) is newline
+    ///
+    /// // Not at line end
+    /// // File: "abc\n"
+    /// // Cursor on 'a'
+    /// let result = state.is_next_byte_newline()?;
+    /// assert_eq!(result, false); // Not at end of line
+    /// ```
     pub fn is_next_byte_newline(&self) -> Result<bool> {
-        // === DEFENSIVE CHECK 1: Row bounds validation ===
+        // ═══════════════════════════════════════════════════════════════════════
+        // DEFENSIVE CHECK 0: Verify read-copy file path exists
+        // ═══════════════════════════════════════════════════════════════════════
+        let read_copy_path = match &self.read_copy_path {
+            Some(path) => path,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: no read-copy file path available (returning false - not at newline)"
+                );
+
+                // Not an error - just means we cannot analyze the file
+                return Ok(false);
+            }
+        };
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // DEFENSIVE CHECK 1: Row bounds validation
+        // ═══════════════════════════════════════════════════════════════════════
         // Instead of panicking on out-of-bounds, return Ok(false).
         // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
         if self.cursor.row >= self.window_map.line_byte_start_end_position_pairs.len() {
@@ -4034,14 +4109,16 @@ impl EditorState {
             return Ok(false);
         }
 
-        // === DEFENSIVE CHECK 2: Cursor position mapping validation ===
+        // ═══════════════════════════════════════════════════════════════════════
+        // DEFENSIVE CHECK 2: Cursor position mapping validation
+        // ═══════════════════════════════════════════════════════════════════════
         // If cursor doesn't map to a valid file position, safely return false.
         // This handles columns beyond line length without crashing.
         let cursor_byte_result = self
             .window_map
             .get_row_col_file_position(self.cursor.row, self.cursor.col)?;
 
-        let cursor_byte = match cursor_byte_result {
+        let cursor_byte_start = match cursor_byte_result {
             Some(pos) => pos.byte_offset_linear_file_absolute_position,
             None => {
                 #[cfg(debug_assertions)]
@@ -4055,7 +4132,47 @@ impl EditorState {
             }
         };
 
-        // === DEFENSIVE CHECK 3: Line byte range access ===
+        // ═══════════════════════════════════════════════════════════════════════
+        // UTF-8 ANALYSIS: Determine byte length of character at cursor
+        // ═══════════════════════════════════════════════════════════════════════
+        // This is the KEY FIX for multi-byte character support.
+        // We must find where the COMPLETE character ends, not where it starts.
+        let char_byte_length = match get_utf8_char_byte_length_at_position(
+            read_copy_path,
+            cursor_byte_start,
+        ) {
+            Ok(len) => len,
+
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: failed to read UTF-8 character at byte {}: {} (returning false - not at newline)",
+                    cursor_byte_start, _e
+                );
+
+                // Defensive: If we can't read the character, assume not at line end
+                // This allows cursor movement to continue safely
+                return Ok(false);
+            }
+        };
+
+        // Assertion: UTF-8 character length must be 1-4 bytes
+        debug_assert!(
+            char_byte_length >= 1 && char_byte_length <= 4,
+            "UTF-8 character length must be 1-4, got {}",
+            char_byte_length
+        );
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // CALCULATE: Last byte position of current character
+        // ═══════════════════════════════════════════════════════════════════════
+        // For 1-byte char at position 10: start=10, end=10
+        // For 3-byte char at position 10: start=10, end=12
+        let cursor_char_end_byte = cursor_byte_start + (char_byte_length as u64) - 1;
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // DEFENSIVE CHECK 3: Line byte range access
+        // ═══════════════════════════════════════════════════════════════════════
         // Use .get() for safe indexing. If somehow the row is still invalid,
         // return false (defense-in-depth: additional validation layer).
         let line_byte_range = match self
@@ -4076,7 +4193,9 @@ impl EditorState {
             }
         };
 
-        // === DEFENSIVE CHECK 4: Line byte range initialization ===
+        // ═══════════════════════════════════════════════════════════════════════
+        // DEFENSIVE CHECK 4: Line byte range initialization
+        // ═══════════════════════════════════════════════════════════════════════
         // The line_byte_range is an Option; if None, return false safely.
         let (_start, end) = match line_byte_range {
             Some(range) => *range,
@@ -4092,11 +4211,26 @@ impl EditorState {
             }
         };
 
-        // === LOGIC: Determine if at line end ===
-        // If cursor byte position equals line end byte position,
-        // the next byte in the file is the newline character.
+        // ═══════════════════════════════════════════════════════════════════════
+        // LOGIC: Determine if at line end (UTF-8-AWARE)
+        // ═══════════════════════════════════════════════════════════════════════
+        // If the LAST BYTE of the cursor's character equals the line's end byte,
+        // then the next byte in the file is the newline character.
+        //
+        // Example with multi-byte character:
+        //   Line: "ab世\n"
+        //   Bytes: [10='a', 11='b', 12-14='世', 15='\n']
+        //   line_end_byte = 14 (last content byte before newline)
+        //
+        //   When cursor is on '世':
+        //     cursor_byte_start = 12
+        //     char_byte_length = 3
+        //     cursor_char_end_byte = 12 + 3 - 1 = 14
+        //     cursor_char_end_byte (14) == line_end_byte (14) → TRUE
+        //     Next byte (15) IS the newline → return Ok(true)
+        //
         // This is the only condition where we return Ok(true).
-        Ok(cursor_byte == end)
+        Ok(cursor_char_end_byte == end)
     }
 
     /// Handles Pasty mode - clipboard management and file insertion interface
@@ -8331,34 +8465,252 @@ fn read_single_line<'a>(
     Ok((buffer, bytes_read, found_newline))
 }
 
+// ============================================================================
+// UTF-8 CHARACTER ANALYSIS (Buffer-based variant for line processing)
+// ============================================================================
+
+/// Determines the byte length of a UTF-8 character from a byte buffer
+///
+/// # Purpose (Project Context)
+/// When building the window-to-file mapping, we process lines that have been
+/// read into memory buffers. This function analyzes UTF-8 characters from
+/// those buffers to correctly calculate byte positions and display widths.
+///
+/// This is a buffer-based variant of `get_utf8_char_byte_length_at_position`.
+/// While that function reads from files, this one reads from memory buffers
+/// during line processing.
+///
+/// # UTF-8 First-Byte Patterns (Same as file-based version)
+/// ```text
+/// Byte Range   Pattern      Character Length
+/// 0x00..=0x7F  0xxxxxxx     1 byte  (ASCII)
+/// 0xC0..=0xDF  110xxxxx     2 bytes
+/// 0xE0..=0xEF  1110xxxx     3 bytes
+/// 0xF0..=0xF7  11110xxx     4 bytes
+/// 0x80..=0xBF  10xxxxxx     Invalid (continuation byte, not first byte)
+/// 0xF8..=0xFF  11111xxx     Invalid (UTF-8 doesn't use these)
+/// ```
+///
+/// # Arguments
+/// * `buffer` - Byte slice containing UTF-8 text
+/// * `index` - Position in buffer where character starts
+///
+/// # Returns
+/// * `Ok(1..=4)` - Valid UTF-8 character byte length
+/// * `Ok(1)` - Invalid UTF-8 treated as single byte (defensive)
+/// * `Err` - Index out of bounds (buffer access error)
+///
+/// # Defensive Programming
+/// - Out of bounds index → Returns error
+/// - EOF/incomplete character → Returns Ok(1) for remaining bytes
+/// - Invalid UTF-8 sequence → Returns Ok(1) (treat as single byte)
+/// - Continuation byte as first byte → Returns Ok(1) (malformed data)
+///
+/// # Memory Safety
+/// - No heap allocation
+/// - Bounds checking on all buffer access
+/// - Safe indexing using slice bounds
+///
+/// # Examples
+/// ```ignore
+/// let text = b"hello\xE4\xB8\x96"; // "hello世"
+/// let len = get_utf8_char_byte_length_from_buffer(text, 0)?;
+/// assert_eq!(len, 1); // 'h' is 1 byte
+///
+/// let len = get_utf8_char_byte_length_from_buffer(text, 5)?;
+/// assert_eq!(len, 3); // '世' is 3 bytes (E4 B8 96)
+///
+/// let invalid = b"\x80\x81"; // Invalid UTF-8 (continuation bytes)
+/// let len = get_utf8_char_byte_length_from_buffer(invalid, 0)?;
+/// assert_eq!(len, 1); // Defensive: treat as single byte
+/// ```
+fn get_utf8_char_byte_length_from_buffer(buffer: &[u8], index: usize) -> Result<usize> {
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 1: Validate index is within buffer bounds
+    // ═══════════════════════════════════════════════════════════════════════
+    if index >= buffer.len() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_from_buffer: index {} >= buffer length {} (out of bounds)",
+            index,
+            buffer.len()
+        );
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Buffer index out of bounds",
+        )));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // READ: First byte of character from buffer
+    // ═══════════════════════════════════════════════════════════════════════
+    let first_byte = buffer[index];
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // UTF-8 ANALYSIS: Determine character length from first-byte pattern
+    // ═══════════════════════════════════════════════════════════════════════
+    // Using bit patterns to identify UTF-8 character length.
+    // Order matters: check more specific patterns first (4-byte before 3-byte, etc.)
+
+    let char_length = if first_byte <= 0x7F {
+        // Pattern: 0xxxxxxx → 1-byte character (ASCII)
+        // Range: 0x00..=0x7F
+        1
+    } else if first_byte >= 0xF0 && first_byte <= 0xF7 {
+        // Pattern: 11110xxx → 4-byte character
+        // Range: 0xF0..=0xF7
+        // Must check 4-byte BEFORE 3-byte and 2-byte to avoid false matches
+        4
+    } else if first_byte >= 0xE0 && first_byte <= 0xEF {
+        // Pattern: 1110xxxx → 3-byte character
+        // Range: 0xE0..=0xEF
+        3
+    } else if first_byte >= 0xC0 && first_byte <= 0xDF {
+        // Pattern: 110xxxxx → 2-byte character
+        // Range: 0xC0..=0xDF
+        2
+    } else {
+        // Invalid UTF-8 first byte:
+        // - 0x80..=0xBF (10xxxxxx) - continuation bytes, not valid as first byte
+        // - 0xF8..=0xFF - invalid UTF-8 range (not used in UTF-8 standard)
+        //
+        // Defensive: Treat as single byte, allow editor to continue
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_from_buffer: invalid UTF-8 first byte 0x{:02X} at index {} (treating as 1 byte)",
+            first_byte, index
+        );
+
+        1 // Defensive fallback
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 2: Verify complete character is available in buffer
+    // ═══════════════════════════════════════════════════════════════════════
+    // If we need N bytes but buffer only has M bytes remaining where M < N,
+    // treat the incomplete sequence as single bytes (defensive handling)
+    let bytes_remaining = buffer.len() - index;
+    if char_length > bytes_remaining {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_from_buffer: incomplete UTF-8 character at index {} \
+             (need {} bytes, only {} remaining, treating as 1 byte)",
+            index, char_length, bytes_remaining
+        );
+
+        // Defensive: Treat incomplete character as single byte
+        // This allows processing to continue even with truncated data
+        return Ok(1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 3: Validate continuation bytes (2-byte, 3-byte, 4-byte)
+    // ═══════════════════════════════════════════════════════════════════════
+    // For multi-byte UTF-8, continuation bytes must match pattern 10xxxxxx (0x80..=0xBF)
+    // If they don't, the sequence is malformed
+    if char_length > 1 {
+        for i in 1..char_length {
+            let continuation_byte = buffer[index + i];
+
+            // Check if byte matches continuation pattern: 10xxxxxx
+            // Mask 0b11000000 should equal 0b10000000
+            if (continuation_byte & 0b1100_0000) != 0b1000_0000 {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "get_utf8_char_byte_length_from_buffer: invalid continuation byte 0x{:02X} \
+                     at position {} in {}-byte sequence starting at {} (treating as 1 byte)",
+                    continuation_byte, i, char_length, index
+                );
+
+                // Defensive: Invalid continuation byte means malformed UTF-8
+                // Treat the first byte as a single-byte character and let
+                // the next iteration handle the remaining bytes
+                return Ok(1);
+            }
+        }
+    }
+
+    // Assertion: Character length must be 1-4 (UTF-8 standard)
+    debug_assert!(
+        char_length >= 1 && char_length <= 4,
+        "UTF-8 character length must be 1-4 bytes, got {}",
+        char_length
+    );
+
+    Ok(char_length)
+}
+
 /// Processes a line with horizontal offset and writes visible portion to display
 ///
-/// # Purpose
+/// # Purpose (Project Context)
 /// Takes a line's bytes, skips horizontal_offset characters, then writes
 /// the visible portion to the display buffer while updating WindowMapStruct.
 ///
+/// This function is critical for correct cursor positioning: it creates the
+/// mapping between display columns (what the user sees) and file byte positions
+/// (where edits actually happen). Any error here causes insertion/deletion to
+/// occur at the wrong file location.
+///
+/// # Multi-byte UTF-8 Support
+/// The function must correctly handle 1-4 byte UTF-8 characters:
+/// - Skip complete characters when applying horizontal offset (not bytes)
+/// - Map display columns to correct file byte positions
+/// - Handle double-width characters (CJK, emoji) that occupy 2 display columns
+/// - Ensure each display column maps to the START byte of its character
+///
 /// # Arguments
 /// * `state` - Editor state for buffers and map
-/// * `row` - Display row index
-/// * `col_start` - Starting column (after line number)
-/// * `line_bytes` - The complete line text as bytes
-/// * `horizontal_offset` - Number of characters to skip from line start
-/// * `max_cols` - Maximum columns available for text
-/// * `file_line_start` - Byte position where this line starts in file
+/// * `row` - Display row index (0-indexed within window)
+/// * `col_start` - Starting column (after line number prefix)
+/// * `line_bytes` - The complete line text as bytes (entire line, not truncated)
+/// * `horizontal_offset` - Number of CHARACTERS to skip from line start (not bytes)
+/// * `max_cols` - Maximum display columns available for text
+/// * `file_line_start` - Absolute byte position where this line starts in file
+/// * `current_line_number` - Absolute file line number (0-indexed)
 ///
 /// # Returns
 /// * `Ok(bytes_written)` - Number of bytes written to display buffer
-/// * `Err(io::Error)` - If UTF-8 parsing fails or buffer access fails
+/// * `Err(LinesError)` - If buffer overflow, invalid UTF-8, or bounds violation
 ///
-/// # UTF-8 Handling
-/// - Properly skips complete characters, not bytes
-/// - Handles multi-byte UTF-8 sequences correctly
-/// - Maps double-width characters to two display columns
+/// # Window Mapping Semantics
+/// Each display column maps to the file byte position of the character's FIRST byte:
+/// ```ignore
+/// File bytes:   [10='a', 11='b', 12-14='世', 15=' ']
+/// Display cols: [0='a',  1='b',  2-3='世',    4=' ']
+///                                 ^^^
+/// Column 2 maps to byte 12 (start of '世')
+/// Column 3 maps to byte 12 (still part of '世', same start byte)
+/// Column 4 maps to byte 15 (start of space after '世')
+/// ```
 ///
-/// note: "end of TUI" is not "end of line"
-/// byte_offset_linear_file_absolute_position: file_line_start + line_bytes.len() as u64, // ❌ Wrong
-/// rustCopybyte_offset: file_line_start + byte_index as u64, // ✅ Correct
+/// # Defensive Programming
+/// - Validates all array indices before access
+/// - Checks UTF-8 character completeness
+/// - Bounds-checks display buffer writes
+/// - Limits iterations to prevent infinite loops
+/// - Validates continuation bytes for multi-byte sequences
 ///
+/// # Example
+/// ```ignore
+/// // File line: "hello世界" (hello + two 3-byte Chinese characters)
+/// // File bytes: [h e l l o 世(E4B896) 界(E7958C)]
+/// // Positions:  0 1 2 3 4 5  6  7    8  9  10
+/// //
+/// // With horizontal_offset=0, col_start=2 (after "1 "):
+/// // Display: "1 hello世界"
+/// // Columns:  0 1 2 3 4 5 6 7 8 9 10 11
+/// //              ^ h e l l o 世世界界
+/// //
+/// // Window map:
+/// // Col 2 → file byte 0 ('h')
+/// // Col 3 → file byte 1 ('e')
+/// // ...
+/// // Col 7 → file byte 5 ('世' start)
+/// // Col 8 → file byte 5 ('世' second column, same byte)
+/// // Col 9 → file byte 8 ('界' start)
+/// // Col 10 → file byte 8 ('界' second column, same byte)
+/// ```
 fn process_line_with_offset(
     state: &mut EditorState,
     row: usize,
@@ -8368,56 +8720,105 @@ fn process_line_with_offset(
     max_cols: usize,
     file_line_start: u64,
 ) -> Result<usize> {
-    // Defensive: Validate row index
-    if row >= 45 {
+    let current_line_number = state.cursor.row;
+
+    const MAX_DISPLAY_BUFFER_BYTES: usize = 240;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 1: Validate row index
+    // ═══════════════════════════════════════════════════════════════════════
+    if row >= MAX_TUI_ROWS {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "process_line_with_offset: row {} exceeds MAX_TUI_ROWS {}",
+            row, MAX_TUI_ROWS
+        );
+
         return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Row {} exceeds maximum display rows", row),
+            "Row exceeds maximum display rows",
         )));
     }
 
-    // First pass: Skip horizontal_offset characters (not bytes!)
+    // Assertion: col_start should be reasonable (after line number, typically 1-5)
+    debug_assert!(
+        col_start < 20,
+        "col_start {} seems unreasonably large",
+        col_start
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 1: Skip horizontal_offset CHARACTERS (not bytes!)
+    // ═══════════════════════════════════════════════════════════════════════
+    // When horizontally scrolling, we skip complete characters from the line start.
+    // Must use UTF-8 character boundaries, not byte boundaries.
+
     let mut byte_index = 0usize;
     let mut chars_skipped = 0usize;
+    let mut skip_iterations = 0;
 
-    // Defensive: Limit iterations
-    let mut iterations = 0;
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "process_line_with_offset: row={}, horizontal_offset={}, line_length={} bytes",
+        row,
+        horizontal_offset,
+        line_bytes.len()
+    );
 
     while byte_index < line_bytes.len()
         && chars_skipped < horizontal_offset
-        && iterations < limits::HORIZONTAL_SCROLL_CHARS
+        && skip_iterations < limits::HORIZONTAL_SCROLL_CHARS
     {
-        iterations += 1;
+        skip_iterations += 1;
 
-        // Assertion 4: byte_index should never exceed line length
-        debug_assert!(
-            byte_index < line_bytes.len(),
-            "byte_index {} exceeds line length {}",
-            byte_index,
-            line_bytes.len()
-        );
-
-        // Determine character byte length from first byte
-        let byte_val = line_bytes[byte_index];
-        let char_len = if byte_val & 0b1000_0000 == 0 {
-            1 // ASCII
-        } else if byte_val & 0b1110_0000 == 0b1100_0000 {
-            2 // 2-byte UTF-8
-        } else if byte_val & 0b1111_0000 == 0b1110_0000 {
-            3 // 3-byte UTF-8
-        } else if byte_val & 0b1111_1000 == 0b1111_0000 {
-            4 // 4-byte UTF-8
-        } else {
-            // Invalid UTF-8 or continuation byte - skip single byte
-            1
+        // Get character byte length using centralized helper
+        let char_len = match get_utf8_char_byte_length_from_buffer(line_bytes, byte_index) {
+            Ok(len) => len,
+            Err(_) => {
+                // Buffer access error - should not happen as we checked byte_index < len
+                // Defensive: treat as 1 byte and continue
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "process_line_with_offset: buffer access error at byte_index {} (treating as 1 byte)",
+                    byte_index
+                );
+                1
+            }
         };
 
-        // Skip this character
+        #[cfg(debug_assertions)]
+        {
+            if char_len > 1 {
+                eprintln!(
+                    "  Skip phase: byte_index={}, char_len={}, first_byte=0x{:02X}",
+                    byte_index, char_len, line_bytes[byte_index]
+                );
+            }
+        }
+
+        // Skip this complete character
         byte_index = (byte_index + char_len).min(line_bytes.len());
         chars_skipped += 1;
     }
 
-    // Assertion 5: We should have skipped exactly the requested amount or hit end
+    // Defensive: Check we didn't hit iteration limit
+    if skip_iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+        #[cfg(debug_assertions)]
+        eprintln!("process_line_with_offset: hit iteration limit during horizontal skip phase");
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Maximum iterations exceeded in horizontal skip",
+        )));
+    }
+
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "  After skip: byte_index={}, chars_skipped={}",
+        byte_index, chars_skipped
+    );
+
+    // Assertion: We should have skipped at most the requested amount
     debug_assert!(
         chars_skipped <= horizontal_offset,
         "Skipped {} characters but only {} requested",
@@ -8425,64 +8826,84 @@ fn process_line_with_offset(
         horizontal_offset
     );
 
-    // Second pass: Write visible characters to display buffer
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 2: Write visible characters to display buffer and build window map
+    // ═══════════════════════════════════════════════════════════════════════
+
     let mut display_col = col_start;
     let mut bytes_written = 0usize;
-    iterations = 0; // Reset iteration counter
+    let mut write_iterations = 0;
 
-    // Reserve 1 or 2 columns at line end to prevent double-width characters from overflowing
-    // A double-width char starting at max_cols-1 would extend to max_cols+1, causing overflow
+    // Visual size of TUI width -pixel level-
+    let mut visual_col = col_start; // Visual TUI column consumed
+    let visual_col_limit = col_start + max_cols; // Visual limit
+
+    // Reserve space to prevent double-width characters from overflowing
+    // A double-width char starting at max_cols-1 would extend to max_cols+1
+    let display_col_limit = col_start + max_cols;
+
     while byte_index < line_bytes.len()
-        // Reserve 1 or 2 columns to prevent double-width overflow
-        && display_col < col_start + max_cols - 1
-        && iterations < limits::HORIZONTAL_SCROLL_CHARS
+        && display_col < display_col_limit - 1 // Reserve 1-2 cols for double-width
+        && write_iterations < limits::HORIZONTAL_SCROLL_CHARS
     {
-        iterations += 1;
+        write_iterations += 1;
 
-        // Assertion 6: byte_index should be within bounds
-        debug_assert!(
-            byte_index < line_bytes.len(),
-            "byte_index {} exceeds line length {} in write phase",
-            byte_index,
-            line_bytes.len()
-        );
-
-        // Parse next UTF-8 character
-        let byte_val = line_bytes[byte_index];
-        let char_len = if byte_val & 0b1000_0000 == 0 {
-            1 // ASCII
-        } else if byte_val & 0b1110_0000 == 0b1100_0000 {
-            2 // 2-byte UTF-8
-        } else if byte_val & 0b1111_0000 == 0b1110_0000 {
-            3 // 3-byte UTF-8
-        } else if byte_val & 0b1111_1000 == 0b1111_0000 {
-            4 // 4-byte UTF-8
-        } else {
-            // Skip invalid bytes
-            byte_index += 1;
-            continue;
+        // Get character byte length using centralized helper
+        let char_len = match get_utf8_char_byte_length_from_buffer(line_bytes, byte_index) {
+            Ok(len) => len,
+            Err(_) => {
+                // Buffer access error - skip this position
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "process_line_with_offset: buffer access error at byte_index {} in write phase",
+                    byte_index
+                );
+                byte_index += 1;
+                continue;
+            }
         };
 
         // Check if complete character is available
         if byte_index + char_len > line_bytes.len() {
-            break; // Incomplete character at end
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "process_line_with_offset: incomplete character at byte_index {} (need {} bytes, only {} remaining)",
+                byte_index,
+                char_len,
+                line_bytes.len() - byte_index
+            );
+            break; // Incomplete character at end of line
         }
 
         // Get the character bytes
         let char_bytes = &line_bytes[byte_index..byte_index + char_len];
 
-        // Assertion 7: Character bytes should be exactly char_len
+        // Assertion: Character bytes should be exactly char_len
         debug_assert_eq!(
             char_bytes.len(),
             char_len,
-            "Character byte slice length mismatch"
+            "Character byte slice length mismatch: expected {}, got {}",
+            char_len,
+            char_bytes.len()
         );
 
-        // Check how many display columns this character needs
+        #[cfg(debug_assertions)]
+        {
+            if char_len > 1 {
+                eprintln!(
+                    "  Write phase: byte_index={}, char_len={}, bytes={:02X?}",
+                    byte_index, char_len, char_bytes
+                );
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // DISPLAY WIDTH: Determine how many columns this character occupies
+        // ═══════════════════════════════════════════════════════════════════
         let display_width = if char_len == 1 {
             1 // ASCII is always single-width
         } else {
-            // Parse character to check if double-width
+            // Parse multi-byte character to check if double-width (CJK, emoji, etc.)
             match std::str::from_utf8(char_bytes) {
                 Ok(s) => {
                     if let Some(ch) = s.chars().next() {
@@ -8495,133 +8916,520 @@ fn process_line_with_offset(
                         1 // Default to single-width
                     }
                 }
-                Err(_) => 1, // Invalid UTF-8, treat as single-width
+                Err(_) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "  Invalid UTF-8 sequence at byte_index {}: {:02X?}",
+                        byte_index, char_bytes
+                    );
+                    1 // Invalid UTF-8, treat as single-width
+                }
             }
         };
 
-        // Check if character fits in remaining space
-        if display_col + display_width > col_start + max_cols {
+        // Check if character fits VISUALLY
+        if visual_col + display_width > visual_col_limit {
+            break; // Would overflow visually
+        }
+
+        // Check if character fits in remaining display space
+        if display_col + display_width > display_col_limit {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "  Character would exceed display limit: display_col={}, display_width={}, limit={}",
+                display_col, display_width, display_col_limit
+            );
             break; // Character would exceed display width
         }
 
-        // Write character to display buffer
-        if col_start + bytes_written + char_len <= 182 {
+        // ═══════════════════════════════════════════════════════════════════
+        // WRITE: Copy character bytes to display buffer
+        // ═══════════════════════════════════════════════════════════════════
+        let write_start = col_start + bytes_written;
+        let write_end = write_start + char_len;
+
+        if write_end <= MAX_DISPLAY_BUFFER_BYTES {
             // Copy bytes to display buffer
             for i in 0..char_len {
-                state.utf8_txt_display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
+                state.utf8_txt_display_buffers[row][write_start + i] = char_bytes[i];
             }
 
-            // Update WindowMapStruct for this character position
+            // ═══════════════════════════════════════════════════════════════
+            // WINDOW MAP: Create file position mapping for this character
+            // ═══════════════════════════════════════════════════════════════
+            // Map each display column this character occupies to its starting file byte.
+            // For double-width characters, BOTH columns map to the same file byte.
+            //
+            // Example: '世' at file byte 100
+            //   Display column 10 → file byte 100
+            //   Display column 11 → file byte 100 (still part of same character)
+
+            // let file_pos = FilePosition {
+            //     byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
+            //     line_number: current_line_number, // ← FIXED: use actual line number
+            //     byte_in_line: byte_index,
+            // };
+
+            // #[cfg(debug_assertions)]
+            // {
+            //     if char_len > 1 {
+            //         eprintln!(
+            //             "  Mapping: display_cols [{}, {}] → file_byte={}, line_number={}, byte_in_line={}",
+            //             display_col,
+            //             display_col + display_width - 1,
+            //             file_line_start + byte_index as u64,
+            //             current_line_number,
+            //             byte_index
+            //         );
+            //     }
+            // }
+
+            // // Map all display columns this character occupies
+            // for i in 0..display_width {
+            //     state
+            //         .window_map
+            //         .set_file_position(row, display_col + i, Some(file_pos))?;
+            // }
+
+            // bytes_written += char_len;
+            // display_col += display_width;
+
+            // ═══════════════════════════════════════════════════════════════
+            // WINDOW MAP: Create file position mapping for this character
+            // ═══════════════════════════════════════════════════════════════
+            //
+            // Each character maps to ONE cursor position, regardless of display width.
+            //
+            // Single-width 'a': 1 display column → 1 cursor position
+            // Double-width '花': 1 display columns → 1 cursor position (not 2!)
+            //
             let file_pos = FilePosition {
                 byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
-                line_number: state.line_count_at_top_of_window,
+                line_number: current_line_number, // ← FIXED: use actual line number
                 byte_in_line: byte_index,
             };
-
-            // Map all display columns this character occupies
-            for i in 0..display_width {
-                state
-                    .window_map
-                    .set_file_position(row, display_col + i, Some(file_pos))?;
+            #[cfg(debug_assertions)]
+            {
+                if display_width == 2 {
+                    eprintln!(
+                        "  Double-width char at display_col={} → byte={} (width={}, ONE cursor position)",
+                        display_col,
+                        file_line_start + byte_index as u64,
+                        display_width
+                    );
+                }
             }
 
+            // Map this one cursor position to be kanji start byte
+            state
+                .window_map
+                .set_file_position(row, display_col, Some(file_pos))?;
+
             bytes_written += char_len;
-            display_col += display_width;
+            display_col += 1 // display_width; // Visual advance 1 TUI char column
         } else {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "  Buffer full: write_end={} exceeds MAX_DISPLAY_BUFFER_BYTES={}",
+                write_end, MAX_DISPLAY_BUFFER_BYTES
+            );
             break; // Buffer full
         }
 
         byte_index += char_len;
+        visual_col += display_width; // Advance visual position by 1 or 2
     }
 
-    // Defensive: Check iteration limit
-    if iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+    // Defensive: Check we didn't hit iteration limit
+    if write_iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+        #[cfg(debug_assertions)]
+        eprintln!("process_line_with_offset: hit iteration limit during write phase");
+
         return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::Other,
-            "Maximum iterations exceeded in line processing",
+            "Maximum iterations exceeded in line write",
         )));
     }
 
-    // Assertion 9: Verify we stayed within display buffer bounds
-    //
-    //    =================================================
-    // // Debug-Assert, Test-Asset, Production-Catch-Handle
-    //    =================================================
-    // // This is not included in production builds
-    // assert: only when running in a debug-build: will panic
-    debug_assert!(
-        bytes_written <= 182,
-        "Wrote {} bytes but buffer is only 182 bytes",
-        bytes_written
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "  After write: byte_index={}, bytes_written={}, display_col={}",
+        byte_index, bytes_written, display_col
     );
-    // This is not included in production builds
-    // assert: only when running cargo test: will panic
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ASSERTION CHECKS: Verify buffer bounds were respected
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Debug-Assert: Development/testing panic
+    debug_assert!(
+        bytes_written <= MAX_DISPLAY_BUFFER_BYTES,
+        "Wrote {} bytes but buffer is only {} bytes",
+        bytes_written,
+        MAX_DISPLAY_BUFFER_BYTES
+    );
+
+    // Test-Assert: Cargo test panic
     #[cfg(test)]
     assert!(
-        bytes_written <= 182,
-        "Wrote {} bytes but buffer is only 182 bytes",
-        bytes_written
+        bytes_written <= MAX_DISPLAY_BUFFER_BYTES,
+        "Wrote {} bytes but buffer is only {} bytes",
+        bytes_written,
+        MAX_DISPLAY_BUFFER_BYTES
     );
-    // Catch & Handle without panic in production
-    // This IS included in production to safe-catch
-    if !bytes_written <= 182 {
-        // state.set_info_bar_message("Config error");
+
+    // Production: Catch and handle without panic
+    if bytes_written > MAX_DISPLAY_BUFFER_BYTES {
         return Err(LinesError::GeneralAssertionCatchViolation(
-            "!bytes_written <= 182".into(),
+            "bytes_written > MAX_DISPLAY_BUFFER_BYTES".into(),
         ));
     }
 
-    // Assertion 10: Verify display column stayed within bounds
-    //
-    //    =================================================
-    // // Debug-Assert, Test-Asset, Production-Catch-Handle
-    //    =================================================
-    // // This is not included in production builds
-    // assert: only when running in a debug-build: will panic
+    // Debug-Assert: Display column check
     debug_assert!(
-        display_col <= col_start + max_cols,
+        display_col <= display_col_limit,
         "Display column {} exceeds limit {}",
         display_col,
-        col_start + max_cols
+        display_col_limit
     );
-    // This is not included in production builds
-    // assert: only when running cargo test: will panic
+
+    // Test-Assert: Display column check
     #[cfg(test)]
     assert!(
-        display_col <= col_start + max_cols,
+        display_col <= display_col_limit,
         "Display column {} exceeds limit {}",
         display_col,
-        col_start + max_cols
+        display_col_limit
     );
-    // Catch & Handle without panic in production
-    // This IS included in production to safe-catch
-    if !display_col <= col_start + max_cols {
-        // state.set_info_bar_message("Config error");
+
+    // Production: Catch and handle
+    if display_col > display_col_limit {
         return Err(LinesError::GeneralAssertionCatchViolation(
-            "!dsplycol<=colstrt+mxcol".into(),
+            "display_col > display_col_limit".into(),
         ));
     }
 
-    // Map one additional "virtual" position after the last character
-    // This allows cursor to be positioned at "end of line"
-    let eol_display_col = display_col; // The column right after last char
+    // ═══════════════════════════════════════════════════════════════════════
+    // END-OF-LINE MAPPING: Map position after last visible character
+    // ═══════════════════════════════════════════════════════════════════════
+    // This allows cursor to be positioned at "end of visible text" (not EOL).
+    // The byte_index now points to the next byte after the last displayed character.
 
-    // Only add if we have room in the display
-    if eol_display_col < col_start + max_cols {
+    let eol_display_col = display_col; // Column right after last char
+
+    if eol_display_col < display_col_limit {
         let eol_file_pos = FilePosition {
-            byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64, // end of TUI is not EOLine
-            line_number: state.line_count_at_top_of_window + row,
-            byte_in_line: byte_index, // end of TUI is not EOLine
+            byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
+            line_number: current_line_number,
+            byte_in_line: byte_index,
         };
+
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "  EOL mapping: display_col={} → file_byte={} (end of visible text)",
+            eol_display_col,
+            file_line_start + byte_index as u64
+        );
 
         state
             .window_map
             .set_file_position(row, eol_display_col, Some(eol_file_pos))?;
     }
-    // ===== END NEW CODE =====
 
     Ok(bytes_written)
 }
+
+// /// Processes a line with horizontal offset and writes visible portion to display
+// ///
+// /// # Purpose
+// /// Takes a line's bytes, skips horizontal_offset characters, then writes
+// /// the visible portion to the display buffer while updating WindowMapStruct.
+// ///
+// /// # Arguments
+// /// * `state` - Editor state for buffers and map
+// /// * `row` - Display row index
+// /// * `col_start` - Starting column (after line number)
+// /// * `line_bytes` - The complete line text as bytes
+// /// * `horizontal_offset` - Number of characters to skip from line start
+// /// * `max_cols` - Maximum columns available for text
+// /// * `file_line_start` - Byte position where this line starts in file
+// ///
+// /// # Returns
+// /// * `Ok(bytes_written)` - Number of bytes written to display buffer
+// /// * `Err(io::Error)` - If UTF-8 parsing fails or buffer access fails
+// ///
+// /// # UTF-8 Handling
+// /// - Properly skips complete characters, not bytes
+// /// - Handles multi-byte UTF-8 sequences correctly
+// /// - Maps double-width characters to two display columns
+// ///
+// /// note: "end of TUI" is not "end of line"
+// /// byte_offset_linear_file_absolute_position: file_line_start + line_bytes.len() as u64, // ❌ Wrong
+// /// rustCopybyte_offset: file_line_start + byte_index as u64,
+// ///
+// fn process_line_with_offset(
+//     state: &mut EditorState,
+//     row: usize,
+//     col_start: usize,
+//     line_bytes: &[u8],
+//     horizontal_offset: usize,
+//     max_cols: usize,
+//     file_line_start: u64,
+// ) -> Result<usize> {
+//     // Defensive: Validate row index
+//     if row >= 45 {
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             format!("Row {} exceeds maximum display rows", row),
+//         )));
+//     }
+
+//     // First pass: Skip horizontal_offset characters (not bytes!)
+//     let mut byte_index = 0usize;
+//     let mut chars_skipped = 0usize;
+
+//     // Defensive: Limit iterations
+//     let mut iterations = 0;
+
+//     while byte_index < line_bytes.len()
+//         && chars_skipped < horizontal_offset
+//         && iterations < limits::HORIZONTAL_SCROLL_CHARS
+//     {
+//         iterations += 1;
+
+//         // Assertion 4: byte_index should never exceed line length
+//         debug_assert!(
+//             byte_index < line_bytes.len(),
+//             "byte_index {} exceeds line length {}",
+//             byte_index,
+//             line_bytes.len()
+//         );
+
+//         // Determine character byte length from first byte
+//         let byte_val = line_bytes[byte_index];
+//         let char_len = if byte_val & 0b1000_0000 == 0 {
+//             1 // ASCII
+//         } else if byte_val & 0b1110_0000 == 0b1100_0000 {
+//             2 // 2-byte UTF-8
+//         } else if byte_val & 0b1111_0000 == 0b1110_0000 {
+//             3 // 3-byte UTF-8
+//         } else if byte_val & 0b1111_1000 == 0b1111_0000 {
+//             4 // 4-byte UTF-8
+//         } else {
+//             // Invalid UTF-8 or continuation byte - skip single byte
+//             1
+//         };
+
+//         // Skip this character
+//         byte_index = (byte_index + char_len).min(line_bytes.len());
+//         chars_skipped += 1;
+//     }
+
+//     // Assertion 5: We should have skipped exactly the requested amount or hit end
+//     debug_assert!(
+//         chars_skipped <= horizontal_offset,
+//         "Skipped {} characters but only {} requested",
+//         chars_skipped,
+//         horizontal_offset
+//     );
+
+//     // Second pass: Write visible characters to display buffer
+//     let mut display_col = col_start;
+//     let mut bytes_written = 0usize;
+//     iterations = 0; // Reset iteration counter
+
+//     // Reserve 1 or 2 columns at line end to prevent double-width characters from overflowing
+//     // A double-width char starting at max_cols-1 would extend to max_cols+1, causing overflow
+//     while byte_index < line_bytes.len()
+//         // Reserve 1 or 2 columns to prevent double-width overflow
+//         && display_col < col_start + max_cols - 1
+//         && iterations < limits::HORIZONTAL_SCROLL_CHARS
+//     {
+//         iterations += 1;
+
+//         // Assertion 6: byte_index should be within bounds
+//         debug_assert!(
+//             byte_index < line_bytes.len(),
+//             "byte_index {} exceeds line length {} in write phase",
+//             byte_index,
+//             line_bytes.len()
+//         );
+
+//         // Parse next UTF-8 character
+//         let byte_val = line_bytes[byte_index];
+//         let char_len = if byte_val & 0b1000_0000 == 0 {
+//             1 // ASCII
+//         } else if byte_val & 0b1110_0000 == 0b1100_0000 {
+//             2 // 2-byte UTF-8
+//         } else if byte_val & 0b1111_0000 == 0b1110_0000 {
+//             3 // 3-byte UTF-8
+//         } else if byte_val & 0b1111_1000 == 0b1111_0000 {
+//             4 // 4-byte UTF-8
+//         } else {
+//             // Skip invalid bytes
+//             byte_index += 1;
+//             continue;
+//         };
+
+//         // Check if complete character is available
+//         if byte_index + char_len > line_bytes.len() {
+//             break; // Incomplete character at end
+//         }
+
+//         // Get the character bytes
+//         let char_bytes = &line_bytes[byte_index..byte_index + char_len];
+
+//         // Assertion 7: Character bytes should be exactly char_len
+//         debug_assert_eq!(
+//             char_bytes.len(),
+//             char_len,
+//             "Character byte slice length mismatch"
+//         );
+
+//         // Check how many display columns this character needs
+//         let display_width = if char_len == 1 {
+//             1 // ASCII is always single-width
+//         } else {
+//             // Parse character to check if double-width
+//             match std::str::from_utf8(char_bytes) {
+//                 Ok(s) => {
+//                     if let Some(ch) = s.chars().next() {
+//                         if double_width::is_double_width(ch) {
+//                             2
+//                         } else {
+//                             1
+//                         }
+//                     } else {
+//                         1 // Default to single-width
+//                     }
+//                 }
+//                 Err(_) => 1, // Invalid UTF-8, treat as single-width
+//             }
+//         };
+
+//         // Check if character fits in remaining space
+//         if display_col + display_width > col_start + max_cols {
+//             break; // Character would exceed display width
+//         }
+
+//         // Write character to display buffer
+//         if col_start + bytes_written + char_len <= 182 {
+//             // Copy bytes to display buffer
+//             for i in 0..char_len {
+//                 state.utf8_txt_display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
+//             }
+
+//             // Update WindowMapStruct for this character position
+//             let file_pos = FilePosition {
+//                 byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
+//                 line_number: state.line_count_at_top_of_window,
+//                 byte_in_line: byte_index,
+//             };
+
+//             // Map all display columns this character occupies
+//             for i in 0..display_width {
+//                 state
+//                     .window_map
+//                     .set_file_position(row, display_col + i, Some(file_pos))?;
+//             }
+
+//             bytes_written += char_len;
+//             display_col += display_width;
+//         } else {
+//             break; // Buffer full
+//         }
+
+//         byte_index += char_len;
+//     }
+
+//     // Defensive: Check iteration limit
+//     if iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::Other,
+//             "Maximum iterations exceeded in line processing",
+//         )));
+//     }
+
+//     // Assertion 9: Verify we stayed within display buffer bounds
+//     //
+//     //    =================================================
+//     // // Debug-Assert, Test-Asset, Production-Catch-Handle
+//     //    =================================================
+//     // // This is not included in production builds
+//     // assert: only when running in a debug-build: will panic
+//     debug_assert!(
+//         bytes_written <= 182,
+//         "Wrote {} bytes but buffer is only 182 bytes",
+//         bytes_written
+//     );
+//     // This is not included in production builds
+//     // assert: only when running cargo test: will panic
+//     #[cfg(test)]
+//     assert!(
+//         bytes_written <= 182,
+//         "Wrote {} bytes but buffer is only 182 bytes",
+//         bytes_written
+//     );
+//     // Catch & Handle without panic in production
+//     // This IS included in production to safe-catch
+//     if !bytes_written <= 182 {
+//         // state.set_info_bar_message("Config error");
+//         return Err(LinesError::GeneralAssertionCatchViolation(
+//             "!bytes_written <= 182".into(),
+//         ));
+//     }
+
+//     // Assertion 10: Verify display column stayed within bounds
+//     //
+//     //    =================================================
+//     // // Debug-Assert, Test-Asset, Production-Catch-Handle
+//     //    =================================================
+//     // // This is not included in production builds
+//     // assert: only when running in a debug-build: will panic
+//     debug_assert!(
+//         display_col <= col_start + max_cols,
+//         "Display column {} exceeds limit {}",
+//         display_col,
+//         col_start + max_cols
+//     );
+//     // This is not included in production builds
+//     // assert: only when running cargo test: will panic
+//     #[cfg(test)]
+//     assert!(
+//         display_col <= col_start + max_cols,
+//         "Display column {} exceeds limit {}",
+//         display_col,
+//         col_start + max_cols
+//     );
+//     // Catch & Handle without panic in production
+//     // This IS included in production to safe-catch
+//     if !display_col <= col_start + max_cols {
+//         // state.set_info_bar_message("Config error");
+//         return Err(LinesError::GeneralAssertionCatchViolation(
+//             "!dsplycol<=colstrt+mxcol".into(),
+//         ));
+//     }
+
+//     // Map one additional "virtual" position after the last character
+//     // This allows cursor to be positioned at "end of line"
+//     let eol_display_col = display_col; // The column right after last char
+
+//     // Only add if we have room in the display
+//     if eol_display_col < col_start + max_cols {
+//         let eol_file_pos = FilePosition {
+//             byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64, // end of TUI is not EOLine
+//             line_number: state.line_count_at_top_of_window + row,
+//             byte_in_line: byte_index, // end of TUI is not EOLine
+//         };
+
+//         state
+//             .window_map
+//             .set_file_position(row, eol_display_col, Some(eol_file_pos))?;
+//     }
+//     // ===== END NEW CODE =====
+
+//     Ok(bytes_written)
+// }
 
 /// Determines if the current working directory is the user's home directory
 ///
@@ -17222,6 +18030,245 @@ pub fn render_tui_raw(state: &EditorState) -> Result<()> {
         .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
 
     Ok(())
+}
+
+// ============================================================================
+// UTF-8 CHARACTER ANALYSIS (Helper for Multi-byte Character Handling)
+// ============================================================================
+
+/// Determines the byte length of a UTF-8 character at a specific file position
+///
+/// # Purpose (Project Context)
+/// Text editors must handle international text correctly. When detecting if
+/// the cursor is at a line end (for line-wrapping in cursor movement),
+/// we must know the COMPLETE character's byte span, not just its starting byte.
+///
+/// For ASCII 'a' (1 byte), the character ends where it starts.
+/// For Chinese '世' (3 bytes: E4 B8 96), the character spans 3 bytes,
+/// so "next byte after character" is 3 bytes forward, not 1.
+///
+/// This function enables correct line-end detection for all UTF-8 text.
+///
+/// # Strategy
+/// 1. Opens file (stateless operation)
+/// 2. Seeks to target byte position
+/// 3. Reads first byte to examine UTF-8 pattern
+/// 4. Returns character length based on first-byte pattern
+/// 5. Closes file automatically (RAII)
+///
+/// # UTF-8 First-Byte Patterns
+/// ```text
+/// Byte Range   Pattern      Character Length
+/// 0x00..=0x7F  0xxxxxxx     1 byte  (ASCII)
+/// 0xC0..=0xDF  110xxxxx     2 bytes
+/// 0xE0..=0xEF  1110xxxx     3 bytes
+/// 0xF0..=0xF7  11110xxx     4 bytes
+/// 0x80..=0xBF  10xxxxxx     Invalid (continuation byte, not first byte)
+/// 0xF8..=0xFF  11111xxx     Invalid (UTF-8 doesn't use these)
+/// ```
+///
+/// # Arguments
+/// * `file_path` - Absolute path to file being analyzed
+/// * `byte_position` - Absolute byte offset in file where character starts
+///
+/// # Returns
+/// * `Ok(1)` - Single-byte character (ASCII) OR invalid UTF-8 treated as 1 byte
+/// * `Ok(2)` - Two-byte UTF-8 character
+/// * `Ok(3)` - Three-byte UTF-8 character
+/// * `Ok(4)` - Four-byte UTF-8 character
+/// * `Err(LinesError::Io)` - Unrecoverable file I/O error (hardware failure)
+///
+/// # Defensive Programming - Graceful Degradation
+/// Invalid UTF-8 sequences are treated as single bytes instead of crashing.
+/// This allows the editor to handle:
+/// - Corrupted files (bit flips, partial writes)
+/// - Binary data mixed with text
+/// - Files with encoding errors
+/// - Malicious or malformed input
+///
+/// The editor continues operating; users can see and edit raw bytes.
+///
+/// # Error Handling Philosophy
+/// - File not found → Returns `Err` (propagates to caller for logging)
+/// - Cannot open file → Returns `Err` (permission/hardware issue)
+/// - EOF at position → Returns `Ok(1)` (treat as single byte, defensive)
+/// - Invalid UTF-8 → Returns `Ok(1)` (treat as single byte, defensive)
+/// - Read I/O error → Returns `Err` (hardware failure)
+///
+/// # Memory Allocation
+/// Zero heap allocation in critical path:
+/// - File handle on stack (dropped automatically)
+/// - Single-byte buffer `[u8; 1]` on stack
+/// - No string allocation
+/// - Error messages use string literals in production
+///
+/// # Examples
+/// ```ignore
+/// // ASCII character 'a' (0x61)
+/// let len = get_utf8_char_byte_length_at_position(path, 10)?;
+/// assert_eq!(len, 1);
+///
+/// // Chinese character '世' (0xE4 0xB8 0x96)
+/// let len = get_utf8_char_byte_length_at_position(path, 20)?;
+/// assert_eq!(len, 3);
+///
+/// // Invalid byte (0x80 continuation byte at start)
+/// let len = get_utf8_char_byte_length_at_position(path, 30)?;
+/// assert_eq!(len, 1); // Defensive: treat as single byte
+/// ```
+fn get_utf8_char_byte_length_at_position(file_path: &Path, byte_position: u64) -> Result<usize> {
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 1: Validate file path is absolute
+    // ═══════════════════════════════════════════════════════════════════════
+    // Assertion: All file paths in this project must be absolute for security
+    // and clarity. Relative paths create ambiguity and security risks.
+    debug_assert!(
+        file_path.is_absolute(),
+        "File path must be absolute for UTF-8 character analysis"
+    );
+
+    if !file_path.is_absolute() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_at_position: non-absolute path rejected: {:?}",
+            file_path
+        );
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "File path must be absolute",
+        )));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 2: Validate file exists before attempting to read
+    // ═══════════════════════════════════════════════════════════════════════
+    if !file_path.exists() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_at_position: file does not exist: {:?}",
+            file_path
+        );
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::NotFound,
+            "File not found",
+        )));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FILE OPERATION: Open file for reading (stateless operation)
+    // ═══════════════════════════════════════════════════════════════════════
+    // RAII: File handle automatically closed when function exits
+    let mut file = match File::open(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "get_utf8_char_byte_length_at_position: failed to open file {:?}: {}",
+                file_path, e
+            );
+
+            // Propagate error - file access failure is unrecoverable here
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FILE OPERATION: Seek to target byte position
+    // ═══════════════════════════════════════════════════════════════════════
+    if let Err(e) = file.seek(SeekFrom::Start(byte_position)) {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_at_position: seek failed to position {}: {}",
+            byte_position, e
+        );
+
+        // Propagate error - seek failure indicates corrupted file or hardware issue
+        return Err(LinesError::Io(e));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STACK ALLOCATION: Single-byte buffer for reading UTF-8 first byte
+    // ═══════════════════════════════════════════════════════════════════════
+    // No heap allocation: fixed-size stack buffer
+    let mut first_byte_buffer = [0u8; 1];
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // FILE OPERATION: Read first byte of character
+    // ═══════════════════════════════════════════════════════════════════════
+    let bytes_read = match file.read(&mut first_byte_buffer) {
+        Ok(n) => n,
+        Err(e) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "get_utf8_char_byte_length_at_position: read failed at position {}: {}",
+                byte_position, e
+            );
+
+            // Propagate error - read failure indicates hardware/permission issue
+            return Err(LinesError::Io(e));
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 3: Handle EOF (cursor positioned at or past end of file)
+    // ═══════════════════════════════════════════════════════════════════════
+    if bytes_read == 0 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_at_position: EOF at position {} (treating as 1 byte)",
+            byte_position
+        );
+
+        // Defensive: Treat EOF as single byte
+        // This allows cursor movement logic to handle end-of-file gracefully
+        return Ok(1);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // UTF-8 ANALYSIS: Determine character length from first-byte pattern
+    // ═══════════════════════════════════════════════════════════════════════
+    let first_byte = first_byte_buffer[0];
+
+    // Assertion: We should have read exactly 1 byte if not EOF
+    debug_assert_eq!(bytes_read, 1, "Expected to read exactly 1 byte");
+
+    let char_length = if first_byte <= 0x7F {
+        // Pattern: 0xxxxxxx → 1-byte character (ASCII)
+        1
+    } else if first_byte >= 0xC0 && first_byte <= 0xDF {
+        // Pattern: 110xxxxx → 2-byte character
+        2
+    } else if first_byte >= 0xE0 && first_byte <= 0xEF {
+        // Pattern: 1110xxxx → 3-byte character
+        3
+    } else if first_byte >= 0xF0 && first_byte <= 0xF7 {
+        // Pattern: 11110xxx → 4-byte character
+        4
+    } else {
+        // Invalid UTF-8 first byte:
+        // - 0x80..=0xBF (continuation byte, not valid as first byte)
+        // - 0xF8..=0xFF (invalid UTF-8 range)
+        //
+        // Defensive: Treat as single byte, allow editor to continue
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "get_utf8_char_byte_length_at_position: invalid UTF-8 first byte 0x{:02X} at position {} (treating as 1 byte)",
+            first_byte, byte_position
+        );
+
+        1 // Defensive fallback
+    };
+
+    // Assertion: Character length must be 1-4 (UTF-8 standard)
+    debug_assert!(
+        char_length >= 1 && char_length <= 4,
+        "UTF-8 character length must be 1-4 bytes, got {}",
+        char_length
+    );
+
+    Ok(char_length)
 }
 
 /// Renders one row of raw string data with interpreted view

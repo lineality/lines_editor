@@ -2831,3 +2831,53 @@ mod saveas_tests {
 // ============================================================================
 // (end) SAVE-AS-COPY OPERATION: Test Suite
 // ============================================================================
+
+#[cfg(test)]
+mod byte_utf8_newline_tests {
+    // use super::*;
+
+    #[test]
+    fn test_utf8_length_ascii() {
+        // Test ASCII character (1 byte)
+        // Setup: Create temp file with "a"
+        // Assert: length = 1
+    }
+
+    #[test]
+    fn test_utf8_length_two_byte() {
+        // Test 2-byte character (e.g., ñ = C3 B1)
+        // Assert: length = 2
+    }
+
+    #[test]
+    fn test_utf8_length_three_byte() {
+        // Test 3-byte character (e.g., 世 = E4 B8 96)
+        // Assert: length = 3
+    }
+
+    #[test]
+    fn test_utf8_length_four_byte() {
+        // Test 4-byte character (e.g., 𝄞 = F0 9D 84 9E)
+        // Assert: length = 4
+    }
+
+    #[test]
+    fn test_utf8_invalid_continuation_byte() {
+        // Test invalid UTF-8 (0x80 continuation byte as first byte)
+        // Assert: length = 1 (defensive fallback)
+    }
+
+    #[test]
+    fn test_is_next_byte_newline_multibyte_at_end() {
+        // File: "ab世\n" where 世 is at line end
+        // Cursor on 世
+        // Assert: is_next_byte_newline() = true
+    }
+
+    #[test]
+    fn test_is_next_byte_newline_multibyte_not_at_end() {
+        // File: "世ab\n" where 世 is at line start
+        // Cursor on 世
+        // Assert: is_next_byte_newline() = false
+    }
+}
