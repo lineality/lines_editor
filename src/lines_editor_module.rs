@@ -9771,15 +9771,15 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Defensive: Limit iterations to prevent infinite loops
             let mut iterations = 0;
 
-            /*
-            I discovered this somewhat by accident while restructuring
-            and cleaning the code:
-            this subtraction 'overflow' catch seems to work
-            as the zero-index finder and safety mechanism all in one.
-            I am not a fan of having a failure be a trigger...
-            but for MVP it looks to work.
-            */
+            // iterate through # of steps user requested
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+                /*
+                I discovered this somewhat by accident:
+                This subtraction 'overflow' catch seems to work
+                as the zero-index finder and safety mechanism all in one.
+                I am not a fan of having a failure be a trigger...
+                but for MVP it looks to work.
+                */
                 // safe subtraction with error handling
                 if let Some(new_position) = lines_editor_state
                     .in_row_abs_horizontal_0_index_cursor_position
@@ -9787,28 +9787,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
-                    // Safe "Fail"
-                    /*
-                    When on lin
-                    */
-
                     if lines_editor_state.cursor.row <= 0 {
                         _ = execute_command(lines_editor_state, Command::GotoLineStart)?;
-                    } else {
-                        // // Move up one line
-                        // execute_command(lines_editor_state, Command::MoveUp(1))?;
-
-                        // // Move to end of that line
-                        // execute_command(lines_editor_state, Command::GotoLineEnd)?;
-
-                        // build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-                        // // return Ok(true);
                     }
+
                     // and don't try to go left again-again!
                     return Ok(true);
                 }
 
-                //     pub fn get_row_col_file_position(&self, row: usize, col: usize) -> io::Result<Option<FilePosition>> {
                 // =========================
                 // position state inspection
                 // =========================
@@ -9855,6 +9841,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                 iterations += 1;
 
+                // =============
+                // Window Scroll
+                // =============
                 if lines_editor_state.cursor.col > 0 {
                     // Cursor can move left within visible window
                     let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
@@ -10160,6 +10149,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // bump it over
                     if lines_editor_state.cursor.col < line_num_width {
                         lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                        lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
+                            line_num_width;
+                        lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
                         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
                     }
 
@@ -10340,6 +10332,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // if position.. is <
             if lines_editor_state.in_row_abs_horizontal_0_index_cursor_position <= line_num_width {
                 lines_editor_state.cursor.col = line_num_width;
+                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
             }
 
             Ok(true)
@@ -10697,7 +10691,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         lines_editor_state.effective_rows,
                     );
                     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
-
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
+                        line_num_width;
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
@@ -13932,7 +13928,7 @@ fn calculate_line_number_width(
     effective_rows: usize,
 ) -> usize {
     if line_number == 0 {
-        return 3; // Edge case: treat as single digit + pad
+        return 2; // Edge case: treat as single digit + pad
     }
 
     /*
@@ -14260,7 +14256,8 @@ fn insert_newline_at_cursor_chunked(
     ); // +1 for 1-indexed display
 
     lines_editor_state.cursor.col = line_num_width; // Position cursor after line number
-
+    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
     // ============================================
     // Step 5.5: Create Inverse Changelog Entry
     // ============================================
@@ -19261,6 +19258,8 @@ pub fn full_lines_editor(
                 );
                 // println!("{line_num_width}{target_line}");
                 lines_editor_state.cursor.col = line_num_width; // Skip over line number display
+                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+                lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
                 lines_editor_state.line_count_at_top_of_window = target_line;
                 lines_editor_state.file_position_of_topline_start = byte_pos;
@@ -19324,9 +19323,8 @@ pub fn full_lines_editor(
         /*
         To keep the cursor on the text:
         If on the top (zero index 0-line 0-row) bump to end of line number
-        If not, move to end of previous line.
+        If not row zero, move to end of previous line.
 
-        TODO: make system to calculate even number indent...
 
         */
         // // find line text width
@@ -19338,8 +19336,9 @@ pub fn full_lines_editor(
         if lines_editor_state.cursor.col < line_num_width {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
             if lines_editor_state.cursor.row == 0 {
-                lines_editor_state.cursor.col = line_num_width;
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+                lines_editor_state.cursor.col = line_num_width + 1;
+                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
+                    line_num_width + 1;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
@@ -19353,6 +19352,30 @@ pub fn full_lines_editor(
                 execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
+
+                if lines_editor_state.cursor.row == 0 {
+                    print!("pingping\n\n\n");
+                    lines_editor_state.cursor.col = line_num_width + 1;
+                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
+                        line_num_width + 1;
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+                    execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
+                    build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
+                    execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
+
+                    // let line_num_width = calculate_line_number_width(
+                    //     lines_editor_state.line_count_at_top_of_window,
+                    //     lines_editor_state.cursor.row,
+                    //     lines_editor_state.effective_rows,
+                    // );
+
+                    // // if col is in the number-zone to the left of the text
+                    // // bump it over
+                    // if lines_editor_state.cursor.col < line_num_width {
+                    //     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                    //     build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
+                    // }
+                }
 
                 // _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy); // rebuild
                 let _ = lines_editor_state.set_info_bar_message("start of line"); // massage
