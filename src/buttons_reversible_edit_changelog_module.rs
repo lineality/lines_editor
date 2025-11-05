@@ -917,6 +917,7 @@ pub fn replace_single_byte_in_file(
             let position_in_chunk = byte_position_from_start - chunk_start_position;
 
             // Store original byte for logging
+            #[cfg(debug_assertions)]
             let original_byte_value = bucket_brigade_buffer[position_in_chunk];
 
             // Perform the byte replacement
@@ -1779,9 +1780,10 @@ pub fn remove_single_byte_from_file(
         ));
     }
 
+    let mut _totalbytes_written_to_draft: usize = 0;
+
     // Tracking variables
     let mut total_bytes_read_from_original: usize = 0;
-    let mut total_bytes_written_to_draft: usize = 0;
     let mut chunk_number: usize = 0;
     let mut byte_was_removed = false;
     let mut removed_byte_value: u8 = 0;
@@ -1914,7 +1916,7 @@ pub fn remove_single_byte_from_file(
                     ));
                 }
 
-                total_bytes_written_to_draft += bytes_written_before;
+                _totalbytes_written_to_draft += bytes_written_before;
             }
 
             // SKIP the byte at position_in_chunk (this is the removal operation)
@@ -1954,7 +1956,7 @@ pub fn remove_single_byte_from_file(
                     ));
                 }
 
-                total_bytes_written_to_draft += bytes_written_after;
+                _totalbytes_written_to_draft += bytes_written_after;
             }
         } else {
             // This chunk does not contain the removal position
@@ -1984,7 +1986,7 @@ pub fn remove_single_byte_from_file(
                 ));
             }
 
-            total_bytes_written_to_draft += bytes_written;
+            _totalbytes_written_to_draft += bytes_written;
         }
 
         total_bytes_read_from_original += bytes_read;
@@ -2117,7 +2119,7 @@ pub fn remove_single_byte_from_file(
         total_bytes_read_from_original
     );
     #[cfg(debug_assertions)]
-    println!("Bytes written to draft: {}", total_bytes_written_to_draft);
+    println!("Bytes written to draft: {}", _totalbytes_written_to_draft);
     #[cfg(debug_assertions)]
     println!("Total chunks: {}", chunk_number);
     #[cfg(debug_assertions)]
@@ -2815,9 +2817,10 @@ pub fn add_single_byte_to_file(
         ));
     }
 
+    let mut _totalbytes_written_to_draft: usize = 0;
+
     // Tracking variables
     let mut total_bytes_read_from_original: usize = 0;
-    let mut total_bytes_written_to_draft: usize = 0;
     let mut chunk_number: usize = 0;
     let mut byte_was_inserted = false;
 
@@ -2898,7 +2901,7 @@ pub fn add_single_byte_to_file(
                 ));
             }
 
-            total_bytes_written_to_draft += bytes_written;
+            _totalbytes_written_to_draft += bytes_written;
             byte_was_inserted = true;
             draft_file.flush()?;
 
@@ -2934,7 +2937,7 @@ pub fn add_single_byte_to_file(
                     ));
                 }
 
-                total_bytes_written_to_draft += bytes_written;
+                _totalbytes_written_to_draft += bytes_written;
                 byte_was_inserted = true;
                 draft_file.flush()?;
             }
@@ -3019,7 +3022,7 @@ pub fn add_single_byte_to_file(
                     ));
                 }
 
-                total_bytes_written_to_draft += bytes_written_before;
+                _totalbytes_written_to_draft += bytes_written_before;
             }
 
             // INSERT the new byte
@@ -3036,7 +3039,7 @@ pub fn add_single_byte_to_file(
                 ));
             }
 
-            total_bytes_written_to_draft += bytes_written_insert;
+            _totalbytes_written_to_draft += bytes_written_insert;
             byte_was_inserted = true;
 
             // Write bytes FROM the insertion position onward (these shift forward by 1)
@@ -3072,7 +3075,7 @@ pub fn add_single_byte_to_file(
                 ));
             }
 
-            total_bytes_written_to_draft += bytes_written_after;
+            _totalbytes_written_to_draft += bytes_written_after;
         } else {
             // This chunk does not contain the insertion position
             // Write entire chunk to draft file
@@ -3102,7 +3105,7 @@ pub fn add_single_byte_to_file(
                 ));
             }
 
-            total_bytes_written_to_draft += bytes_written;
+            _totalbytes_written_to_draft += bytes_written;
         }
 
         total_bytes_read_from_original += bytes_read;
@@ -3215,13 +3218,13 @@ pub fn add_single_byte_to_file(
             #[cfg(debug_assertions)]
             println!("Backup file removed");
         }
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
             {
                 eprintln!(
                     "WARNING: Could not remove backup file: {} ({})",
                     backup_file_path.display(),
-                    e
+                    _e
                 );
                 println!("Backup file retained at: {}", backup_file_path.display());
             }
@@ -3244,7 +3247,7 @@ pub fn add_single_byte_to_file(
             "Bytes read from original: {}",
             total_bytes_read_from_original
         );
-        println!("Bytes written to draft: {}", total_bytes_written_to_draft);
+        println!("Bytes written to draft: {}", _totalbytes_written_to_draft);
         println!("Total chunks: {}", chunk_number);
         println!("Status: SUCCESS");
     }
@@ -3508,29 +3511,39 @@ pub enum ButtonError {
     /// Log file is malformed or cannot be parsed
     /// Examples: missing position, invalid hex byte, wrong format
     MalformedLog {
-        log_path: PathBuf,
+        #[allow(dead_code)]
+        logpath: PathBuf,
         reason: &'static str, // Fixed string, no heap
     },
 
     /// UTF-8 character validation failed
     /// Examples: incomplete multi-byte sequence, invalid UTF-8
     InvalidUtf8 {
+        #[allow(dead_code)]
         position: u128,
+        #[allow(dead_code)]
         byte_count: usize,
         reason: &'static str,
     },
 
     /// Log directory structure issue
     /// Examples: missing directory, wrong naming convention
-    LogDirectoryError { path: PathBuf, reason: &'static str },
+    LogDirectoryError {
+        #[allow(dead_code)]
+        path: PathBuf,
+        reason: &'static str,
+    },
 
     /// Cannot find next LIFO log file (empty log directory)
-    NoLogsFound { log_dir: PathBuf },
+    NoLogsFound {
+        #[allow(dead_code)]
+        log_dir: PathBuf,
+    },
 
     /// Position out of bounds for target file
     PositionOutOfBounds { position: u128, file_size: u128 },
 
-    /// Multi-byte log set is incomplete or corrupted
+    /// Multi-byte log set is incomplete or corrupted3528
     /// Example: Found 10.b and 10 but missing 10.a
     IncompleteLogSet {
         base_number: u128,
@@ -3552,8 +3565,8 @@ impl std::fmt::Display for ButtonError {
                 write!(f, "Log file error: {}", reason)
             }
             #[cfg(debug_assertions)]
-            ButtonError::MalformedLog { log_path, reason } => {
-                write!(f, "Malformed log {}: {}", log_path.display(), reason)
+            ButtonError::MalformedLog { logpath, reason } => {
+                write!(f, "Malformed log {}: {}", logpath.display(), reason)
             }
 
             #[cfg(not(debug_assertions))]
@@ -3686,9 +3699,9 @@ pub fn quarantine_bad_log(target_file: &Path, bad_log_path: &Path, reason: &str)
     let timestamp_dir = error_log_dir.join(timestamp_str);
 
     // Create error log directory
-    if let Err(e) = fs::create_dir_all(&timestamp_dir) {
+    if let Err(_e) = fs::create_dir_all(&timestamp_dir) {
         #[cfg(debug_assertions)]
-        eprintln!("WARNING: Cannot create quarantine directory: {}", e);
+        eprintln!("WARNING: Cannot create quarantine directory: {}", _e);
         return;
     }
 
@@ -3704,9 +3717,9 @@ pub fn quarantine_bad_log(target_file: &Path, bad_log_path: &Path, reason: &str)
 
     let destination = timestamp_dir.join(log_filename);
 
-    if let Err(e) = fs::rename(bad_log_path, &destination) {
+    if let Err(_e) = fs::rename(bad_log_path, &destination) {
         #[cfg(debug_assertions)]
-        eprintln!("WARNING: Cannot move corrupted log: {}", e);
+        eprintln!("WARNING: Cannot move corrupted log: {}", _e);
 
         // Try to at least log what happened
         log_button_error(
@@ -3783,9 +3796,9 @@ pub fn log_button_error(target_file: &Path, error_msg: &str, context: Option<&st
     // Create timestamped subdirectory
     let timestamp_dir = error_log_dir.join(timestamp_str);
 
-    if let Err(e) = fs::create_dir_all(&timestamp_dir) {
+    if let Err(_e) = fs::create_dir_all(&timestamp_dir) {
         #[cfg(debug_assertions)]
-        eprintln!("WARNING: Cannot create error log directory: {}", e);
+        eprintln!("WARNING: Cannot create error log directory: {}", _e);
         eprintln!("ERROR: {}", error_msg);
         return;
     }
@@ -3807,16 +3820,16 @@ pub fn log_button_error(target_file: &Path, error_msg: &str, context: Option<&st
         .open(&error_log_file)
     {
         Ok(mut file) => {
-            if let Err(e) = file.write_all(log_entry.as_bytes()) {
+            if let Err(_e) = file.write_all(log_entry.as_bytes()) {
                 #[cfg(debug_assertions)]
-                eprintln!("WARNING: Cannot write to error log: {}", e);
+                eprintln!("WARNING: Cannot write to error log: {}", _e);
                 eprintln!("ERROR: {}", error_msg);
             }
             let _ = file.flush();
         }
-        Err(e) => {
+        Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("WARNING: Cannot open error log: {}", e);
+            eprintln!("WARNING: Cannot open error log: {}", _e);
             eprintln!("ERROR: {}", error_msg);
         }
     }
@@ -5032,18 +5045,22 @@ fn read_log_file(log_file_path: &Path) -> ButtonResult<LogEntry> {
 
     if !log_file_path.exists() {
         return Err(ButtonError::MalformedLog {
-            log_path: log_file_path.to_path_buf(),
+            logpath: log_file_path.to_path_buf(),
             reason: "Log file does not exist",
         });
     }
 
     // Read file content
-    let content = fs::read_to_string(log_file_path).map_err(|e| {
+    let content = fs::read_to_string(log_file_path).map_err(|_e| {
         #[cfg(debug_assertions)]
-        eprintln!("Failed to read log file {}: {}", log_file_path.display(), e);
+        eprintln!(
+            "Failed to read log file {}: {}",
+            log_file_path.display(),
+            _e
+        );
 
         ButtonError::MalformedLog {
-            log_path: log_file_path.to_path_buf(),
+            logpath: log_file_path.to_path_buf(),
             reason: "Cannot read log file",
         }
     })?;
@@ -5058,7 +5075,7 @@ fn read_log_file(log_file_path: &Path) -> ButtonResult<LogEntry> {
         );
 
         ButtonError::MalformedLog {
-            log_path: log_file_path.to_path_buf(),
+            logpath: log_file_path.to_path_buf(),
             reason,
         }
     })?;
@@ -5144,7 +5161,7 @@ fn execute_log_entry(target_file: &Path, log_entry: &LogEntry) -> ButtonResult<(
             let byte_value = log_entry
                 .byte_value()
                 .ok_or_else(|| ButtonError::MalformedLog {
-                    log_path: PathBuf::from("unknown"),
+                    logpath: PathBuf::from("unknown"),
                     reason: "Add operation missing byte value",
                 })?;
 
@@ -5193,7 +5210,7 @@ fn execute_log_entry(target_file: &Path, log_entry: &LogEntry) -> ButtonResult<(
             let byte_value = log_entry
                 .byte_value()
                 .ok_or_else(|| ButtonError::MalformedLog {
-                    log_path: PathBuf::from("unknown"),
+                    logpath: PathBuf::from("unknown"),
                     reason: "Edit operation missing byte value",
                 })?;
 
@@ -5671,7 +5688,10 @@ pub fn detect_utf8_byte_count(first_byte: u8) -> Result<usize, &'static str> {
 /// let char_bytes = read_character_bytes_from_file(&file_path, 10)?;
 /// assert!(char_bytes.len() >= 1 && char_bytes.len() <= 4);
 /// ```
-pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> ButtonResult<Vec<u8>> {
+pub fn read_character_bytes_from_file(
+    file_path: &Path,
+    start_byte_position: u128,
+) -> ButtonResult<Vec<u8>> {
     // =================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
@@ -5702,15 +5722,15 @@ pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> Butto
     let file_size = file_metadata.len() as u128;
 
     // Validate position
-    if position >= file_size {
+    if start_byte_position >= file_size {
         return Err(ButtonError::PositionOutOfBounds {
-            position,
+            position: start_byte_position,
             file_size,
         });
     }
 
     // Seek to position
-    file.seek(SeekFrom::Start(position as u64))
+    file.seek(SeekFrom::Start(start_byte_position as u64))
         .map_err(|e| ButtonError::Io(e))?;
 
     // Read first byte
@@ -5721,7 +5741,7 @@ pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> Butto
 
     // Detect character byte count
     let byte_count = detect_utf8_byte_count(first_byte).map_err(|e| ButtonError::InvalidUtf8 {
-        position,
+        position: start_byte_position,
         byte_count: 0,
         reason: e,
     })?;
@@ -5743,16 +5763,16 @@ pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> Butto
 
     if byte_count < 1 || byte_count > MAX_UTF8_BYTES {
         return Err(ButtonError::InvalidUtf8 {
-            position,
+            position: start_byte_position,
             byte_count,
             reason: "Byte count out of valid range (1-4)",
         });
     }
 
     // Check if enough bytes remain in file
-    if position + (byte_count as u128) > file_size {
+    if start_byte_position + (byte_count as u128) > file_size {
         return Err(ButtonError::InvalidUtf8 {
-            position,
+            position: start_byte_position,
             byte_count,
             reason: "Incomplete UTF-8 sequence (file too short)",
         });
@@ -5772,7 +5792,7 @@ pub fn read_character_bytes_from_file(file_path: &Path, position: u128) -> Butto
     match std::str::from_utf8(&char_bytes) {
         Ok(_) => Ok(char_bytes),
         Err(_) => Err(ButtonError::InvalidUtf8 {
-            position,
+            position: start_byte_position,
             byte_count,
             reason: "Invalid UTF-8 sequence",
         }),
@@ -6139,14 +6159,14 @@ fn find_multibyte_log_set(log_dir: &Path, base_number: u128) -> ButtonResult<Vec
     // FIXED: Validate that letters are sequential with NO GAPS
     // Check that we have indices 0, 1, 2... with no missing values
     for expected_index in 0..found_letters.len() {
-        let (actual_index, letter, _) = &found_letters[expected_index];
+        let (actual_index, _letter, _) = &found_letters[expected_index];
 
         if *actual_index != expected_index {
             // We have a gap! For example: found 'b' (index 1) but missing 'a' (index 0)
             #[cfg(debug_assertions)]
             eprintln!(
                 "Incomplete log set {}: found letter '{}' but missing earlier letters",
-                base_number, letter
+                base_number, _letter
             );
 
             return Err(ButtonError::IncompleteLogSet {
@@ -6201,7 +6221,7 @@ fn find_next_multibyte_lifo_log_set(log_dir: &Path) -> ButtonResult<Vec<PathBuf>
     let base_number = filename
         .parse::<u128>()
         .map_err(|_| ButtonError::MalformedLog {
-            log_path: next_bare_log.clone(),
+            logpath: next_bare_log.clone(),
             reason: "Cannot parse log number",
         })?;
 
@@ -6854,7 +6874,7 @@ pub fn button_undo_redo_next_inverse_changelog_pop_lifo(
     let base_number = filename
         .parse::<u128>()
         .map_err(|_| ButtonError::MalformedLog {
-            log_path: next_bare_log.clone(),
+            logpath: next_bare_log.clone(),
             reason: "Cannot parse log number",
         })?;
 
@@ -6936,10 +6956,10 @@ fn button_undo_single_byte_with_redo_support(
     // Step 2: Read and parse log file
     let log_entry = match read_log_file(&log_file_path) {
         Ok(entry) => entry,
-        Err(e) => {
+        Err(_e) => {
             // Log is malformed - quarantine it
             quarantine_bad_log(target_file, &log_file_path, "Failed to parse log file");
-            return Err(e);
+            return Err(_e);
         }
     };
 
@@ -6960,9 +6980,9 @@ fn button_undo_single_byte_with_redo_support(
                         );
                         Some(byte)
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         #[cfg(debug_assertions)]
-                        eprintln!("  Warning: Could not capture byte for redo: {}", e);
+                        eprintln!("  Warning: Could not capture byte for redo: {}", _e);
                         None // Continue with undo, but redo log won't be created
                     }
                 }
@@ -6979,9 +6999,9 @@ fn button_undo_single_byte_with_redo_support(
                         );
                         Some(byte)
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         #[cfg(debug_assertions)]
-                        eprintln!("  Warning: Could not capture byte for redo: {}", e);
+                        eprintln!("  Warning: Could not capture byte for redo: {}", _e);
                         None
                     }
                 }
@@ -7013,14 +7033,14 @@ fn button_undo_single_byte_with_redo_support(
                         captured_byte_for_redo,
                     );
 
-                    if let Err(e) = redo_result {
+                    if let Err(_e) = redo_result {
                         // Non-fatal: redo log creation failed, but undo succeeded
                         #[cfg(debug_assertions)]
-                        eprintln!("Warning: Could not create redo log: {}", e);
+                        eprintln!("Warning: Could not create redo log: {}", _e);
 
                         log_button_error(
                             target_file,
-                            &format!("Could not create redo log: {}", e),
+                            &format!("Could not create redo log: {}", _e),
                             Some("button_undo_single_byte_with_redo_support"),
                         );
                     }
@@ -7028,13 +7048,13 @@ fn button_undo_single_byte_with_redo_support(
             }
 
             // Step 4: Remove log file after successful undo
-            if let Err(e) = fs::remove_file(&log_file_path) {
+            if let Err(_e) = fs::remove_file(&log_file_path) {
                 #[cfg(debug_assertions)]
-                eprintln!("Warning: Could not remove log file after undo: {}", e);
+                eprintln!("Warning: Could not remove log file after undo: {}", _e);
 
                 log_button_error(
                     target_file,
-                    &format!("Could not remove log file after successful undo: {}", e),
+                    &format!("Could not remove log file after successful undo: {}", _e),
                     Some("button_undo_single_byte_with_redo_support"),
                 );
             }
@@ -7216,11 +7236,11 @@ fn button_undo_multibyte_with_redo_support(
                             );
                             Some(byte)
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(debug_assertions)]
                             eprintln!(
                                 "    Warning: Could not capture byte at position {}: {}",
-                                actual_file_position, e
+                                actual_file_position, _e
                             );
                             None
                         }
@@ -7237,11 +7257,11 @@ fn button_undo_multibyte_with_redo_support(
                             );
                             Some(byte)
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(debug_assertions)]
                             eprintln!(
                                 "    Warning: Could not capture byte at position {}: {}",
-                                actual_file_position, e
+                                actual_file_position, _e
                             );
                             None
                         }
@@ -7988,9 +8008,9 @@ pub fn button_safe_clear_all_redo_logs(target_file: &Path) -> ButtonResult<bool>
 
                 return Ok(true);
             }
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(debug_assertions)]
-                eprintln!("  Attempt {} failed: {:?}", attempt + 1, e);
+                eprintln!("  Attempt {} failed: {:?}", attempt + 1, _e);
 
                 // Don't sleep after final attempt
                 if attempt < MAX_RETRY_ATTEMPTS - 1 {

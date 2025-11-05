@@ -4098,6 +4098,7 @@ impl EditorState {
         // This is the only condition where we return Ok(true).
         Ok(cursor_byte == end)
     }
+
     /// Handles Pasty mode - clipboard management and file insertion interface
     ///
     /// # Purpose
@@ -4382,9 +4383,9 @@ impl EditorState {
                     // =================================================
                     let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                         Ok(success) => success,
-                        Err(e) => {
+                        Err(_e) => {
                             #[cfg(debug_assertions)]
-                            eprintln!("Error clearing redo logs: {:?}", e);
+                            eprintln!("Error clearing redo logs: {:?}", _e);
 
                             // Log error and continue (non-fatal)
                             log_error(
@@ -5472,9 +5473,9 @@ impl EditorState {
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&read_copy) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -9030,13 +9031,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // and don't try to go left again-again!
                     return Ok(true);
                 }
+
+                //     pub fn get_row_col_file_position(&self, row: usize, col: usize) -> io::Result<Option<FilePosition>> {
                 // =========================
                 // position state inspection
                 // =========================
-                //     pub fn get_row_col_file_position(&self, row: usize, col: usize) -> io::Result<Option<FilePosition>> {
-
-                // update for each MoveLeft
+                #[cfg(debug_assertions)]
                 let this_row = lines_editor_state.cursor.row;
+                #[cfg(debug_assertions)]
                 let this_col = lines_editor_state.cursor.col;
 
                 #[cfg(debug_assertions)]
@@ -9116,6 +9118,15 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // ==========
         // Move Right v7
         // ==========
+        /*
+        We should be able to track where the end of the line is
+        if only by a next-newline look-ahead.
+        and include an end-of-line space before going to the next line.
+        one option might be, showing newlines as a space or other characer
+        on the TUI.
+
+
+        */
         Command::MoveRight(count) => {
             // Vim-like behavior: move cursor right, scroll window if at edge
 
@@ -9128,9 +9139,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             // position state inspection
             // =========================
+
             // update for each MoveRight
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position += count;
+
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -9264,7 +9279,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             // position state inspection
             // =========================
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -9426,7 +9443,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =========================
             // position state inspection
             // =========================
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -9814,7 +9833,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 lines_editor_state.effective_rows,
             );
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -9896,7 +9917,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 lines_editor_state.effective_rows,
             );
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -9990,7 +10013,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // reset to first real position each new GotoLineStart
             // let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
 
+            #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.row;
+            #[cfg(debug_assertions)]
             let this_col = lines_editor_state.cursor.col;
 
             #[cfg(debug_assertions)]
@@ -10039,9 +10064,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10064,9 +10089,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10090,9 +10115,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10116,9 +10141,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10289,9 +10314,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10326,9 +10351,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10363,9 +10388,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10400,9 +10425,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10437,9 +10462,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10463,9 +10488,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Error clearing redo logs: {:?}", e);
+                    eprintln!("Error clearing redo logs: {:?}", _e);
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -10515,11 +10540,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         println!("❌ ERROR: Should have failed (no redo logs)");
                     }
                 }
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
                     {
                         println!("✓ Operation failed as expected");
-                        println!("Error: {}", e);
+                        println!("Error: {}", _e);
                         println!();
                         println!("✅ CORRECT: Cannot redo because redo logs were cleared");
                     }
@@ -11434,9 +11459,9 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 ///
 /// # Position Tracking
 ///
-/// **Important: byte_offset_in_line is tracked but NOT used for positions!**
+/// **Important: _byte_offset_in_line is tracked but NOT used for positions!**
 /// ```rust
-/// byte_offset_in_line += char_len;  // Only for error messages
+/// _byte_offset_in_line += char_len;  // Only for error messages
 /// char_position = line_start;        // Always the same position!
 /// ```
 ///
@@ -11709,7 +11734,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 
         // Initialize logging state (same as Phase 6)
         let mut logging_chunk_counter: usize = 0;
-        let mut byte_offset_in_line: u64 = 0;
+        let mut _byte_offset_in_line: u64 = 0;
         let mut carry_over_bytes: [u8; 4] = [0; 4];
         let mut carry_over_count: usize = 0;
         let mut logging_error_count: usize = 0;
@@ -11811,7 +11836,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                         Ok(s) => {
                             if let Some(ch) = s.chars().next() {
                                 // USE LINE_START FOR ALL CHARACTERS (button stack trick)
-                                // Don't add byte_offset_in_line!
+                                // Don't add _byte_offset_in_line!
                                 let char_position_u128 = line_start as u128;
 
                                 for retry_attempt in 0..3 {
@@ -11851,7 +11876,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 }
 
                                 // Still track offset for error messages, but don't use it for position
-                                byte_offset_in_line += full_char_bytes.len() as u64;
+                                _byte_offset_in_line += full_char_bytes.len() as u64;
                             }
                         }
                         Err(_) => {
@@ -11859,7 +11884,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                             log_error(
                                 &format!(
                                     "Invalid UTF-8 in carry-over at offset {}",
-                                    byte_offset_in_line
+                                    _byte_offset_in_line
                                 ),
                                 Some("delete_current_line_noload:changelog"),
                             );
@@ -11870,7 +11895,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 Some("delete_current_line_noload:changelog"),
                             );
 
-                            byte_offset_in_line += full_char_bytes.len() as u64;
+                            _byte_offset_in_line += full_char_bytes.len() as u64;
                         }
                     }
 
@@ -11887,7 +11912,10 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                     Err(_) => {
                         #[cfg(debug_assertions)]
                         log_error(
-                            &format!("Invalid UTF-8 start byte at offset {}", byte_offset_in_line),
+                            &format!(
+                                "Invalid UTF-8 start byte at offset {}",
+                                _byte_offset_in_line
+                            ),
                             Some("delete_current_line_noload:changelog"),
                         );
 
@@ -11898,7 +11926,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                         );
 
                         buffer_index += 1;
-                        byte_offset_in_line += 1;
+                        _byte_offset_in_line += 1;
                         continue;
                     }
                 };
@@ -11948,7 +11976,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 }
 
                                 // Still track offset for error messages
-                                byte_offset_in_line += char_len as u64;
+                                _byte_offset_in_line += char_len as u64;
                             }
                         }
                         Err(_) => {
@@ -11956,7 +11984,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                             log_error(
                                 &format!(
                                     "Invalid UTF-8 sequence at offset {}",
-                                    byte_offset_in_line
+                                    _byte_offset_in_line
                                 ),
                                 Some("delete_current_line_noload:changelog"),
                             );
@@ -11967,7 +11995,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 Some("delete_current_line_noload:changelog"),
                             );
 
-                            byte_offset_in_line += char_len as u64;
+                            _byte_offset_in_line += char_len as u64;
                         }
                     }
 
@@ -12624,7 +12652,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
 
         // Initialize logging state (same as Phase 6)
         let mut logging_chunk_counter: usize = 0;
-        let mut byte_offset_in_line: u64 = 0;
+        let mut _byte_offset_in_line: u64 = 0;
         let mut carry_over_bytes: [u8; 4] = [0; 4];
         let mut carry_over_count: usize = 0;
         let mut logging_error_count: usize = 0;
@@ -12726,7 +12754,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                         Ok(s) => {
                             if let Some(ch) = s.chars().next() {
                                 // USE LINE_START FOR ALL CHARACTERS (button stack trick)
-                                // Don't add byte_offset_in_line!
+                                // Don't add _byte_offset_in_line!
                                 let char_position_u128 = line_start as u128;
 
                                 for retry_attempt in 0..3 {
@@ -12766,7 +12794,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 }
 
                                 // Still track offset for error messages, but don't use it for position
-                                byte_offset_in_line += full_char_bytes.len() as u64;
+                                _byte_offset_in_line += full_char_bytes.len() as u64;
                             }
                         }
                         Err(_) => {
@@ -12774,7 +12802,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                             log_error(
                                 &format!(
                                     "Invalid UTF-8 in carry-over at offset {}",
-                                    byte_offset_in_line
+                                    _byte_offset_in_line
                                 ),
                                 Some("delete_current_line_noload:changelog"),
                             );
@@ -12785,7 +12813,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 Some("delete_current_line_noload:changelog"),
                             );
 
-                            byte_offset_in_line += full_char_bytes.len() as u64;
+                            _byte_offset_in_line += full_char_bytes.len() as u64;
                         }
                     }
 
@@ -12802,7 +12830,10 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                     Err(_) => {
                         #[cfg(debug_assertions)]
                         log_error(
-                            &format!("Invalid UTF-8 start byte at offset {}", byte_offset_in_line),
+                            &format!(
+                                "Invalid UTF-8 start byte at offset {}",
+                                _byte_offset_in_line
+                            ),
                             Some("delete_current_line_noload:changelog"),
                         );
 
@@ -12813,7 +12844,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                         );
 
                         buffer_index += 1;
-                        byte_offset_in_line += 1;
+                        _byte_offset_in_line += 1;
                         continue;
                     }
                 };
@@ -12863,7 +12894,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 }
 
                                 // Still track offset for error messages
-                                byte_offset_in_line += char_len as u64;
+                                _byte_offset_in_line += char_len as u64;
                             }
                         }
                         Err(_) => {
@@ -12871,7 +12902,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                             log_error(
                                 &format!(
                                     "Invalid UTF-8 sequence at offset {}",
-                                    byte_offset_in_line
+                                    _byte_offset_in_line
                                 ),
                                 Some("delete_current_line_noload:changelog"),
                             );
@@ -12882,7 +12913,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 Some("delete_current_line_noload:changelog"),
                             );
 
-                            byte_offset_in_line += char_len as u64;
+                            _byte_offset_in_line += char_len as u64;
                         }
                     }
 
@@ -14848,13 +14879,13 @@ pub fn insert_text_chunk_at_cursor_position(
             let _ = lines_editor_state.set_info_bar_message("invalid cursor");
             return Ok(()); // Return success but do nothing
         }
-        Err(e) => {
+        Err(_e) => {
             // Error getting position - log and return
             #[cfg(debug_assertions)]
             {
-                eprintln!("Warning: Cannot get cursor position: {}", e);
+                eprintln!("Warning: Cannot get cursor position: {}", _e);
                 log_error(
-                    &format!("Insert failed: {}", e),
+                    &format!("Insert failed: {}", _e),
                     Some("insert_text_chunk_at_cursor_position"),
                 );
             }
@@ -17896,11 +17927,11 @@ pub fn initialize_session_directory(
             let path_str = provided_path.to_string_lossy();
             // Convert Cow<str> to &str using as_ref()
             make_input_path_name_abs_executabledirectoryrelative_nocheck(path_str.as_ref())
-                .map_err(|e| {
+                .map_err(|_e| {
                     #[cfg(debug_assertions)]
                     let msg = format!(
                         "Failed to resolve provided session path '{}': {}",
-                        path_str, e
+                        path_str, _e
                     );
                     #[cfg(not(debug_assertions))]
                     let msg = "Failed to resolve provided session path";
@@ -17937,18 +17968,18 @@ pub fn initialize_session_directory(
 
         // Validation 3: SECURITY - Verify path is within sessions directory
         // Canonicalize both paths to resolve symlinks and normalize for comparison
-        let canonical_provided = resolved_path.canonicalize().map_err(|e| {
+        let canonical_provided = resolved_path.canonicalize().map_err(|_e| {
             #[cfg(debug_assertions)]
-            let msg = format!("Cannot canonicalize provided session path: {}", e);
+            let msg = format!("Cannot canonicalize provided session path: {}", _e);
             #[cfg(not(debug_assertions))]
             let msg = "Cannot access provided session path";
 
             io::Error::new(io::ErrorKind::Other, msg)
         })?;
 
-        let canonical_sessions = sessions_dir.canonicalize().map_err(|e| {
+        let canonical_sessions = sessions_dir.canonicalize().map_err(|_e| {
             #[cfg(debug_assertions)]
-            let msg = format!("Cannot canonicalize sessions directory: {}", e);
+            let msg = format!("Cannot canonicalize sessions directory: {}", _e);
             #[cfg(not(debug_assertions))]
             let msg = "Cannot access sessions directory";
 
