@@ -36,7 +36,6 @@ full IDE competing with Zed, Helix, vsCode, etc.
 
 
 
-
 # Rust rules:
 - Always best practice.
 - Always extensive doc strings: what the code is doing with project context
@@ -132,6 +131,9 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
         "zero buffer size error".into(),
     ));
 }
+
+
+Note: Error messages must be unique per function (e.g. name of function (or abbreviation) in the error message). Colliding generic error messages that cannot be traced to a specific function are a significant liability.
 
 
 Avoid heap for error messages and for all things:
@@ -1153,7 +1155,12 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
 log_error(
     "Logging completed with errors",
     Some("insert_file_at_cursor:phase6"),
+
 );
+// user info-bar message
+let _ = self.set_info_bar_message("display error");
+
+
 */
 
 /// Error types for the Lines text editor
@@ -3077,21 +3084,50 @@ impl WindowMapStruct {
         row: usize,
         col: usize,
     ) -> io::Result<Option<FilePosition>> {
+        // ============================================================
+        // Debug-Assert, Test-Assert, Production-Catch-Handle
+        // ============================================================
+        #[cfg(test)]
+        assert!(
+            row >= self.valid_rows,
+            "Failed Test: pub fn get_row_col_file_position: assert!(row >= self.valid_rows..."
+        );
+        #[cfg(test)]
+        assert!(
+            col >= self.valid_cols,
+            "Failed Test: pub fn get_row_col_file_position: assert!(col >= self.valid_cols..."
+        );
         // Defensive: Check bounds
+        #[cfg(debug_assertions)]
         if row >= self.valid_rows {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Row {} exceeds valid rows {}", row, self.valid_rows),
             ));
         }
+        #[cfg(debug_assertions)]
         if col >= self.valid_cols {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Column {} exceeds valid columns {}", col, self.valid_cols),
             ));
         }
-
-        Ok(self.positions[row][col])
+        // ==============
+        // Catch & Handle
+        // ==============
+        if row >= self.valid_rows {
+            // Handle as caught case: Do Nothing
+            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
+            Ok(None)
+        } else if col >= self.valid_cols {
+            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
+            Ok(None)
+        } else {
+            // ================
+            // OK: Update State
+            // ================
+            Ok(self.positions[row][col])
+        }
     }
 
     /// Sets the file position for a window position
@@ -3106,25 +3142,59 @@ impl WindowMapStruct {
     /// * `Err(io::Error)` - If row/col out of bounds
     pub fn set_file_position(
         &mut self,
+        // lines_editor_state: &mut EditorState,
         row: usize,
         col: usize,
         file_pos: Option<FilePosition>,
     ) -> io::Result<()> {
-        // Defensive: Check bounds
+        // ============================================================
+        // Debug-Assert, Test-Assert, Production-Catch-Handle
+        // ============================================================
+        #[cfg(test)]
+        assert!(
+            row >= MAX_TUI_ROWS,
+            "Failed Test: pub fn set_file_position: assert!(row >= MAX_TUI_ROWS..."
+        );
+        #[cfg(test)]
+        assert!(
+            col >= MAX_TUI_COLS,
+            "Failed Test: pub fn set_file_position: assert!(row >= MAX_TUI_ROWS..."
+        );
+        // // Defensive: Check bounds
+        // #[cfg(debug_assertions)]
+        // if row >= MAX_TUI_ROWS {
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidInput,
+        //         format!(
+        //             "pub fn set_file_position() Row {} exceeds maximum {}",
+        //             row, MAX_TUI_ROWS
+        //         ),
+        //     ));
+        // }
+        // #[cfg(debug_assertions)]
+        // if col >= MAX_TUI_COLS {
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidInput,
+        //         format!(
+        //             "pub fn set_file_position() Column {} exceeds maximum {}",
+        //             col, MAX_TUI_COLS
+        //         ),
+        //     ));
+        // }
+        // ==============
+        // Catch & Handle
+        // ==============
         if row >= MAX_TUI_ROWS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds maximum {}", row, MAX_TUI_ROWS),
-            ));
+            // Handle as caught case: Do Nothing
+            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
+        } else if col >= MAX_TUI_COLS {
+            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
+        } else {
+            // ================
+            // OK: Update State
+            // ================
+            self.positions[row][col] = file_pos;
         }
-        if col >= MAX_TUI_COLS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Column {} exceeds maximum {}", col, MAX_TUI_COLS),
-            ));
-        }
-
-        self.positions[row][col] = file_pos;
         Ok(())
     }
 
@@ -6058,10 +6128,11 @@ impl EditorState {
 
             // Check for multi-character g-commands
             match command_str {
+                // with hx helix and impossible to remember vi codes...???
                 "gg" => return Command::GotoFileStart,
-                "ge" => return Command::GotoFileLastLine,
-                "gh" => return Command::GotoLineStart,
-                "gl" => return Command::GotoLineEnd,
+                "ge" | "G" => return Command::GotoFileLastLine,
+                "gh" | "0" => return Command::GotoLineStart,
+                "gl" | "$" => return Command::GotoLineEnd,
                 _ => {
                     // Unknown g-command
                     let _ = self.set_info_bar_message(&format!("Unknown command: {}", command_str));
@@ -10891,13 +10962,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         Command::TallPlus => {
             //
             lines_editor_state.effective_rows += 1;
+            lines_editor_state.window_map.valid_rows += 1;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
         Command::TallMinus => {
             //
-
             lines_editor_state.effective_rows -= 1;
+            lines_editor_state.window_map.valid_rows -= 1;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
@@ -10905,12 +10977,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         Command::WidePlus => {
             //
             lines_editor_state.effective_cols += 1;
+            lines_editor_state.window_map.valid_cols += 1;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
         Command::WideMinus => {
             //
             lines_editor_state.effective_cols -= 1;
+            lines_editor_state.window_map.valid_cols -= 1;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
