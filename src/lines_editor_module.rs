@@ -5335,6 +5335,9 @@ impl EditorState {
                 let _ = self.set_info_bar_message("Byte written");
             }
 
+            // ==========
+            // Go To Byte
+            // ==========
             trimmed if trimmed.starts_with('g') && trimmed.len() > 1 => {
                 let rest = &trimmed[1..];
 
@@ -5347,19 +5350,13 @@ impl EditorState {
                     for ch in rest.chars() {
                         // Defensive: prevent infinite loop on malformed input
                         if digit_iterations >= limits::COMMAND_PARSE_MAX_CHARS {
-                            let _ = self.set_info_bar_message("Line number too long");
+                            let _ = self.set_info_bar_message("Position # too long");
                             return Ok(true);
                         }
                         digit_iterations += 1;
 
                         let digit_value = (ch as usize) - ('0' as usize);
                         line_number = line_number.saturating_mul(10).saturating_add(digit_value);
-                    }
-
-                    // Defensive: reject line 0 (lines are 1-indexed)
-                    if line_number == 0 {
-                        let _ = self.set_info_bar_message("Line numbers start at 1");
-                        return Ok(true);
                     }
 
                     // ==========
@@ -18950,7 +18947,7 @@ fn format_hex_info_bar(state: &EditorState) -> Result<String> {
     // Build info bar
     // Show byte position as 1-indexed for human readability
     let info_bar = format!(
-        "{}HEX byte {}{}{} of {}{}{} {} (Enter Hex to Edit, NN-i to insert) {}> ",
+        "{}HEX byte {}{}{} of {}{}{} {} (Edit:Enter Hex, Insert: NN-i, GoTo:gN) {}> ",
         YELLOW,
         RED,
         state.hex_cursor.byte_offset_linear_file_absolute_position + 1, // Human-friendly: 1-indexed
