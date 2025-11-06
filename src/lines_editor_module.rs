@@ -6106,6 +6106,12 @@ impl EditorState {
                 "[" => Command::UnindentOneLine(self.cursor.row), // zero index
                 "]" => Command::IndentOneLine(self.cursor.row),   // zero index
 
+                // TUI Size
+                "tall+" => Command::TallPlus,
+                "tall-" => Command::TallMinus,
+                "wide+" => Command::WidePlus,
+                "wide-" => Command::WideMinus,
+
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
                 "raw" | "r" => Command::EnterRawMode,
@@ -6116,7 +6122,7 @@ impl EditorState {
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
                 "d" => Command::DeleteLine,
-                "\x1b[3~" => Command::DeleteLine, // delete key -> \x1b[3~
+                "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
                 _ => Command::None,
             }
         } else if current_mode == EditorMode::VisualSelectMode {
@@ -9532,7 +9538,10 @@ pub enum Command {
     SaveAndQuit, // w (write-quit)
 
     // Display
-    // ToggleWrap, // w (in normal mode) // not in scope?
+    TallPlus,
+    TallMinus,
+    WidePlus,
+    WideMinus,
 
     // Cosplay for Variables
     Copyank, // c,y (in a normal mood)
@@ -10876,6 +10885,33 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::Insert;
+            Ok(true)
+        }
+
+        Command::TallPlus => {
+            //
+            lines_editor_state.effective_rows += 1;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::TallMinus => {
+            //
+
+            lines_editor_state.effective_rows -= 1;
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::WidePlus => {
+            //
+            lines_editor_state.effective_cols += 1;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
+        Command::WideMinus => {
+            //
+            lines_editor_state.effective_cols -= 1;
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
 
