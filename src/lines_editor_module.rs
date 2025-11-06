@@ -10794,7 +10794,23 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     false // Treat error as failure
                 }
             };
-            delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+
+            /*   If no block of text is selected,
+             *   i.e. if start and end are the same point
+             *   then use backspace mode,
+             *   otherwise, if there is a block selected
+             *   inclusively delete that block
+             */
+            if lines_editor_state.file_position_of_vis_select_start
+                == lines_editor_state.file_position_of_vis_select_end
+            {
+                // if only one character is selected, use backspace delete
+                backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
+            } else {
+                // if a more than one character is selected, inclusively delete
+                delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+            }
+
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
