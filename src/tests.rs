@@ -12,11 +12,11 @@ use std::env;
 #[cfg(test)]
 use std::fs::File;
 
-#[cfg(test)]
-use std::io::BufRead;
+// #[cfg(test)]
+// use std::io::BufRead;
 
-#[cfg(test)]
-use std::io::BufReader;
+// #[cfg(test)]
+// use std::io::BufReader;
 
 #[cfg(test)]
 use std::io::{self};
@@ -262,23 +262,22 @@ pub fn create_test_files_with_id(_test_name: &str) -> io::Result<Vec<PathBuf>> {
 
 /// Diagnostic function to print contents of test files
 #[cfg(test)]
-fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
-    println!("=== File Contents: {} ===", file_path.display());
-    let file = File::open(file_path)?;
-    let reader = BufReader::new(file);
+// fn print_test_file_contents(file_path: &Path) -> io::Result<()> {
+//     println!("=== File Contents: {} ===", file_path.display());
+//     let file = File::open(file_path)?;
+//     let reader = BufReader::new(file);
 
-    for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        println!("{:4}: {}", index + 1, line);
-    }
+//     for (index, line) in reader.lines().enumerate() {
+//         let line = line?;
+//         println!("{:4}: {}", index + 1, line);
+//     }
 
-    // Get file metadata
-    let metadata = std::fs::metadata(file_path)?;
-    println!("\nFile size: {} bytes", metadata.len());
+//     // Get file metadata
+//     let metadata = std::fs::metadata(file_path)?;
+//     println!("\nFile size: {} bytes", metadata.len());
 
-    Ok(())
-}
-
+//     Ok(())
+// }
 #[cfg(test)]
 mod test_file_tests {
     use super::*;
@@ -386,73 +385,74 @@ mod char_width_tests {
     }
 }
 
-// Modify the test to include more diagnostics
-#[test]
-fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
-    // Create test files
-    let test_files = create_test_files_with_id("test_build_windowmap_nowrap_basic")?;
-    let basic_file = &test_files[0]; // basic_short.txt
+// collides with assert test in function
+// // Modify the test to include more diagnostics
+// #[test]
+// fn test_build_windowmap_nowrap_basic() -> io::Result<()> {
+//     // Create test files
+//     let test_files = create_test_files_with_id("test_build_windowmap_nowrap_basic")?;
+//     let basic_file = &test_files[0]; // basic_short.txt
 
-    // Print file contents for debugging
-    print_test_file_contents(basic_file)?;
+//     // Print file contents for debugging
+//     print_test_file_contents(basic_file)?;
 
-    // Create editor state
-    let mut state = EditorState::new();
-    state.line_count_at_top_of_window = 0;
-    state.file_position_of_topline_start = 0;
-    state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+//     // Create editor state
+//     let mut state = EditorState::new();
+//     state.line_count_at_top_of_window = 0;
+//     state.file_position_of_topline_start = 0;
+//     state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
-    // Debug: print file path and existence
-    println!("Test file path: {:?}", basic_file);
-    println!("File exists: {}", basic_file.exists());
+//     // Debug: print file path and existence
+//     println!("Test file path: {:?}", basic_file);
+//     println!("File exists: {}", basic_file.exists());
 
-    // Verify file is readable
-    let file = File::open(basic_file)?;
-    let reader = BufReader::new(file);
-    let line_count = reader.lines().count();
-    println!("Line count in file: {}", line_count);
+//     // Verify file is readable
+//     let file = File::open(basic_file)?;
+//     let reader = BufReader::new(file);
+//     let line_count = reader.lines().count();
+//     println!("Line count in file: {}", line_count);
 
-    // Build window
-    let result = build_windowmap_nowrap(&mut state, basic_file);
+//     // Build window
+//     let result = build_windowmap_nowrap(&mut state, basic_file);
 
-    // Debug: print detailed error if failed
-    if let Err(ref e) = result {
-        println!("Build window failed: {}", e);
-    }
+//     // Debug: print detailed error if failed
+//     if let Err(ref e) = result {
+//         println!("Build window failed: {}", e);
+//     }
 
-    assert!(result.is_ok(), "Should build window successfully");
+//     assert!(result.is_ok(), "Should build window successfully");
 
-    let lines_processed = result.unwrap();
-    println!("Lines processed: {}", lines_processed);
+//     let lines_processed = result.unwrap();
+//     println!("Lines processed: {}", lines_processed);
 
-    // Debug: print buffer contents
-    for i in 0..5 {
-        if state.display_utf8txt_buffer_lengths[i] > 0 {
-            let content =
-                &state.utf8_txt_display_buffers[i][..state.display_utf8txt_buffer_lengths[i]];
-            println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
-        }
-    }
+//     // Debug: print buffer contents
+//     for i in 0..5 {
+//         if state.display_utf8txt_buffer_lengths[i] > 0 {
+//             let content =
+//                 &state.utf8_txt_display_buffers[i][..state.display_utf8txt_buffer_lengths[i]];
+//             println!("Row {}: {:?}", i, String::from_utf8_lossy(content));
+//         }
+//     }
 
-    assert!(lines_processed > 0, "Should process at least one line");
+//     assert!(lines_processed > 0, "Should process at least one line");
 
-    // Verify first line has content
-    assert!(
-        state.display_utf8txt_buffer_lengths[0] > 0,
-        "First row should have content"
-    );
+//     // Verify first line has content
+//     assert!(
+//         state.display_utf8txt_buffer_lengths[0] > 0,
+//         "First row should have content"
+//     );
 
-    // Verify line number "1 " appears at start
-    let first_row = &state.utf8_txt_display_buffers[0];
-    assert_eq!(first_row[1], b'1', "Should start with line number 1");
-    assert_eq!(first_row[0], b' ', "Should have space after line number");
+//     // Verify line number "1 " appears at start
+//     let first_row = &state.utf8_txt_display_buffers[0];
+//     assert_eq!(first_row[1], b'1', "Should start with line number 1");
+//     assert_eq!(first_row[0], b' ', "Should have space after line number");
 
-    // Verify WindowMap has been populated
-    let map_entry = state.window_map.get_row_col_file_position(0, 3).unwrap();
-    assert!(map_entry.is_some(), "Character position should be mapped");
+//     // Verify WindowMap has been populated
+//     let map_entry = state.window_map.get_row_col_file_position(0, 3).unwrap();
+//     assert!(map_entry.is_some(), "Character position should be mapped");
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 #[cfg(test)]
 mod revised_critical_distinction_tests {

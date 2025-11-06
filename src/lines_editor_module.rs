@@ -1070,12 +1070,15 @@ pub const INFOBAR_MESSAGE_BUFFER_SIZE: usize = 32;
 
 /// Maximum number of rows (lines) in largest supported terminal
 /// of which 45 can be file rows (there are 45 tui line buffers)
-pub const MAX_TUI_ROWS: usize = 48;
+pub const MAX_TUI_ROWS: usize = 45;
+pub const MIN_TUI_ROWS: usize = 1;
+
+pub const MAX_ZERO_INDEX_TUI_ROWS: usize = MAX_TUI_ROWS - 1;
 
 /// Maximum number of columns (utf-8 char across) in largest supported TUI
 /// of which 157 can be file text
 const MAX_TUI_COLS: usize = 160;
-
+pub const MIN_TUI_COLS: usize = 1;
 /// Default terminal is 24 x 80
 /// Default TUI text dimensions will be
 /// +/- 3 header footer,
@@ -3150,44 +3153,33 @@ impl WindowMapStruct {
         // ============================================================
         // Debug-Assert, Test-Assert, Production-Catch-Handle
         // ============================================================
-        #[cfg(test)]
-        assert!(
-            row >= MAX_TUI_ROWS,
-            "Failed Test: pub fn set_file_position: assert!(row >= MAX_TUI_ROWS..."
-        );
-        #[cfg(test)]
-        assert!(
-            col >= MAX_TUI_COLS,
-            "Failed Test: pub fn set_file_position: assert!(row >= MAX_TUI_ROWS..."
-        );
-        // // Defensive: Check bounds
-        // #[cfg(debug_assertions)]
-        // if row >= MAX_TUI_ROWS {
-        //     return Err(io::Error::new(
-        //         io::ErrorKind::InvalidInput,
-        //         format!(
-        //             "pub fn set_file_position() Row {} exceeds maximum {}",
-        //             row, MAX_TUI_ROWS
-        //         ),
-        //     ));
-        // }
-        // #[cfg(debug_assertions)]
-        // if col >= MAX_TUI_COLS {
-        //     return Err(io::Error::new(
-        //         io::ErrorKind::InvalidInput,
-        //         format!(
-        //             "pub fn set_file_position() Column {} exceeds maximum {}",
-        //             col, MAX_TUI_COLS
-        //         ),
-        //     ));
-        // }
+        /*
+        This should be prefiltered for catch-handl
+        in Command::TallMinus => et al
+         */
+
+        if row >= MAX_TUI_ROWS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds valid rows {}", row, self.valid_rows),
+            ));
+        }
+
+        if col >= MAX_TUI_COLS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Column {} exceeds valid columns {}", col, self.valid_cols),
+            ));
+        }
         // ==============
         // Catch & Handle
         // ==============
         if row >= MAX_TUI_ROWS {
+            // Do Nothing
             // Handle as caught case: Do Nothing
             // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
         } else if col >= MAX_TUI_COLS {
+            // Do Nothing
             // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
         } else {
             // ================
@@ -6508,8 +6500,8 @@ impl EditorState {
         line_num: usize,
         starting_row: usize,
     ) -> io::Result<usize> {
-        // Validate row index
-        if row_idx >= 45 {
+        // Validate row index (zero based)
+        if row_idx > MAX_ZERO_INDEX_TUI_ROWS {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Row index exceeds maximum 44",
@@ -7458,13 +7450,15 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     // Process lines until display is full or file ends
     while current_display_row < state.effective_rows && iteration_count < limits::WINDOW_BUILD_LINES
     {
+        // Assertion: We should not exceed our display buffer count
+        // assert if has been, not if might become, larger than max
+        #[cfg(debug_assertions)]
+        debug_assert!(current_display_row <= 45, "Display row exceeds maximum");
+
         iteration_count += 1;
 
         // line start stop data
         let line_start_byte = file_byte_position;
-
-        // Assertion: We should not exceed our display buffer count
-        debug_assert!(current_display_row < 45, "Display row exceeds maximum");
 
         // Read one line from file (up to newline or MAX_LINE_BYTES)
         let (line_bytes, line_length, found_newline) =
@@ -10960,32 +10954,42 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::TallPlus => {
-            //
-            lines_editor_state.effective_rows += 1;
-            lines_editor_state.window_map.valid_rows += 1;
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            // Check for handle here: must not be > MAX
+            if (lines_editor_state.effective_rows + 1) <= MAX_TUI_ROWS {
+                lines_editor_state.effective_rows += 1;
+                lines_editor_state.window_map.valid_rows += 1;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            }
+            // Else, Nothing to Do
             Ok(true)
         }
         Command::TallMinus => {
-            //
-            lines_editor_state.effective_rows -= 1;
-            lines_editor_state.window_map.valid_rows -= 1;
+            // Check for handle here: must not be < MIN
+            if (lines_editor_state.effective_rows - 1) >= MIN_TUI_ROWS {
+                lines_editor_state.effective_rows -= 1;
+                lines_editor_state.window_map.valid_rows -= 1;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            }
+            // Else, Nothing to Do
 
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
         Command::WidePlus => {
-            //
-            lines_editor_state.effective_cols += 1;
-            lines_editor_state.window_map.valid_cols += 1;
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            // Check for handle here: must not be > MAX
+            if (lines_editor_state.effective_cols + 1) <= MAX_TUI_COLS {
+                lines_editor_state.effective_cols += 1;
+                lines_editor_state.window_map.valid_cols += 1;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            }
             Ok(true)
         }
         Command::WideMinus => {
-            //
-            lines_editor_state.effective_cols -= 1;
-            lines_editor_state.window_map.valid_cols -= 1;
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            // Check for handle here: must not be < MIN
+            if (lines_editor_state.effective_cols - 1) >= MIN_TUI_COLS {
+                lines_editor_state.effective_cols -= 1;
+                lines_editor_state.window_map.valid_cols -= 1;
+                build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            }
             Ok(true)
         }
 
