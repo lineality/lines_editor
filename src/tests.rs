@@ -1950,72 +1950,6 @@ mod tests {
         assert_eq!(filename, "item"); // Should fall back to "item"
     }
 }
-#[cfg(test)]
-mod byte_positions_tests {
-    use super::*;
-
-    #[test]
-    fn test_set_and_get_line_byte_range() {
-        let mut window_map = WindowMapStruct::new();
-
-        // Set a line range
-        assert!(window_map.set_line_byte_range(0, 10, 15).is_ok());
-
-        // Get it back
-        let range = window_map.get_line_byte_range(0).unwrap();
-        assert_eq!(range, Some((10, 15)));
-    }
-
-    #[test]
-    fn test_is_at_line_start() {
-        let mut window_map = WindowMapStruct::new();
-        window_map.set_line_byte_range(0, 10, 15).unwrap();
-
-        assert!(window_map.is_at_line_start(0, 10).unwrap());
-        assert!(!window_map.is_at_line_start(0, 11).unwrap());
-        assert!(!window_map.is_at_line_start(0, 15).unwrap());
-    }
-
-    #[test]
-    fn test_is_at_line_end() {
-        let mut window_map = WindowMapStruct::new();
-        window_map.set_line_byte_range(0, 10, 15).unwrap();
-
-        assert!(!window_map.is_at_line_end(0, 10).unwrap());
-        assert!(!window_map.is_at_line_end(0, 12).unwrap());
-        assert!(window_map.is_at_line_end(0, 15).unwrap());
-    }
-
-    #[test]
-    fn test_empty_line_ambiguity() {
-        let mut window_map = WindowMapStruct::new();
-        window_map.set_line_byte_range(1, 20, 20).unwrap();
-
-        // Empty line: start == end
-        assert!(window_map.is_at_line_start(1, 20).unwrap());
-        assert!(window_map.is_at_line_end(1, 20).unwrap());
-    }
-
-    #[test]
-    fn test_invalid_byte_range() {
-        let mut window_map = WindowMapStruct::new();
-
-        // start > end should error
-        assert!(window_map.set_line_byte_range(0, 20, 10).is_err());
-    }
-
-    #[test]
-    fn test_out_of_bounds_row() {
-        let mut window_map = WindowMapStruct::new();
-
-        // Row beyond maximum should error
-        assert!(
-            window_map
-                .set_line_byte_range(MAX_TUI_ROWS + 1, 0, 10)
-                .is_err()
-        );
-    }
-}
 
 #[cfg(test)]
 mod hexedit_tests {
@@ -2071,8 +2005,6 @@ mod hexedit_tests {
     /// Helper: Creates a minimal EditorState for testing hex edit
     fn create_test_editor_state(file_path: PathBuf, cursor_position: usize) -> EditorState {
         EditorState {
-            // ??? - Need your confirmation on which fields are required
-            // and what values they should have for hex edit tests
             the_last_command: None,                      // ???
             session_directory_path: None,                // ???
             mode: EditorMode::HexMode,                   // Correct?
@@ -2080,8 +2012,10 @@ mod hexedit_tests {
             read_copy_path: Some(file_path),
             effective_rows: 40, // ??? What value?
             effective_cols: 77, // ??? What value?
+            windowmap_positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
+            windowmap_line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
             security_mode: false,
-            window_map: WindowMapStruct::new(),
+
             cursor: WindowPosition { row: 0, col: 0 },
             next_move_right_is_past_newline: false,
             selection_start: None,

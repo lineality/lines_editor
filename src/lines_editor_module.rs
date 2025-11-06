@@ -1236,7 +1236,7 @@ pub const MAX_ZERO_INDEX_TUI_ROWS: usize = MAX_TUI_ROWS - 1;
 
 /// Maximum number of columns (utf-8 char across) in largest supported TUI
 /// of which 157 can be file text
-const MAX_TUI_COLS: usize = 160;
+pub const MAX_TUI_COLS: usize = 160;
 pub const MIN_TUI_COLS: usize = 1;
 /// Default terminal is 24 x 80
 /// Default TUI text dimensions will be
@@ -2312,43 +2312,6 @@ pub fn days_to_ymd(days_since_epoch: u64) -> (u32, u32, u32) {
     (year, month, day)
 }
 
-// /// Creates a timestamp with optional microsecond precision for uniqueness
-// ///
-// /// # Purpose
-// /// When multiple archives might be created in the same second, this
-// /// adds microsecond precision to ensure unique filenames.
-// ///
-// /// # Arguments
-// /// * `time` - The SystemTime to format
-// /// * `include_microseconds` - Whether to append microseconds
-// ///
-// /// # Returns
-// /// * `String` - Timestamp, optionally with microseconds appended
-// ///
-// /// # Format
-// /// - Without microseconds: "YY_MM_DD_HH_MM_SS"
-// /// - With microseconds: "YY_MM_DD_HH_MM_SS_UUUUUU"
-// pub fn createarchive_timestamp_with_precision(
-//     time: SystemTime,
-//     include_microseconds: bool,
-// ) -> String {
-//     let base_timestamp = create_archive_timestamp(time);
-
-//     if !include_microseconds {
-//         return base_timestamp;
-//     }
-
-//     // Get microseconds component
-//     let duration_since_epoch = match time.duration_since(UNIX_EPOCH) {
-//         Ok(duration) => duration,
-//         Err(_) => return base_timestamp, // Fall back to base timestamp
-//     };
-
-//     let microseconds = duration_since_epoch.as_micros() % 1_000_000;
-
-//     format!("{}_{:06}", base_timestamp, microseconds)
-// }
-
 /// Creates a timestamp with full year and optional microsecond precision
 ///
 /// # Purpose
@@ -3152,415 +3115,6 @@ pub struct WindowPosition {
     pub col: usize,
 }
 
-/// Maps window positions to file positions
-pub struct WindowMapStruct {
-    /// Pre-allocated mapping array [row][col] -> Option<FilePosition>
-    /// None means this position is empty/padding
-    pub positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
-    /// Number of valid rows in current window
-    pub valid_rows: usize,
-    /// Number of valid columns in current window
-    pub valid_cols: usize,
-    /// start stop Byte positions for each display row in the file
-    ///
-    /// # Purpose
-    /// Tracks the start and end byte positions for each line displayed on screen.
-    /// Enables O(1) line boundary detection for cursor movement and viewport calculations.
-    ///
-    /// # Format
-    /// `display_line_byte_ranges[row] = Some((line_start_byte, line_end_byte_inclusive))`
-    ///
-    /// # Semantics
-    /// - `line_start_byte` (inclusive): First byte of the line in file
-    /// - `line_end_byte_inclusive` (inclusive): Last byte before newline (or EOF for last line)
-    /// - `None`: Row not populated (empty window area)
-    ///
-    /// # Examples
-    /// - Line with content "hello\n" at bytes [10-15]:
-    ///   `Some((10, 15))` - range includes all content bytes, NOT the newline
-    /// - Last line "world" with no trailing newline at bytes [20-24]:
-    ///   `Some((20, 24))` - range ends at last content byte
-    /// - Empty line (just "\n") at bytes [30-30]:
-    ///   `Some((30, 30))` - start and end on the newline position?
-    ///   `Some((30, 29))` - inverted to signal "empty line"?
-    ///   Or better: handle separately in logic
-    ///
-    /// # Usage
-    /// ```ignore
-    /// // Jump to end of line for cursor
-    /// if let Some((_, line_end)) = window_map.display_line_byte_ranges[row] {
-    ///     cursor_position = line_end;
-    /// }
-    ///
-    /// // Check if cursor at line start
-    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[row] {
-    ///     if cursor_byte == line_start {
-    ///         // At start of line
-    ///     }
-    /// }
-    ///
-    /// // Detect line boundary for move-left wrapping
-    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[current_row] {
-    ///     if cursor_byte == line_start {
-    ///         // Move to previous line end
-    ///         let prev_line = current_row - 1;
-    ///         if let Some((_, prev_end)) = window_map.display_line_byte_ranges[prev_line] {
-    ///             cursor_byte = prev_end;
-    ///         }
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// # Empty Lines
-    /// Empty lines (containing only "\n") need special handling:
-    /// - Option 1: `Some((pos, pos))` - start equals end, signals empty
-    /// - Option 2: `Some((pos, pos - 1))` - inverted range signals empty
-    /// - Option 3: Track separately with a `[bool; MAX_TUI_ROWS]` for "is_empty_line"
-    ///
-    /// Recommend Option 1 (start == end) as most intuitive.
-    pub line_byte_start_end_position_pairs: [Option<(u64, u64)>; MAX_TUI_ROWS],
-}
-
-impl WindowMapStruct {
-    /// Creates a new WindowMapStruct with all positions set to None
-    pub fn new() -> Self {
-        WindowMapStruct {
-            positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
-            valid_rows: DEFAULT_ROWS,
-            valid_cols: DEFAULT_COLS,
-            line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
-        }
-    }
-
-    /// Gets the file position for a window position
-    ///
-    /// # Arguments
-    /// * `row` - Terminal row (0-indexed)
-    /// * `col` - Terminal column (0-indexed)
-    ///
-    /// # Returns
-    /// * `Ok(Option<FilePosition>)` - File position if valid, None if empty
-    /// * `Err(io::Error)` - If row/col out of bounds
-    pub fn get_row_col_file_position(
-        &self,
-        row: usize,
-        col: usize,
-    ) -> io::Result<Option<FilePosition>> {
-        // ============================================================
-        // Debug-Assert, Test-Assert, Production-Catch-Handle
-        // ============================================================
-        #[cfg(test)]
-        assert!(
-            row >= self.valid_rows,
-            "Failed Test: pub fn get_row_col_file_position: assert!(row >= self.valid_rows..."
-        );
-        #[cfg(test)]
-        assert!(
-            col >= self.valid_cols,
-            "Failed Test: pub fn get_row_col_file_position: assert!(col >= self.valid_cols..."
-        );
-        // Defensive: Check bounds
-        #[cfg(debug_assertions)]
-        if row >= self.valid_rows {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds valid rows {}", row, self.valid_rows),
-            ));
-        }
-        #[cfg(debug_assertions)]
-        if col >= self.valid_cols {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Column {} exceeds valid columns {}", col, self.valid_cols),
-            ));
-        }
-        // ==============
-        // Catch & Handle
-        // ==============
-        if row >= self.valid_rows {
-            // Handle as caught case: Do Nothing
-            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
-            Ok(None)
-        } else if col >= self.valid_cols {
-            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
-            Ok(None)
-        } else {
-            // ================
-            // OK: Update State
-            // ================
-            Ok(self.positions[row][col])
-        }
-    }
-
-    /// Sets the file position for a window position
-    ///
-    /// # Arguments
-    /// * `row` - Terminal row (0-indexed)
-    /// * `col` - Terminal column (0-indexed)
-    /// * `file_pos` - File position to map to (None for empty)
-    ///
-    /// # Returns
-    /// * `Ok(())` - Successfully set
-    /// * `Err(io::Error)` - If row/col out of bounds
-    pub fn set_file_position(
-        &mut self,
-        // lines_editor_state: &mut EditorState,
-        row: usize,
-        col: usize,
-        file_pos: Option<FilePosition>,
-    ) -> io::Result<()> {
-        // ============================================================
-        // Debug-Assert, Test-Assert, Production-Catch-Handle
-        // ============================================================
-        /*
-        This should be prefiltered for catch-handl
-        in Command::TallMinus => et al
-         */
-
-        if row >= MAX_TUI_ROWS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds valid rows {}", row, self.valid_rows),
-            ));
-        }
-
-        if col >= MAX_TUI_COLS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Column {} exceeds valid columns {}", col, self.valid_cols),
-            ));
-        }
-        // ==============
-        // Catch & Handle
-        // ==============
-        if row >= MAX_TUI_ROWS {
-            // Do Nothing
-            // Handle as caught case: Do Nothing
-            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
-        } else if col >= MAX_TUI_COLS {
-            // Do Nothing
-            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
-        } else {
-            // ================
-            // OK: Update State
-            // ================
-            self.positions[row][col] = file_pos;
-        }
-        Ok(())
-    }
-
-    /// Clears all mappings
-    pub fn clear(&mut self) {
-        // Defensive: explicit loop with bounds
-        for row in 0..MAX_TUI_ROWS {
-            for col in 0..MAX_TUI_COLS {
-                self.positions[row][col] = None;
-            }
-        }
-    }
-
-    // ============================================================================
-    // LINE BOUNDARY TRACKING (added to WindowMapStruct)
-    // ============================================================================
-
-    /// Stores the byte range for a single display row
-    ///
-    /// # Purpose
-    /// Records where a line begins and ends in the file.
-    /// Enables O(1) line boundary detection without scanning file.
-    ///
-    /// # Arguments
-    /// * `row` - Display row index (0-indexed, 0..MAX_TUI_ROWS)
-    /// * `start_byte` - First byte of line in file (inclusive)
-    /// * `end_byte` - Last byte before newline (inclusive), or EOF position
-    ///
-    /// # Returns
-    /// * `Ok(())` - Successfully stored
-    /// * `Err(io::Error)` - If row index out of bounds
-    ///
-    /// # Semantics
-    /// - Empty line "just \n": `start_byte == end_byte` signals empty
-    /// - Normal line "text\n": stores content bytes, NOT the newline itself
-    /// - Last line no newline: stores up to last content byte
-    ///
-    /// # Examples
-    /// ```ignore
-    /// // "hello\n" at bytes [10..15]
-    /// set_line_byte_range(0, 10, 15)?;
-    ///
-    /// // Empty line "\n" at byte [20]
-    /// set_line_byte_range(1, 20, 20)?;
-    ///
-    /// // Last line "world" at bytes [25..29], no newline
-    /// set_line_byte_range(2, 25, 29)?;
-    /// ```
-    pub fn set_line_byte_range(
-        &mut self,
-        row: usize,
-        start_byte: u64,
-        end_byte: u64,
-    ) -> io::Result<()> {
-        // Defensive: Validate row index is within bounds
-        if row >= MAX_TUI_ROWS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds maximum display rows {}", row, MAX_TUI_ROWS),
-            ));
-        }
-
-        // Defensive: Validate byte range is sensible (start <= end)
-        // Empty lines have start == end, which is valid and signals "empty"
-        if start_byte > end_byte {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Invalid line byte range: start {} > end {}",
-                    start_byte, end_byte
-                ),
-            ));
-        }
-
-        // Store the range
-        self.line_byte_start_end_position_pairs[row] = Some((start_byte, end_byte));
-
-        Ok(())
-    }
-
-    #[cfg(test)]
-    /// Retrieves the byte range for a display row
-    ///
-    /// # Purpose
-    /// Gets stored line boundaries for cursor movement logic.
-    ///
-    /// # Arguments
-    /// * `row` - Display row index (0-indexed)
-    ///
-    /// # Returns
-    /// * `Ok(Some((start, end)))` - Line exists with these byte bounds
-    /// * `Ok(None)` - Row not yet populated (empty window area)
-    /// * `Err(io::Error)` - Row index out of bounds
-    ///
-    /// # Defensive Notes
-    /// Returns error for invalid row, not silent None.
-    /// Caller must distinguish between "row not populated" (Ok(None))
-    /// and "invalid row index" (Err).
-    pub fn get_line_byte_range(&self, row: usize) -> io::Result<Option<(u64, u64)>> {
-        // Defensive: Validate row index
-        if row >= MAX_TUI_ROWS {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds maximum display rows {}", row, MAX_TUI_ROWS),
-            ));
-        }
-
-        Ok(self.line_byte_start_end_position_pairs[row])
-    }
-    #[cfg(test)]
-    /// Checks if a file byte position is at the start of its line
-    ///
-    /// # Purpose
-    /// Detects when cursor moves to line start for wrap-around behavior.
-    /// When user presses 'h' (move left) at start of line,
-    /// cursor should wrap to end of previous line.
-    ///
-    /// # Arguments
-    /// * `row` - Current display row (0-indexed)
-    /// * `byte_position` - File byte offset to check
-    ///
-    /// # Returns
-    /// * `Ok(true)` - Byte is at start of this line
-    /// * `Ok(false)` - Byte is NOT at line start (is middle or end)
-    /// * `Err(io::Error)` - Row index invalid or range not set
-    ///
-    /// # Logic
-    /// Checks if byte_position == line_start_byte of the row's range.
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Line "hello\n" stored as (10, 15)
-    /// is_at_line_start(0, 10)?  // true - at start
-    /// is_at_line_start(0, 12)?  // false - in middle
-    /// is_at_line_start(0, 15)?  // false - at end
-    /// ```
-    pub fn is_at_line_start(&self, row: usize, byte_position: u64) -> io::Result<bool> {
-        // Get line boundaries (defensive: propagate error if row invalid)
-        match self.get_line_byte_range(row)? {
-            Some((start_byte, _end_byte)) => {
-                // Compare byte position to line start
-                Ok(byte_position == start_byte)
-            }
-            None => {
-                // Row not populated - can't determine line start
-                // Return false (not at line start of non-existent line)
-                Ok(false)
-            }
-        }
-    }
-    #[cfg(test)]
-    /// Checks if a file byte position is at the end of its line
-    ///
-    /// # Purpose
-    /// Detects when cursor moves to line end for wrap-around behavior.
-    /// When user presses 'l' (move right) at end of line,
-    /// cursor should wrap to start of next line.
-    ///
-    /// # Arguments
-    /// * `row` - Current display row (0-indexed)
-    /// * `byte_position` - File byte offset to check
-    ///
-    /// # Returns
-    /// * `Ok(true)` - Byte is at end of this line (last content byte before newline)
-    /// * `Ok(false)` - Byte is NOT at line end (is start or middle)
-    /// * `Err(io::Error)` - Row index invalid or range not set
-    ///
-    /// # Logic
-    /// Checks if byte_position == line_end_byte of the row's range.
-    /// Note: end_byte is BEFORE the newline character, so cursor can be positioned there.
-    ///
-    /// # Empty Lines
-    /// For empty line (start == end):
-    /// - Position equals both start and end
-    /// - Both `is_at_line_start()` and `is_at_line_end()` return true
-    /// - Caller must handle this ambiguity (usually treated as both start and end)
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Line "hello\n" stored as (10, 15)
-    /// is_at_line_end(0, 10)?  // false - at start
-    /// is_at_line_end(0, 12)?  // false - in middle
-    /// is_at_line_end(0, 15)?  // true - at end
-    ///
-    /// // Empty line "\n" stored as (20, 20)
-    /// is_at_line_end(1, 20)?  // true - at end (also at start)
-    /// ```
-    pub fn is_at_line_end(&self, row: usize, byte_position: u64) -> io::Result<bool> {
-        // Get line boundaries (defensive: propagate error if row invalid)
-        match self.get_line_byte_range(row)? {
-            Some((_start_byte, end_byte)) => {
-                // Compare byte position to line end
-                Ok(byte_position == end_byte)
-            }
-            None => {
-                // Row not populated - can't determine line end
-                // Return false (not at line end of non-existent line)
-                Ok(false)
-            }
-        }
-    }
-
-    /// Clears all line byte range tracking
-    ///
-    /// # Purpose
-    /// Resets line boundary data when rebuilding window (e.g., after scroll).
-    /// Called at start of `build_windowmap_nowrap()`.
-    pub fn clear_line_byte_ranges(&mut self) {
-        // Defensive: explicit loop with bounds (NASA Power of 10 Rule 2)
-        for row in 0..MAX_TUI_ROWS {
-            self.line_byte_start_end_position_pairs[row] = None;
-        }
-    }
-}
-
 /// Current editor mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EditorMode {
@@ -3720,7 +3274,6 @@ pub struct EditorState {
     /// "When you got nothing, then your on...
     /// The Last Command!"
     /// None if no command has been executed yet
-    ///
     pub the_last_command: Option<Command>,
 
     ///where lines files for this session are stored
@@ -3729,8 +3282,6 @@ pub struct EditorState {
     /// Current editor mode
     pub mode: EditorMode,
 
-    // /// Line wrap setting
-    // pub wrap_mode: WrapMode,
     /// Absolute path to the file being edited
     pub original_file_path: Option<PathBuf>,
 
@@ -3740,27 +3291,72 @@ pub struct EditorState {
     /// Effective editing area (minus headers/footers/line numbers)
     pub effective_rows: usize,
     pub effective_cols: usize,
+    pub windowmap_positions: [[Option<FilePosition>; MAX_TUI_COLS]; MAX_TUI_ROWS],
+
+    /// start stop Byte positions for each display row in the file
+    ///
+    /// # Purpose
+    /// Tracks the start and end byte positions for each line displayed on screen.
+    /// Enables O(1) line boundary detection for cursor movement and viewport calculations.
+    ///
+    /// # Format
+    /// `display_line_byte_ranges[row] = Some((line_start_byte, line_end_byte_inclusive))`
+    ///
+    /// # Semantics
+    /// - `line_start_byte` (inclusive): First byte of the line in file
+    /// - `line_end_byte_inclusive` (inclusive): Last byte before newline (or EOF for last line)
+    /// - `None`: Row not populated (empty window area)
+    ///
+    /// # Examples
+    /// - Line with content "hello\n" at bytes [10-15]:
+    ///   `Some((10, 15))` - range includes all content bytes, NOT the newline
+    /// - Last line "world" with no trailing newline at bytes [20-24]:
+    ///   `Some((20, 24))` - range ends at last content byte
+    /// - Empty line (just "\n") at bytes [30-30]:
+    ///   `Some((30, 30))` - start and end on the newline position?
+    ///   `Some((30, 29))` - inverted to signal "empty line"?
+    ///   Or better: handle separately in logic
+    ///
+    /// # Usage
+    /// ```ignore
+    /// // Jump to end of line for cursor
+    /// if let Some((_, line_end)) = window_map.display_line_byte_ranges[row] {
+    ///     cursor_position = line_end;
+    /// }
+    ///
+    /// // Check if cursor at line start
+    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[row] {
+    ///     if cursor_byte == line_start {
+    ///         // At start of line
+    ///     }
+    /// }
+    ///
+    /// // Detect line boundary for move-left wrapping
+    /// if let Some((line_start, _)) = window_map.display_line_byte_ranges[current_row] {
+    ///     if cursor_byte == line_start {
+    ///         // Move to previous line end
+    ///         let prev_line = current_row - 1;
+    ///         if let Some((_, prev_end)) = window_map.display_line_byte_ranges[prev_line] {
+    ///             cursor_byte = prev_end;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Empty Lines
+    /// Empty lines (containing only "\n") need special handling:
+    /// - Option 1: `Some((pos, pos))` - start equals end, signals empty
+    /// - Option 2: `Some((pos, pos - 1))` - inverted range signals empty
+    /// - Option 3: Track separately with a `[bool; MAX_TUI_ROWS]` for "is_empty_line"
+    ///
+    /// Recommend Option 1 (start == end) as most intuitive.
+    pub windowmap_line_byte_start_end_position_pairs: [Option<(u64, u64)>; MAX_TUI_ROWS],
 
     // to force-reset manually clear overwrite buffers
     pub security_mode: bool,
 
-    /// Current window buffer containing visible text
-    /// Pre-allocated to FILE_TUI_WINDOW_MAP_BUFFER_SIZE
-    // pub state_file_tui_window_map_buffer: [u8; FILE_TUI_WINDOW_MAP_BUFFER_SIZE],
-
-    // pub general_use_medium_buffer: [u8; MEDIUMSIZE_GENERAL_USE_BUFFER_SIZE],
-
-    /// Number of valid bytes in state_file_tui_window_map_buffer
-    // pub filetui_windowmap_buffer_used: usize,
-
-    /// Window to file position mapping
-    pub window_map: WindowMapStruct,
-
     /// Cursor position in window
     pub cursor: WindowPosition,
-
-    /// File position of top-left corner of window
-    // pub window_start: FilePosition,
 
     /// Flag signaling that next move right
     /// should bump down to next line down.
@@ -3769,9 +3365,6 @@ pub struct EditorState {
     /// Visual mode selection start (if in visual mode)
     pub selection_start: Option<FilePosition>, // end is 'current' one
     pub selection_rowline_start: usize, // end is 'current' one
-    // pub selection_rowline_end: usize,
-    /// Path to .changelog file
-    // pub changelog_path: Option<PathBuf>,
 
     /// Flag indicating if file has unsaved changes
     pub is_modified: bool,
@@ -3789,13 +3382,6 @@ pub struct EditorState {
     // start end for visual-mode selection
     pub file_position_of_vis_select_start: u64,
     pub file_position_of_vis_select_end: u64,
-    /// For LineWrap mode: byte offset within the line where window starts
-    /// Example: If line 500 has 300 chars and we're showing the 3rd wrap, this might be 211
-    // pub linewrap_window_topline_startbyte_position: u64,
-
-    /// For LineWrap mode: character offset within the line where window starts
-    /// Example: Starting at character 70 of line 500
-    // pub linewrap_window_topline_char_offset: usize,
 
     /// TODO making this bigger/ribbon?
     /// For NoWrap mode: horizontal character offset for all displayed lines
@@ -3817,17 +3403,17 @@ pub struct EditorState {
     pub hex_cursor: HexCursor,
 
     // pub raw_cursor: RawCursor,
-    // /// TODO: Should there be a clear-buffer method?
-    // /// Pre-allocated buffer for insert mode text input
-    // /// Used to capture user input before inserting into file
+    //  /// TODO: Should there be a clear-buffer method?
+    //  /// Pre-allocated buffer for insert mode text input
+    //  /// Used to capture user input before inserting into file
     // pub tofile_insert_input_chunk_buffer: [u8; TOFILE_INSERTBUFFER_CHUNK_SIZE], // not used
     /// EOF information for the currently displayed window
     /// None = EOF not visible in current window
     /// Some((file_line_of_eof, eof_tui_display_row)) = EOF position
     pub eof_fileline_tuirow_tuple: Option<(usize, usize)>,
 
-    // /// TODO is this needed?
-    // /// Number of valid bytes in tofile_insert_input_chunk_buffer
+    //  /// TODO is this needed?
+    //  /// Number of valid bytes in tofile_insert_input_chunk_buffer
     // pub tofile_insertinput_chunkbuffer_used: usize, // not used
     /// short message to display in TUI, bottom bar
     pub info_bar_message_buffer: [u8; INFOBAR_MESSAGE_BUFFER_SIZE], // not used
@@ -3849,11 +3435,14 @@ impl EditorState {
             mode: EditorMode::Normal,
             original_file_path: None,
             read_copy_path: None,
+
             effective_rows,
             effective_cols,
+
+            windowmap_positions: [[None; MAX_TUI_COLS]; MAX_TUI_ROWS],
+            windowmap_line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
             security_mode: false, // default setting, purpose: to force-reset manually clear overwrite buffers
 
-            window_map: WindowMapStruct::new(),
             cursor: WindowPosition { row: 0, col: 0 },
 
             // window_start: FilePosition {
@@ -3877,8 +3466,6 @@ impl EditorState {
             file_position_of_vis_select_start: 0,
             file_position_of_vis_select_end: 0,
 
-            // linewrap_window_topline_startbyte_position: 0,
-            // linewrap_window_topline_char_offset: 0,
             tui_window_horizontal_utf8txt_line_char_offset: 0,
             in_row_abs_horizontal_0_index_cursor_position: 2, // set to 0:0 real text postion after number
 
@@ -3888,6 +3475,151 @@ impl EditorState {
             hex_cursor: HexCursor::new(),
             eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
+        }
+    }
+
+    /// Sets the file position for a window position
+    ///
+    /// # Arguments
+    /// * `row` - Terminal row (0-indexed)
+    /// * `col` - Terminal column (0-indexed)
+    /// * `file_pos` - File position to map to (None for empty)
+    ///
+    /// # Returns
+    /// * `Ok(())` - Successfully set
+    /// * `Err(io::Error)` - If row/col out of bounds
+    pub fn set_file_position(
+        &mut self,
+        // lines_editor_state: &mut EditorState,
+        row: usize,
+        col: usize,
+        file_pos: Option<FilePosition>,
+    ) -> io::Result<()> {
+        // ============================================================
+        // Debug-Assert, Test-Assert, Production-Catch-Handle
+        // ============================================================
+        /*
+        This should be prefiltered for catch-handl
+        in Command::TallMinus => et al
+         */
+
+        if row >= MAX_TUI_ROWS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds valid rows {}", row, self.effective_rows),
+            ));
+        }
+
+        if col >= MAX_TUI_COLS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Column {} exceeds valid columns {}",
+                    col, self.effective_cols
+                ),
+            ));
+        }
+        // ==============
+        // Catch & Handle
+        // ==============
+        if row >= MAX_TUI_ROWS {
+            // Do Nothing
+            // Handle as caught case: Do Nothing
+            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
+        } else if col >= MAX_TUI_COLS {
+            // Do Nothing
+            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
+        } else {
+            // ================
+            // OK: Update State
+            // ================
+            self.windowmap_positions[row][col] = file_pos;
+        }
+        Ok(())
+    }
+
+    /// Clears all mappings
+    pub fn clear_windowmap_positions(&mut self) {
+        // Defensive: explicit loop with bounds
+        for row in 0..MAX_TUI_ROWS {
+            for col in 0..MAX_TUI_COLS {
+                self.windowmap_positions[row][col] = None;
+            }
+        }
+    }
+
+    /// Stores the byte range for a single display row
+    ///
+    /// # Purpose
+    /// Records where a line begins and ends in the file.
+    /// Enables O(1) line boundary detection without scanning file.
+    ///
+    /// # Arguments
+    /// * `row` - Display row index (0-indexed, 0..MAX_TUI_ROWS)
+    /// * `start_byte` - First byte of line in file (inclusive)
+    /// * `end_byte` - Last byte before newline (inclusive), or EOF position
+    ///
+    /// # Returns
+    /// * `Ok(())` - Successfully stored
+    /// * `Err(io::Error)` - If row index out of bounds
+    ///
+    /// # Semantics
+    /// - Empty line "just \n": `start_byte == end_byte` signals empty
+    /// - Normal line "text\n": stores content bytes, NOT the newline itself
+    /// - Last line no newline: stores up to last content byte
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // "hello\n" at bytes [10..15]
+    /// set_line_byte_range(0, 10, 15)?;
+    ///
+    /// // Empty line "\n" at byte [20]
+    /// set_line_byte_range(1, 20, 20)?;
+    ///
+    /// // Last line "world" at bytes [25..29], no newline
+    /// set_line_byte_range(2, 25, 29)?;
+    /// ```
+    pub fn set_line_byte_range(
+        &mut self,
+        row: usize,
+        start_byte: u64,
+        end_byte: u64,
+    ) -> io::Result<()> {
+        // Defensive: Validate row index is within bounds
+        if row >= MAX_TUI_ROWS {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds maximum display rows {}", row, MAX_TUI_ROWS),
+            ));
+        }
+
+        // Defensive: Validate byte range is sensible (start <= end)
+        // Empty lines have start == end, which is valid and signals "empty"
+        if start_byte > end_byte {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Invalid line byte range: start {} > end {}",
+                    start_byte, end_byte
+                ),
+            ));
+        }
+
+        // Store the range
+        self.windowmap_line_byte_start_end_position_pairs[row] = Some((start_byte, end_byte));
+
+        Ok(())
+    }
+
+    /// Clears all line byte range tracking
+    ///
+    /// # Purpose
+    /// Resets line boundary data when rebuilding window (e.g., after scroll).
+    /// Called at start of `build_windowmap_nowrap()`.
+    pub fn clear_line_byte_ranges(&mut self) {
+        // Defensive: explicit loop with bounds (NASA Power of 10 Rule 2)
+        for row in 0..MAX_TUI_ROWS {
+            self.windowmap_line_byte_start_end_position_pairs[row] = None;
         }
     }
 
@@ -4216,6 +3948,69 @@ impl EditorState {
         Ok(PastyInputPathOrCommand::SelectPath(PathBuf::from(trimmed)))
     }
 
+    /// Gets the file position for a window position
+    ///
+    /// # Arguments
+    /// * `row` - Terminal row (0-indexed)
+    /// * `col` - Terminal column (0-indexed)
+    ///
+    /// # Returns
+    /// * `Ok(Option<FilePosition>)` - File position if valid, None if empty
+    /// * `Err(io::Error)` - If row/col out of bounds
+    pub fn get_row_col_file_position(
+        &self,
+        row: usize,
+        col: usize,
+    ) -> io::Result<Option<FilePosition>> {
+        // ============================================================
+        // Debug-Assert, Test-Assert, Production-Catch-Handle
+        // ============================================================
+        #[cfg(test)]
+        assert!(
+            row >= self.effective_rows,
+            "Failed Test: pub fn get_row_col_file_position: assert!(row >= self.valid_rows..."
+        );
+        #[cfg(test)]
+        assert!(
+            col >= self.effective_cols,
+            "Failed Test: pub fn get_row_col_file_position: assert!(col >= self.valid_cols..."
+        );
+        // Defensive: Check bounds
+        #[cfg(debug_assertions)]
+        if row >= self.effective_rows {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Row {} exceeds valid rows {}", row, self.effective_rows),
+            ));
+        }
+        #[cfg(debug_assertions)]
+        if col >= self.effective_cols {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Column {} exceeds valid columns {}",
+                    col, self.effective_cols
+                ),
+            ));
+        }
+        // ==============
+        // Catch & Handle
+        // ==============
+        if row >= self.effective_rows {
+            // Handle as caught case: Do Nothing
+            // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
+            Ok(None)
+        } else if col >= self.effective_cols {
+            // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_COLS");
+            Ok(None)
+        } else {
+            // ================
+            // OK: Update State
+            // ================
+            Ok(self.windowmap_positions[row][col])
+        }
+    }
+
     // ============================================================================
     // LINE END DETECTION (UTF-8-Aware Cursor Movement Support)
     // ============================================================================
@@ -4324,12 +4119,12 @@ impl EditorState {
         // ═══════════════════════════════════════════════════════════════════════
         // Instead of panicking on out-of-bounds, return Ok(false).
         // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
-        if self.cursor.row >= self.window_map.line_byte_start_end_position_pairs.len() {
+        if self.cursor.row >= self.windowmap_line_byte_start_end_position_pairs.len() {
             #[cfg(debug_assertions)]
             eprintln!(
                 "is_next_byte_newline: cursor row {} >= line count {} (returning false - not at newline)",
                 self.cursor.row,
-                self.window_map.line_byte_start_end_position_pairs.len()
+                self.windowmap_line_byte_start_end_position_pairs.len()
             );
 
             // Not an error - this is expected handling of out-of-bounds
@@ -4341,9 +4136,8 @@ impl EditorState {
         // ═══════════════════════════════════════════════════════════════════════
         // If cursor doesn't map to a valid file position, safely return false.
         // This handles columns beyond line length without crashing.
-        let cursor_byte_result = self
-            .window_map
-            .get_row_col_file_position(self.cursor.row, self.cursor.col)?;
+        let cursor_byte_result =
+            self.get_row_col_file_position(self.cursor.row, self.cursor.col)?;
 
         let cursor_byte_start = match cursor_byte_result {
             Some(pos) => pos.byte_offset_linear_file_absolute_position,
@@ -4403,8 +4197,7 @@ impl EditorState {
         // Use .get() for safe indexing. If somehow the row is still invalid,
         // return false (defense-in-depth: additional validation layer).
         let line_byte_range = match self
-            .window_map
-            .line_byte_start_end_position_pairs
+            .windowmap_line_byte_start_end_position_pairs
             .get(self.cursor.row)
         {
             Some(range) => range,
@@ -7521,53 +7314,6 @@ pub mod double_width {
 
         false
     }
-
-    // /// Calculates the display width of a string in terminal columns.
-    // ///
-    // /// # Arguments
-    // /// * `text` - The text to measure
-    // ///
-    // /// # Returns
-    // /// * `Option<usize>` - The width in terminal columns, or None if calculation fails
-    // ///
-    // /// # Examples
-    // /// ```
-    // /// assert_eq!(calculate_display_width("Hello"), Some(5));
-    // /// assert_eq!(calculate_display_width("你好"), Some(4)); // Two double-width characters
-    // /// assert_eq!(calculate_display_width("Hello世界"), Some(9)); // 5 + 2*2
-    // /// ```
-    // ///
-    // /// # Error Handling
-    // /// Returns `None` if:
-    // /// - The string contains invalid UTF-8 (shouldn't happen with Rust strings)
-    // /// - Integer overflow occurs (extremely long strings)
-    // pub fn calculate_display_width(text: &str) -> Option<usize> {
-    //     let mut width = 0usize;
-    //     let mut char_count = 0;
-    //     const MAX_CHARS: usize = 1_000_000; // Upper bound per NASA rule #2 TODO: math other MAX_CHARS?
-
-    //     for c in text.chars() {
-    //         // Prevent infinite loops with character count limit
-    //         if char_count >= MAX_CHARS {
-    //             return None;
-    //         }
-    //         char_count += 1;
-
-    //         // Add 2 for double-width, 1 for single-width
-    //         let char_width = if is_double_width(c) { 2 } else { 1 };
-
-    //         // Check for overflow before adding
-    //         width = width.checked_add(char_width)?;
-    //     }
-
-    //     // Defensive assertion: result should be reasonable
-    //     debug_assert!(
-    //         width <= text.len() * 2,
-    //         "Display width should not exceed twice the byte length"
-    //     );
-
-    //     Some(width)
-    // }
 }
 
 /// Seeks to a specific line number in the file and returns the byte position
@@ -7702,8 +7448,8 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
 
     // Clear existing buffers and map before building
     state.clear_utf8_displaybuffers();
-    state.window_map.clear();
-    state.window_map.clear_line_byte_ranges(); // line start stop data
+    state.clear_windowmap_positions();
+    state.clear_line_byte_ranges(); // line start stop data
 
     // Clear EOF tracking - will be rediscovered if EOF appears in this window
     // Note: file state changes with every edit, must refresh
@@ -7823,11 +7569,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
             line_start_byte
         };
         // Store the byte range for this display row
-        state.window_map.set_line_byte_range(
-            current_display_row,
-            line_start_byte,
-            line_end_byte,
-        )?;
+        state.set_line_byte_range(current_display_row, line_start_byte, line_end_byte)?;
         // ════════════════════════
         // line start stop tracking
         // ════════════════════════
@@ -9236,9 +8978,7 @@ fn process_line_with_offset(
             }
 
             // Map this one cursor position to be kanji start byte
-            state
-                .window_map
-                .set_file_position(row, display_col, Some(file_pos))?;
+            state.set_file_position(row, display_col, Some(file_pos))?;
 
             bytes_written += char_len;
             display_col += 1 // display_width; // Visual advance 1 TUI char column
@@ -9346,305 +9086,11 @@ fn process_line_with_offset(
             file_line_start + byte_index as u64
         );
 
-        state
-            .window_map
-            .set_file_position(row, eol_display_col, Some(eol_file_pos))?;
+        state.set_file_position(row, eol_display_col, Some(eol_file_pos))?;
     }
 
     Ok(bytes_written)
 }
-
-// /// Processes a line with horizontal offset and writes visible portion to display
-// ///
-// /// # Purpose
-// /// Takes a line's bytes, skips horizontal_offset characters, then writes
-// /// the visible portion to the display buffer while updating WindowMapStruct.
-// ///
-// /// # Arguments
-// /// * `state` - Editor state for buffers and map
-// /// * `row` - Display row index
-// /// * `col_start` - Starting column (after line number)
-// /// * `line_bytes` - The complete line text as bytes
-// /// * `horizontal_offset` - Number of characters to skip from line start
-// /// * `max_cols` - Maximum columns available for text
-// /// * `file_line_start` - Byte position where this line starts in file
-// ///
-// /// # Returns
-// /// * `Ok(bytes_written)` - Number of bytes written to display buffer
-// /// * `Err(io::Error)` - If UTF-8 parsing fails or buffer access fails
-// ///
-// /// # UTF-8 Handling
-// /// - Properly skips complete characters, not bytes
-// /// - Handles multi-byte UTF-8 sequences correctly
-// /// - Maps double-width characters to two display columns
-// ///
-// /// note: "end of TUI" is not "end of line"
-// /// byte_offset_linear_file_absolute_position: file_line_start + line_bytes.len() as u64, // ❌ Wrong
-// /// rustCopybyte_offset: file_line_start + byte_index as u64,
-// ///
-// fn process_line_with_offset(
-//     state: &mut EditorState,
-//     row: usize,
-//     col_start: usize,
-//     line_bytes: &[u8],
-//     horizontal_offset: usize,
-//     max_cols: usize,
-//     file_line_start: u64,
-// ) -> Result<usize> {
-//     // Defensive: Validate row index
-//     if row >= 45 {
-//         return Err(LinesError::Io(io::Error::new(
-//             io::ErrorKind::InvalidInput,
-//             format!("Row {} exceeds maximum display rows", row),
-//         )));
-//     }
-
-//     // First pass: Skip horizontal_offset characters (not bytes!)
-//     let mut byte_index = 0usize;
-//     let mut chars_skipped = 0usize;
-
-//     // Defensive: Limit iterations
-//     let mut iterations = 0;
-
-//     while byte_index < line_bytes.len()
-//         && chars_skipped < horizontal_offset
-//         && iterations < limits::HORIZONTAL_SCROLL_CHARS
-//     {
-//         iterations += 1;
-
-//         // Assertion 4: byte_index should never exceed line length
-//         debug_assert!(
-//             byte_index < line_bytes.len(),
-//             "byte_index {} exceeds line length {}",
-//             byte_index,
-//             line_bytes.len()
-//         );
-
-//         // Determine character byte length from first byte
-//         let byte_val = line_bytes[byte_index];
-//         let char_len = if byte_val & 0b1000_0000 == 0 {
-//             1 // ASCII
-//         } else if byte_val & 0b1110_0000 == 0b1100_0000 {
-//             2 // 2-byte UTF-8
-//         } else if byte_val & 0b1111_0000 == 0b1110_0000 {
-//             3 // 3-byte UTF-8
-//         } else if byte_val & 0b1111_1000 == 0b1111_0000 {
-//             4 // 4-byte UTF-8
-//         } else {
-//             // Invalid UTF-8 or continuation byte - skip single byte
-//             1
-//         };
-
-//         // Skip this character
-//         byte_index = (byte_index + char_len).min(line_bytes.len());
-//         chars_skipped += 1;
-//     }
-
-//     // Assertion 5: We should have skipped exactly the requested amount or hit end
-//     debug_assert!(
-//         chars_skipped <= horizontal_offset,
-//         "Skipped {} characters but only {} requested",
-//         chars_skipped,
-//         horizontal_offset
-//     );
-
-//     // Second pass: Write visible characters to display buffer
-//     let mut display_col = col_start;
-//     let mut bytes_written = 0usize;
-//     iterations = 0; // Reset iteration counter
-
-//     // Reserve 1 or 2 columns at line end to prevent double-width characters from overflowing
-//     // A double-width char starting at max_cols-1 would extend to max_cols+1, causing overflow
-//     while byte_index < line_bytes.len()
-//         // Reserve 1 or 2 columns to prevent double-width overflow
-//         && display_col < col_start + max_cols - 1
-//         && iterations < limits::HORIZONTAL_SCROLL_CHARS
-//     {
-//         iterations += 1;
-
-//         // Assertion 6: byte_index should be within bounds
-//         debug_assert!(
-//             byte_index < line_bytes.len(),
-//             "byte_index {} exceeds line length {} in write phase",
-//             byte_index,
-//             line_bytes.len()
-//         );
-
-//         // Parse next UTF-8 character
-//         let byte_val = line_bytes[byte_index];
-//         let char_len = if byte_val & 0b1000_0000 == 0 {
-//             1 // ASCII
-//         } else if byte_val & 0b1110_0000 == 0b1100_0000 {
-//             2 // 2-byte UTF-8
-//         } else if byte_val & 0b1111_0000 == 0b1110_0000 {
-//             3 // 3-byte UTF-8
-//         } else if byte_val & 0b1111_1000 == 0b1111_0000 {
-//             4 // 4-byte UTF-8
-//         } else {
-//             // Skip invalid bytes
-//             byte_index += 1;
-//             continue;
-//         };
-
-//         // Check if complete character is available
-//         if byte_index + char_len > line_bytes.len() {
-//             break; // Incomplete character at end
-//         }
-
-//         // Get the character bytes
-//         let char_bytes = &line_bytes[byte_index..byte_index + char_len];
-
-//         // Assertion 7: Character bytes should be exactly char_len
-//         debug_assert_eq!(
-//             char_bytes.len(),
-//             char_len,
-//             "Character byte slice length mismatch"
-//         );
-
-//         // Check how many display columns this character needs
-//         let display_width = if char_len == 1 {
-//             1 // ASCII is always single-width
-//         } else {
-//             // Parse character to check if double-width
-//             match std::str::from_utf8(char_bytes) {
-//                 Ok(s) => {
-//                     if let Some(ch) = s.chars().next() {
-//                         if double_width::is_double_width(ch) {
-//                             2
-//                         } else {
-//                             1
-//                         }
-//                     } else {
-//                         1 // Default to single-width
-//                     }
-//                 }
-//                 Err(_) => 1, // Invalid UTF-8, treat as single-width
-//             }
-//         };
-
-//         // Check if character fits in remaining space
-//         if display_col + display_width > col_start + max_cols {
-//             break; // Character would exceed display width
-//         }
-
-//         // Write character to display buffer
-//         if col_start + bytes_written + char_len <= 182 {
-//             // Copy bytes to display buffer
-//             for i in 0..char_len {
-//                 state.utf8_txt_display_buffers[row][col_start + bytes_written + i] = char_bytes[i];
-//             }
-
-//             // Update WindowMapStruct for this character position
-//             let file_pos = FilePosition {
-//                 byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
-//                 line_number: state.line_count_at_top_of_window,
-//                 byte_in_line: byte_index,
-//             };
-
-//             // Map all display columns this character occupies
-//             for i in 0..display_width {
-//                 state
-//                     .window_map
-//                     .set_file_position(row, display_col + i, Some(file_pos))?;
-//             }
-
-//             bytes_written += char_len;
-//             display_col += display_width;
-//         } else {
-//             break; // Buffer full
-//         }
-
-//         byte_index += char_len;
-//     }
-
-//     // Defensive: Check iteration limit
-//     if iterations >= limits::HORIZONTAL_SCROLL_CHARS {
-//         return Err(LinesError::Io(io::Error::new(
-//             io::ErrorKind::Other,
-//             "Maximum iterations exceeded in line processing",
-//         )));
-//     }
-
-//     // Assertion 9: Verify we stayed within display buffer bounds
-//     //
-//     //    =================================================
-//     // // Debug-Assert, Test-Asset, Production-Catch-Handle
-//     //    =================================================
-//     // // This is not included in production builds
-//     // assert: only when running in a debug-build: will panic
-//     debug_assert!(
-//         bytes_written <= 182,
-//         "Wrote {} bytes but buffer is only 182 bytes",
-//         bytes_written
-//     );
-//     // This is not included in production builds
-//     // assert: only when running cargo test: will panic
-//     #[cfg(test)]
-//     assert!(
-//         bytes_written <= 182,
-//         "Wrote {} bytes but buffer is only 182 bytes",
-//         bytes_written
-//     );
-//     // Catch & Handle without panic in production
-//     // This IS included in production to safe-catch
-//     if !bytes_written <= 182 {
-//         // state.set_info_bar_message("Config error");
-//         return Err(LinesError::GeneralAssertionCatchViolation(
-//             "!bytes_written <= 182".into(),
-//         ));
-//     }
-
-//     // Assertion 10: Verify display column stayed within bounds
-//     //
-//     //    =================================================
-//     // // Debug-Assert, Test-Asset, Production-Catch-Handle
-//     //    =================================================
-//     // // This is not included in production builds
-//     // assert: only when running in a debug-build: will panic
-//     debug_assert!(
-//         display_col <= col_start + max_cols,
-//         "Display column {} exceeds limit {}",
-//         display_col,
-//         col_start + max_cols
-//     );
-//     // This is not included in production builds
-//     // assert: only when running cargo test: will panic
-//     #[cfg(test)]
-//     assert!(
-//         display_col <= col_start + max_cols,
-//         "Display column {} exceeds limit {}",
-//         display_col,
-//         col_start + max_cols
-//     );
-//     // Catch & Handle without panic in production
-//     // This IS included in production to safe-catch
-//     if !display_col <= col_start + max_cols {
-//         // state.set_info_bar_message("Config error");
-//         return Err(LinesError::GeneralAssertionCatchViolation(
-//             "!dsplycol<=colstrt+mxcol".into(),
-//         ));
-//     }
-
-//     // Map one additional "virtual" position after the last character
-//     // This allows cursor to be positioned at "end of line"
-//     let eol_display_col = display_col; // The column right after last char
-
-//     // Only add if we have room in the display
-//     if eol_display_col < col_start + max_cols {
-//         let eol_file_pos = FilePosition {
-//             byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64, // end of TUI is not EOLine
-//             line_number: state.line_count_at_top_of_window + row,
-//             byte_in_line: byte_index, // end of TUI is not EOLine
-//         };
-
-//         state
-//             .window_map
-//             .set_file_position(row, eol_display_col, Some(eol_file_pos))?;
-//     }
-//     // ===== END NEW CODE =====
-
-//     Ok(bytes_written)
-// }
 
 /// Determines if the current working directory is the user's home directory
 ///
@@ -10060,10 +9506,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         this_row, this_col,
                     );
                     println!(
-                        "\nMoveLeft lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                        lines_editor_state
-                            .window_map
-                            .get_row_col_file_position(this_row, this_col)
+                        "\nMoveLeft lines_editor_state.get_row_col_file_position -> {:?}",
+                        lines_editor_state.get_row_col_file_position(this_row, this_col)
                     );
                     println!(
                         "\nMoveLeft lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10078,10 +9522,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         lines_editor_state.cursor.row
                     );
                     println!(
-                        "\nMoveLeft window_map.line_byte_start_end_position_pairs -> {:?}",
-                        lines_editor_state
-                            .window_map
-                            .line_byte_start_end_position_pairs,
+                        "\nMoveLeft windowmap_line_byte_start_end_position_pairs -> {:?}",
+                        lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                     );
                     println!(
                         "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
@@ -10169,10 +9611,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nMoveRight lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nMoveRight lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nMoveRight lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10187,10 +9627,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nMoveRight window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nMoveRight windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
                 println!(
                     "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
@@ -10327,10 +9765,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nMoveDown lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nMoveDown lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nMoveDown lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10345,10 +9781,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nMoveDown window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nMoveDown windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
             }
             let mut remaining_moves = count;
@@ -10466,7 +9900,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // // ========================================================================
 
             // let current_file_pos = match lines_editor_state
-            //     .window_map
             //     .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
             // {
             //     Ok(Some(pos)) => pos,
@@ -10501,10 +9934,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nMoveUp lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nMoveUp lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nMoveUp lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10519,10 +9950,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nMoveUp window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nMoveUp windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
             }
             let mut remaining_moves = count;
@@ -10653,24 +10082,23 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     iteration += 1;
 
                     // Get byte at current cursor position
-                    let current_byte =
-                        match lines_editor_state.window_map.get_row_col_file_position(
-                            lines_editor_state.cursor.row,
-                            lines_editor_state.cursor.col,
-                        ) {
-                            Ok(Some(pos)) => {
-                                let mut byte_buf = [0u8; 1];
-                                let mut f = File::open(&base_edit_filepath)?;
-                                f.seek(io::SeekFrom::Start(
-                                    pos.byte_offset_linear_file_absolute_position,
-                                ))?;
-                                match f.read(&mut byte_buf) {
-                                    Ok(1) => byte_buf[0],
-                                    _ => 0, // EOF
-                                }
+                    let current_byte = match lines_editor_state.get_row_col_file_position(
+                        lines_editor_state.cursor.row,
+                        lines_editor_state.cursor.col,
+                    ) {
+                        Ok(Some(pos)) => {
+                            let mut byte_buf = [0u8; 1];
+                            let mut f = File::open(&base_edit_filepath)?;
+                            f.seek(io::SeekFrom::Start(
+                                pos.byte_offset_linear_file_absolute_position,
+                            ))?;
+                            match f.read(&mut byte_buf) {
+                                Ok(1) => byte_buf[0],
+                                _ => 0, // EOF
                             }
-                            _ => 0,
-                        };
+                        }
+                        _ => 0,
+                    };
 
                     // Check if syntax or EOF
                     match is_syntax_char(current_byte) {
@@ -10715,7 +10143,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     }
                     iteration += 1;
                     // Get current cursor position in file
-                    let current_pos = match lines_editor_state.window_map.get_row_col_file_position(
+                    let current_pos = match lines_editor_state.get_row_col_file_position(
                         lines_editor_state.cursor.row,
                         lines_editor_state.cursor.col,
                     ) {
@@ -10800,7 +10228,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     iteration += 1;
 
                     // Get current cursor position in file
-                    let current_pos = match lines_editor_state.window_map.get_row_col_file_position(
+                    let current_pos = match lines_editor_state.get_row_col_file_position(
                         lines_editor_state.cursor.row,
                         lines_editor_state.cursor.col,
                     ) {
@@ -10893,10 +10321,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nGotoLine lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nGotoLine lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nGotoLine lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10911,10 +10337,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nGotoLine window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nGotoLine windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
             }
 
@@ -10979,10 +10403,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nGotoFileStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nGotoFileStart lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nGotoFileStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -10997,10 +10419,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nGotoFileStart window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nGotoFileStart windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
             }
 
@@ -11075,10 +10495,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     this_row, this_col,
                 );
                 println!(
-                    "\nGotoLineStart lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .get_row_col_file_position(this_row, this_col)
+                    "\nGotoLineStart lines_editor_state.get_row_col_file_position -> {:?}",
+                    lines_editor_state.get_row_col_file_position(this_row, this_col)
                 );
                 println!(
                     "\nGotoLineStart lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -11093,10 +10511,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row
                 );
                 println!(
-                    "\nGotoLineStart window_map.line_byte_start_end_position_pairs -> {:?}",
-                    lines_editor_state
-                        .window_map
-                        .line_byte_start_end_position_pairs,
+                    "\nGotoLineStart windowmap_line_byte_start_end_position_pairs -> {:?}",
+                    lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
             }
 
@@ -11243,7 +10659,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Check for handle here: must not be > MAX
             if (lines_editor_state.effective_rows + 1) <= MAX_TUI_ROWS {
                 lines_editor_state.effective_rows += 1;
-                lines_editor_state.window_map.valid_rows += 1;
                 build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
             // Else, Nothing to Do
@@ -11253,7 +10668,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Check for handle here: must not be < MIN
             if (lines_editor_state.effective_rows - 1) >= MIN_TUI_ROWS {
                 lines_editor_state.effective_rows -= 1;
-                lines_editor_state.window_map.valid_rows -= 1;
                 build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
             // Else, Nothing to Do
@@ -11264,7 +10678,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Check for handle here: must not be > MAX
             if (lines_editor_state.effective_cols + 1) <= MAX_TUI_COLS {
                 lines_editor_state.effective_cols += 1;
-                lines_editor_state.window_map.valid_cols += 1;
                 build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
             Ok(true)
@@ -11273,7 +10686,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Check for handle here: must not be < MIN
             if (lines_editor_state.effective_cols - 1) >= MIN_TUI_COLS {
                 lines_editor_state.effective_cols -= 1;
-                lines_editor_state.window_map.valid_cols -= 1;
                 build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             }
             Ok(true)
@@ -11294,7 +10706,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             // Set cursor position to file_position_of_vis_select_start
             // Get current cursor position in FILE
-            if let Ok(Some(file_pos)) = lines_editor_state.window_map.get_row_col_file_position(
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.row,
                 lines_editor_state.cursor.col,
             ) {
@@ -11309,7 +10721,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::VisualSelectMode;
             // Set selection start at current cursor position
-            if let Ok(Some(file_pos)) = lines_editor_state.window_map.get_row_col_file_position(
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.row,
                 lines_editor_state.cursor.col,
             ) {
@@ -11336,7 +10748,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.mode = EditorMode::HexMode;
 
             // Convert current window position to file byte offset
-            if let Ok(Some(file_pos)) = lines_editor_state.window_map.get_row_col_file_position(
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.row,
                 lines_editor_state.cursor.col,
             ) {
@@ -11361,7 +10773,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.mode = EditorMode::RawMode;
 
             // Convert current window position to file byte offset
-            if let Ok(Some(file_pos)) = lines_editor_state.window_map.get_row_col_file_position(
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.row,
                 lines_editor_state.cursor.col,
             ) {
@@ -11816,7 +11228,6 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // ========================================================================
 
     let current_file_pos = match lines_editor_state
-        .window_map
         .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(pos)) => pos,
@@ -11894,10 +11305,8 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         this_row, this_col,
     );
     println!(
-        "\nfn goto_line_end lines_editor_state.window_map.get_row_col_file_position -> {:?}",
-        lines_editor_state
-            .window_map
-            .get_row_col_file_position(this_row, this_col)
+        "\nfn goto_line_end lines_editor_state.get_row_col_file_position -> {:?}",
+        lines_editor_state.get_row_col_file_position(this_row, this_col)
     );
     println!(
         "\nfn goto_line_end lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
@@ -11912,10 +11321,8 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         lines_editor_state.cursor.row
     );
     println!(
-        "\nfn goto_line_end window_map.line_byte_start_end_position_pairs -> {:?}",
-        lines_editor_state
-            .window_map
-            .line_byte_start_end_position_pairs,
+        "\nfn goto_line_end windowmap_line_byte_start_end_position_pairs -> {:?}",
+        lines_editor_state.windowmap_line_byte_start_end_position_pairs,
     );
 
     // ========================================================================
@@ -12000,7 +11407,6 @@ fn backspace_style_delete_noload(
 ) -> io::Result<()> {
     // Step 1: Get current file position
     let file_pos = lines_editor_state
-        .window_map
         .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
         .ok_or_else(|| {
             io::Error::new(
@@ -12638,7 +12044,6 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Result<()> {
     // Step 1: Get current line's file position
     let row_col_file_pos = state
-        .window_map
         .get_row_col_file_position(state.cursor.row, state.cursor.col)?
         .ok_or_else(|| LinesError::InvalidInput("Cursor not on valid position".into()))?;
 
@@ -14406,7 +13811,6 @@ fn insert_newline_at_cursor_chunked(
 ) -> io::Result<()> {
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
     let file_pos = match lines_editor_state
-        .window_map
         .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(pos)) => pos,
@@ -14987,31 +14391,29 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Get starting byte position from cursor
     // This is the insertion point for the first chunk
     // Subsequent chunks insert at: start_position + bytes_already_written
-    let start_byte_position = match state
-        .window_map
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)
-    {
-        Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
-        Ok(None) => {
-            let _ = state.set_info_bar_message("invalid cursor position");
-            log_error(
-                "Cannot get byte position from cursor",
-                Some("insert_file_at_cursor"),
-            );
-            return Err(LinesError::Io(io::Error::new(
-                io::ErrorKind::Other,
-                "Invalid cursor position",
-            )));
-        }
-        Err(e) => {
-            let _ = state.set_info_bar_message("cursor position error");
-            log_error(
-                &format!("Error getting cursor position: {}", e),
-                Some("insert_file_at_cursor"),
-            );
-            return Err(LinesError::Io(e));
-        }
-    };
+    let start_byte_position =
+        match state.get_row_col_file_position(state.cursor.row, state.cursor.col) {
+            Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
+            Ok(None) => {
+                let _ = state.set_info_bar_message("invalid cursor position");
+                log_error(
+                    "Cannot get byte position from cursor",
+                    Some("insert_file_at_cursor"),
+                );
+                return Err(LinesError::Io(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Invalid cursor position",
+                )));
+            }
+            Err(e) => {
+                let _ = state.set_info_bar_message("cursor position error");
+                log_error(
+                    &format!("Error getting cursor position: {}", e),
+                    Some("insert_file_at_cursor"),
+                );
+                return Err(LinesError::Io(e));
+            }
+        };
 
     // ============================================
     // Phase 3: Open Source File
@@ -15938,7 +15340,6 @@ pub fn insert_text_chunk_at_cursor_position(
     // ============================================
 
     let file_pos = match lines_editor_state
-        .window_map
         .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(pos)) => pos,
@@ -17939,7 +17340,6 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
     // Step 1: Get current line's file position
     // In case of exception, say 'n/a'
     let file_position_string = match lines_editor_state
-        .window_map
         .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
     {
         Ok(Some(row_col_file_pos)) => row_col_file_pos
@@ -19113,7 +18513,7 @@ fn render_utf8txt_row_with_cursor(
         // PRIORITY 2: Visual selection highlighting
         if state.mode == EditorMode::VisualSelectMode {
             // Get file position - propagate error if lookup fails
-            let file_pos_option = state.window_map.get_row_col_file_position(row_index, col)?;
+            let file_pos_option = state.get_row_col_file_position(row_index, col)?;
 
             if let Some(file_pos) = file_pos_option {
                 // Check if in selection - propagate error if check fails
@@ -19735,7 +19135,7 @@ pub fn full_lines_editor(
             //  ==================
             // Set cursor position to file_position_of_vis_select_end
             // After movement, update END position to new cursor location
-            if let Ok(Some(file_pos)) = lines_editor_state.window_map.get_row_col_file_position(
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.row,
                 lines_editor_state.cursor.col,
             ) {
