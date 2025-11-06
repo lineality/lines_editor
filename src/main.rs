@@ -229,7 +229,6 @@ fn main() -> Result<(), LinesError> {
             eprintln!("{}", err_msg);
             eprintln!();
             eprintln!("Usage: lines [OPTIONS] [FILE[:LINE]]");
-            eprintln!();
             eprintln!("Options:");
             eprintln!("  -h, --help              Print help information");
             eprintln!("  -v, --version           Print version information");
@@ -238,10 +237,12 @@ fn main() -> Result<(), LinesError> {
             eprintln!("  -s, --session PATH      Use existing session directory");
             eprintln!();
             eprintln!("Examples:");
-            eprintln!("  lines notes.txt                           # Edit file");
-            eprintln!("  lines notes.txt:42                        # Edit file, jump to line 42");
-            eprintln!("  lines --session ./sessions/20250103/      # Recover session");
-            eprintln!("  lines notes.txt --session <path>          # Edit with session");
+            eprintln!("  lines                               # Quick-Edit: new Documents/ file");
+            eprintln!("  lines notes.txt                     # Edit / create-&-edit file");
+            eprintln!("  lines notes.txt:42                  # Edit file, jump to line 42");
+            eprintln!("  lines -a notes.txt                  # Quick-Edit: Memo-Append Mode");
+            eprintln!("  lines --session ./sessions/2025../  # Recover session");
+            eprintln!("  lines notes.txt --session <path>    # Edit with session");
             std::process::exit(2);
         }
     };

@@ -35,7 +35,6 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Where possible, as in legacy-mini-lines-editor, do not leave a file 'open' to read/write/append. Read what you need, when you need to, then stop reading the file, close out the read/write process so that the file is not locked or conflicted for another application or process (outside or inside of Lines).
 
 
-
 # Rust rules:
 - Always best practice.
 - Always extensive doc strings: what the code is doing with project context
@@ -51,7 +50,7 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. increment and load only what is required pragmatically. Do not fill 'state' with every possible piece of un-used information. Do not insecurity output information broadly in the case of errors and exceptions.
 
 - Always defensive best practice
-- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
+- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on. This does not mean that no function can return an error. Handling should occur where needed, e.g. before later functions are reached.
 
 Somehow there seems to be no clear vocabulary for 'Do not stop.' When you come to something to handle, handle it:
 - Handle and move on: Do not halt the program.
@@ -83,6 +82,9 @@ Safety, reliability, maintainability, fail-safe, communication-documentation, ar
 4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
 5. Defensive programming: debug-assert, test-assert, prod safely check & handle, not 'assert!' panic
+
+Note: Terminology varies across "error" / "fail" / "exception" / "catch" / "case" et al. The standard terminology is 'error handling' but 'case handling' or 'issue handling' may be a more accurate description, especially where 'error' refers to the output when unable to handle a case (which becomes semantically paradoxical). The goal is not terminating / halting / ending / shutting down / stopping, etc., or crashing / failing / panicking / coredumping / undefined-behavior-ing, etc. the program when an expected case occurs. Here production and debugging/testing starkly diverge: during testing you want to see how (and where in the code) the program may 'fail' and where and when cases are encountered. In production the satellite must not fall out of the sky ever, regardless of how pedantically beautiful the error-message in the ball of flames may have been.
+
 For production-release code:
 1. check and handle without panic/halt in production
 2. return result (such as Result<T, E>) and smoothly handle errors (not halt-panic stopping the application): no assert!() outside of test-only code
@@ -163,7 +165,7 @@ All debug-prints not for production must be tagged with
 #[cfg(debug_assertions)]
 ```
 
-Production output following an error must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
+Production output following an error / exception / case must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
 
 6. Manage ownership and borrowing
 
@@ -184,7 +186,6 @@ Production output following an error must be managed and defined, not not open t
 - a seemingly invisibly small increase in state often completely destroys projects
 - expanding state destroys projects with unmaintainable over-reach
 
-Vigilance: We should help support users and developers and the people who depend upon maintainable software. Maintainable code supports the future for us all.
 
 */
 
@@ -817,7 +818,7 @@ fn main() {
 }
 */
 
-/*
+/* # Sample main.rs
 // src/main.rs
 use std::env;
 use std::path::PathBuf;
@@ -829,9 +830,13 @@ use lines_editor_module::{
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
+mod buttons_reversible_edit_changelog_module;
+mod toggle_comment_indent_module;
+
 // "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
+
 // Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
@@ -845,6 +850,14 @@ const SOURCE_FILES: &[SourcedFile] = &[
         "src/lines_editor_module.rs",
         include_str!("lines_editor_module.rs"),
     ),
+    SourcedFile::new(
+        "src/buttons_reversible_edit_changelog_module.rs",
+        include_str!("buttons_reversible_edit_changelog_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/toggle_comment_indent_module.rs",
+        include_str!("toggle_comment_indent_module.rs"),
+    ),
     // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
     SourcedFile::new("README.md", include_str!("../README.md")),
     SourcedFile::new("LICENSE", include_str!("../LICENSE")),
@@ -855,19 +868,173 @@ const SOURCE_FILES: &[SourcedFile] = &[
 #[cfg(test)]
 mod tests;
 
+/// Parsed command line arguments for the editor
+///
+/// # Purpose
+/// Holds the structured result of parsing command line arguments,
+/// separating concerns of file path, line number, and session recovery.
+///
+/// # Fields
+/// * `file_path` - Optional path to file to edit
+/// * `starting_line` - Optional line number to jump to (from file:123 syntax)
+/// * `session_path` - Optional path to existing session directory for crash recovery
+/// * `mode` - Special mode flags (help, version, source, append)
+#[derive(Debug)]
+struct ParsedArgs {
+    file_path: Option<PathBuf>,
+    starting_line: Option<usize>,
+    session_path: Option<PathBuf>,
+    mode: ArgMode,
+}
+
+/// Special argument modes that don't start the editor
+#[derive(Debug, PartialEq)]
+enum ArgMode {
+    Normal,     // Start editor normally
+    Help,       // Print help and exit
+    Version,    // Print version and exit
+    Source,     // Extract source and exit
+    AppendMode, // Memo mode (append-only)
+}
+
+/// Parses command line arguments into structured format
+///
+/// # Purpose
+/// Processes raw command line arguments and extracts:
+/// - File path with optional :line_number suffix
+/// - --session flag with path argument
+/// - -a/--append flag for memo mode
+/// - Special flags (--help, --version, --source)
+///
+/// # Argument Patterns Supported
+/// ```text
+/// lines
+/// lines file.txt
+/// lines file.txt:123
+/// lines --session <path>
+/// lines --session <path> file.txt
+/// lines file.txt --session <path>
+/// lines file.txt:123 --session <path>
+/// lines -a file.txt
+/// lines --help
+/// ```
+///
+/// # Arguments
+/// * `args` - Raw command line arguments (including program name at index 0)
+///
+/// # Returns
+/// * `Ok(ParsedArgs)` - Successfully parsed arguments
+/// * `Err(String)` - Parse error with user-friendly message
+///
+/// # Error Cases
+/// - `--session` flag without path argument
+/// - Unknown flags
+/// - Too many non-flag arguments
+fn parse_arguments(args: &[String]) -> Result<ParsedArgs, String> {
+    let mut file_path: Option<PathBuf> = None;
+    let mut starting_line: Option<usize> = None;
+    let mut session_path: Option<PathBuf> = None;
+    let mut mode = ArgMode::Normal;
+
+    // Skip program name (args[0])
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+
+        // Check for flags
+        match arg.as_str() {
+            // Special mode flags
+            "--help" | "-h" => {
+                mode = ArgMode::Help;
+                i += 1;
+            }
+            "--version" | "-v" | "-V" => {
+                mode = ArgMode::Version;
+                i += 1;
+            }
+            "--source" | "--source_it" => {
+                mode = ArgMode::Source;
+                i += 1;
+            }
+            "-a" | "--append" => {
+                mode = ArgMode::AppendMode;
+                i += 1;
+            }
+            // Session flag with path argument
+            "--session" | "-s" => {
+                // Next argument should be the session path
+                if i + 1 >= args.len() {
+                    return Err("Error: --session flag requires a path argument".to_string());
+                }
+                i += 1;
+                session_path = Some(PathBuf::from(&args[i]));
+                i += 1;
+            }
+            // Unknown flag
+            arg_str if arg_str.starts_with("--") || arg_str.starts_with('-') => {
+                return Err(format!("Error: Unknown flag '{}'", arg_str));
+            }
+            // Non-flag argument (file path)
+            _ => {
+                if file_path.is_some() {
+                    return Err("Error: Multiple file paths specified".to_string());
+                }
+
+                // Parse "filename:line" format
+                let (file_path_str, line_num) = if let Some(colon_pos) = arg.rfind(':') {
+                    let file_part = &arg[..colon_pos];
+                    let line_part = &arg[colon_pos + 1..];
+
+                    match line_part.parse::<usize>() {
+                        Ok(line) if line > 0 => (file_part.to_string(), Some(line)),
+                        _ => (arg.to_string(), None), // Invalid line, treat as filename
+                    }
+                } else {
+                    (arg.to_string(), None)
+                };
+
+                file_path = Some(PathBuf::from(file_path_str));
+                starting_line = line_num;
+                i += 1;
+            }
+        }
+    }
+
+    Ok(ParsedArgs {
+        file_path,
+        starting_line,
+        session_path,
+        mode,
+    })
+}
+
 /// Main entry point - routes between memo mode and full editor mode
 ///
 /// # Purpose
 /// Determines which mode to use based on current directory and arguments.
 ///
 /// # Command Line Usage
-/// - `lines` - Memo mode (if in home) or error (if elsewhere)
-/// - `lines file.txt` - Full editor mode with file
-/// - `lines /path/to/dir/` - Full editor mode, prompts for filename
+/// ```text
+/// lines                                    # Memo mode (if in home) or prompt
+/// lines file.txt                          # Full editor with file
+/// lines file.txt:123                      # Full editor, jump to line 123
+/// lines --session ./sessions/20250103/    # Full editor with session recovery
+/// lines file.txt --session <path>         # Full editor with file and session
+/// lines -a file.txt                       # Memo mode (append-only)
+/// lines --help                            # Print help
+/// lines --version                         # Print version
+/// lines --source                          # Extract source code
+/// ```
 ///
 /// # Mode Selection Logic
 /// 1. If CWD is home directory -> memo mode available
 /// 2. Otherwise -> full editor mode (requires file argument)
+///
+/// # Session Recovery
+/// Use `--session <path>` to continue an interrupted editing session.
+/// The path can be relative or absolute:
+/// - Relative: `lines --session sessions/20250103_143022 file.txt`
+/// - Absolute: `lines --session /full/path/to/sessions/20250103_143022 file.txt`
 ///
 /// # Exit Codes
 /// - 0: Success
@@ -875,23 +1042,74 @@ mod tests;
 /// - 2: Invalid arguments
 fn main() -> Result<(), LinesError> {
     let args: Vec<String> = std::env::args().collect();
+
+    // Parse command line arguments
+    let parsed = match parse_arguments(&args) {
+        Ok(parsed) => parsed,
+        Err(err_msg) => {
+            eprintln!("{}", err_msg);
+            eprintln!();
+            eprintln!("Usage: lines [OPTIONS] [FILE[:LINE]]");
+            eprintln!("Options:");
+            eprintln!("  -h, --help              Print help information");
+            eprintln!("  -v, --version           Print version information");
+            eprintln!("  --source                Extract source code");
+            eprintln!("  -a, --append FILE       Memo mode (append-only)");
+            eprintln!("  -s, --session PATH      Use existing session directory");
+            eprintln!();
+            eprintln!("Examples:");
+            eprintln!("  lines                               # Quick-Edit: new Documents/ file");
+            eprintln!("  lines notes.txt                     # Edit / create-&-edit file");
+            eprintln!("  lines notes.txt:42                  # Edit file, jump to line 42");
+            eprintln!("  lines -a notes.txt                  # Quick-Edit: Memo-Append Mode");
+            eprintln!("  lines --session ./sessions/2025../  # Recover session");
+            eprintln!("  lines notes.txt --session <path>    # Edit with session");
+            std::process::exit(2);
+        }
+    };
+
     // Check if we're in home directory
     let in_home = is_in_home_directory()?;
 
-    // // Diagnostics
-    // println!("=== Lines Text Editor ===");
-    // println!("Current directory: {}", env::current_dir()?.display());
-    // if in_home {
-    //     println!("Mode: Memo mode available (in home directory)");
-    // } else {
-    //     println!("Mode: Full editor (not in home directory)");
-    // }
-    // println!();
+    // Handle special modes that don't start the editor
+    match parsed.mode {
+        ArgMode::Help => {
+            print_help();
+            return Ok(());
+        }
+        ArgMode::Version => {
+            println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        ArgMode::Source => {
+            match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
+                Ok(path) => println!("Source extracted to: {}", path.display()),
+                Err(e) => eprintln!("Failed to extract source: {}", e),
+            }
+            return Ok(());
+        }
+        ArgMode::AppendMode => {
+            // Memo mode (append-only) - requires file path
+            if let Some(file_path) = parsed.file_path {
+                println!(
+                    "Starting memo mode (append-only) with file: {}",
+                    file_path.display()
+                );
+                return memo_mode_mini_editor_loop(&file_path);
+            } else {
+                eprintln!("Error: --append flag requires a file path");
+                std::process::exit(2);
+            }
+        }
+        ArgMode::Normal => {
+            // Continue to normal editor mode logic below
+        }
+    }
 
-    // Parse command line arguments
-    match args.len() {
-        1 => {
-            // No arguments provided
+    // Normal editor mode - determine whether to use memo mode or full editor
+    match parsed.file_path {
+        None => {
+            // No file specified
             if in_home {
                 // Memo mode: create today's file
                 println!("Starting memo mode...");
@@ -903,92 +1121,33 @@ fn main() -> Result<(), LinesError> {
                 let filename = prompt_for_filename()?;
                 let current_dir = env::current_dir()?;
                 let original_file_path = current_dir.join(filename);
-                full_lines_editor(Some(original_file_path), None)
+
+                // Call full editor with session path if provided
+                full_lines_editor(Some(original_file_path), None, parsed.session_path)
             }
         }
-        2 => {
-            // One argument provided
-            let arg = &args[1];
+        Some(file_path) => {
+            // File path provided
+            let file_path_str = file_path.to_string_lossy();
 
-            // Check for special commands
-            match arg.as_str() {
-                "--help" | "-h" => {
-                    print_help();
-                    Ok(())
-                }
-                "--version" | "-v" | "-V" => {
-                    println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
-                    Ok(())
-                }
-                "--source" | "--source_it" => {
-                    match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
-                        Ok(path) => println!("Source extracted to: {}", path.display()),
-                        Err(e) => eprintln!("Failed to extract source: {}", e),
-                    }
-                    Ok(())
-                }
-                _ => {
-                    // Parse "filename:line" format
-                    let (file_path_str, starting_line) = if let Some(colon_pos) = arg.rfind(':') {
-                        let file_part = &arg[..colon_pos];
-                        let line_part = &arg[colon_pos + 1..];
-
-                        match line_part.parse::<usize>() {
-                            Ok(line_num) if line_num > 0 => (file_part.to_string(), Some(line_num)),
-                            _ => (arg.to_string(), None), // Invalid line, treat whole thing as filename
-                        }
-                    } else {
-                        (arg.to_string(), None)
-                    };
-
-                    // Treat as file/directory path
-                    if in_home && !file_path_str.contains('/') && !file_path_str.contains('\\') {
-                        println!("Starting memo mode with custom file: {}", file_path_str);
-                        let original_file_path = get_default_filepath(Some(&file_path_str))?;
-                        memo_mode_mini_editor_loop(&original_file_path)
-                    } else {
-                        let path = PathBuf::from(file_path_str);
-                        full_lines_editor(Some(path), starting_line) // Pass starting_line
-                    }
-                }
+            // Check if this is a simple filename in home directory (memo mode)
+            if in_home
+                && !file_path_str.contains('/')
+                && !file_path_str.contains('\\')
+                && parsed.session_path.is_none()
+            // Only memo mode if no session specified
+            {
+                println!("Starting memo mode with custom file: {}", file_path_str);
+                let original_file_path = get_default_filepath(Some(&file_path_str))?;
+                memo_mode_mini_editor_loop(&original_file_path)
+            } else {
+                // Full editor mode with file
+                full_lines_editor(Some(file_path), parsed.starting_line, parsed.session_path)
             }
-        }
-        3 => {
-            // Two arguments provided
-            let flag = &args[1];
-            let filepath_arg = &args[2];
-
-            // Check if first arg is append flag
-            match flag.as_str() {
-                "-a" | "--append" => {
-                    // Memo mode (append-only) with specified file path
-                    let file_path = PathBuf::from(filepath_arg);
-                    println!(
-                        "Starting memo mode (append-only) with file: {}",
-                        file_path.display()
-                    );
-                    memo_mode_mini_editor_loop(&file_path)
-                }
-                _ => {
-                    // Unknown flag combination
-                    eprintln!("Error: Invalid arguments");
-                    eprintln!("Usage: lines [filename | -a <filepath> | --help]");
-                    eprintln!("Examples:");
-                    eprintln!("  lines notes.txt          # Full editor mode");
-                    eprintln!("  lines -a notes.txt       # Append-only mode");
-                    eprintln!("  lines --append /tmp/log  # Append-only mode");
-                    std::process::exit(2);
-                }
-            }
-        }
-        _ => {
-            // Multiple arguments - currently not supported
-            eprintln!("Error: It's The Too many arguments!");
-            eprintln!("Try Usage: lines [filename | -a <filepath> | --help]");
-            std::process::exit(2);
         }
     }
 }
+
 */
 
 /*
@@ -17544,7 +17703,7 @@ pub fn create_a_readcopy_of_file(
 /// Displays usage information and available commands.
 /// Called when user runs `lines --help`.
 pub fn print_help() {
-    println!("About Lines Editor:");
+    println!("About Lines Editor: (note: ctrl+s can block terminal, ctrl+z unblocks)");
     println!("USAGE:");
     println!("    lines [FILE]");
     println!("    lines FILE:LINE          # Open at : specific line");
