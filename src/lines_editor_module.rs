@@ -5219,6 +5219,9 @@ impl EditorState {
         // Default: keep editor loop running
         let mut keep_editor_loop_running: bool = true;
 
+        // Clear
+        let _ = self.set_info_bar_message("");
+
         let read_copy_path = match &self.read_copy_path {
             Some(path) => path,
             None => {
@@ -5408,7 +5411,7 @@ impl EditorState {
                 );
 
                 if result.is_ok() {
-                    let _ = self.set_info_bar_message("Removed byte: No Undo");
+                    let _ = self.set_info_bar_message("Removed:No Undo");
                 }
 
                 if !result.is_ok() {
@@ -5468,7 +5471,7 @@ impl EditorState {
                 );
 
                 if result.is_ok() {
-                    let _ = self.set_info_bar_message("Inserted byte: No Undo");
+                    let _ = self.set_info_bar_message("Added:No Undo");
                 }
                 if !result.is_ok() {
                     let _ = self.set_info_bar_message("Failed to Insert byte");
@@ -18926,9 +18929,9 @@ pub fn byte_to_display_char(byte: u8) -> char {
 /// - Total file size in bytes
 /// - Filename (basename only, not full path)
 /// - Command input indicator
-fn format_hex_info_bar(state: &EditorState) -> Result<String> {
+fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
     // Get file size
-    let file_size = match &state.read_copy_path {
+    let file_size = match &lines_editor_state.read_copy_path {
         Some(path) => match fs::metadata(path) {
             Ok(metadata) => metadata.len() as usize,
             Err(_) => 0,
@@ -18937,25 +18940,40 @@ fn format_hex_info_bar(state: &EditorState) -> Result<String> {
     };
 
     // Get filename (or "unnamed" if none)
-    let filename = state
+    let filename = lines_editor_state
         .original_file_path
         .as_ref()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("unmanned phile");
 
+    // Extract message from buffer (find null terminator or use full buffer)
+    let message_len = lines_editor_state
+        .info_bar_message_buffer
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(lines_editor_state.info_bar_message_buffer.len());
+
+    let message_for_infobar =
+        std::str::from_utf8(&lines_editor_state.info_bar_message_buffer[..message_len])
+            .unwrap_or(""); // Empty string if invalid UTF-8
+
     // Build info bar
     // Show byte position as 1-indexed for human readability
     let info_bar = format!(
-        "{}HEX byte {}{}{} of {}{}{} {} (Edit:Enter Hex, Insert: NN-i, GoTo:gN) {}> ",
+        "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN {} {}> ",
         YELLOW,
         RED,
-        state.hex_cursor.byte_offset_linear_file_absolute_position + 1, // Human-friendly: 1-indexed
+        lines_editor_state
+            .hex_cursor
+            .byte_offset_linear_file_absolute_position
+            + 1, // Human-friendly: 1-indexed
         YELLOW,
         RED,
         file_size,
         YELLOW,
         filename,
+        message_for_infobar,
         RESET,
     );
 
