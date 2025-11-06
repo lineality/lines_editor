@@ -1180,11 +1180,11 @@ use super::toggle_comment_indent_module::{
 };
 
 use super::buttons_reversible_edit_changelog_module::{
-    ButtonError, EditType, button_hexeditinplace_byte_make_log_file,
+    ButtonError, EditType, add_single_byte_to_file, button_hexeditinplace_byte_make_log_file,
     button_make_changeloge_from_user_character_action_level, button_safe_clear_all_redo_logs,
     button_undo_redo_next_inverse_changelog_pop_lifo, detect_utf8_byte_count,
     get_redo_changelog_directory_path, get_undo_changelog_directory_path,
-    read_character_bytes_from_file, read_single_byte_from_file,
+    read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
 };
 
 /// state.rs - Core editor state management with pre-allocated buffers
@@ -5219,6 +5219,19 @@ impl EditorState {
         // Default: keep editor loop running
         let mut keep_editor_loop_running: bool = true;
 
+        let read_copy_path = match &self.read_copy_path {
+            Some(path) => path,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "is_next_byte_newline: no read-copy file path available (returning false - not at newline)"
+                );
+
+                // Not an error - just means we cannot analyze the file
+                return Ok(false);
+            }
+        };
+
         /*
         // === HEX DIGIT INPUT (0-9, A-F) ===
                 input if input.len() == 1 && input.chars().next().unwrap().is_ascii_hexdigit() => {
@@ -5282,24 +5295,6 @@ impl EditorState {
                 let low = parse_hex_digit(bytes[1])?;
                 let byte_value = (high << 4) | low;
 
-                /* old */
-                // let file_path = self
-                //     .read_copy_path
-                //     .as_ref()
-                //     .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No file path"))?;
-
-                // if self.hex_cursor.byte_offset_linear_file_absolute_position >= file_size {
-                //     let _ = self.set_info_bar_message("Cannot edit past EOF");
-                //     return Ok(true);
-                // }
-
-                // replace_byte_in_place(file_path, self.hex_cursor.byte_offset_linear_file_absolute_position, byte_value)?;
-
-                // self.is_modified = true;
-                // if self.hex_cursor.byte_offset_linear_file_absolute_position + 1 < file_size {
-                //     self.hex_cursor.byte_offset_linear_file_absolute_position += 1;
-                // }
-
                 // ============================================================
                 // Call new method: Write byte + Create undo log
                 // ============================================================
@@ -5339,18 +5334,115 @@ impl EditorState {
 
                 let _ = self.set_info_bar_message("Byte written");
             }
+            // === Safety ADD Remove HEX Byte (not edit in place) ===
+            // === HEX BYTE REPLACEMENT: Two hex digits ===
+            "d" => {
+                let mut redo_clear_success = false;
 
-            // "" => {
-            //     // Empty enter: repeat last command
-            //     match self.the_last_command.clone() {
-            //         Some(cmd) => {
-            //             keep_editor_loop_running = execute_command(self, cmd)?;
-            //         }
-            //         None => {
-            //             self.set_info_bar_message("No previous command");
-            //         }
-            //     }
-            // }
+                for attempt in 0..3 {
+                    match button_safe_clear_all_redo_logs(&read_copy_path) {
+                        Ok(_) => {
+                            redo_clear_success = true;
+                            break;
+                        }
+                        Err(_) => {
+                            if attempt < 2 {
+                                thread::sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+
+                if !redo_clear_success {
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("write_n_log_hex_edit_in_place:step3"),
+                    );
+                }
+                /*
+                "REMOVE" | "DELETE" => {
+
+                    pub fn remove_single_byte_from_file(
+                        original_file_path: PathBuf,
+                        byte_position_from_start: usize,
+                    ) -> io::Result<()> {
+                }
+                 */
+
+                // message is successful
+                let result = remove_single_byte_from_file(
+                    read_copy_path.clone(), // convert to pathbuf from &pathbuff
+                    self.hex_cursor.byte_offset_linear_file_absolute_position,
+                );
+
+                if result.is_ok() {
+                    let _ = self.set_info_bar_message("Removed byte: No Undo");
+                }
+
+                if !result.is_ok() {
+                    let _ = self.set_info_bar_message("Failed to Remove byte");
+                }
+            }
+
+            trimmed
+                if trimmed.len() == 4
+                    && trimmed.as_bytes()[0].is_ascii_hexdigit()
+                    && trimmed.as_bytes()[1].is_ascii_hexdigit()
+                    && trimmed.as_bytes()[2] == b'-'
+                    && trimmed.as_bytes()[3] == b'i' =>
+            {
+                // Get "byte_value" from raw input
+                let bytes = trimmed.as_bytes();
+                let high = parse_hex_digit(bytes[0])?;
+                let low = parse_hex_digit(bytes[1])?;
+                let byte_value = (high << 4) | low;
+
+                let mut redo_clear_success = false;
+
+                for attempt in 0..3 {
+                    match button_safe_clear_all_redo_logs(&read_copy_path) {
+                        Ok(_) => {
+                            redo_clear_success = true;
+                            break;
+                        }
+                        Err(_) => {
+                            if attempt < 2 {
+                                thread::sleep(Duration::from_millis(100));
+                            }
+                        }
+                    }
+                }
+
+                if !redo_clear_success {
+                    log_error(
+                        &format!("Cannot clear redo logs"),
+                        Some("write_n_log_hex_edit_in_place:step3"),
+                    );
+                }
+                /*
+                "ADD" | "INSERR" byte => {
+
+                pub fn add_single_byte_to_file(
+                    original_file_path: PathBuf,
+                    byte_position_from_start: usize,
+                    new_byte_value: u8,
+                ) -> io::Result<()> {
+                }
+                 */
+                let result = add_single_byte_to_file(
+                    read_copy_path.clone(), // convert to pathbuf from &pathbuff
+                    self.hex_cursor.byte_offset_linear_file_absolute_position,
+                    byte_value,
+                );
+
+                if result.is_ok() {
+                    let _ = self.set_info_bar_message("Inserted byte: No Undo");
+                }
+                if !result.is_ok() {
+                    let _ = self.set_info_bar_message("Failed to Insert byte");
+                }
+            }
+
             // === MODE SWITCHING ===
             "n" | "\x1b" => {
                 // Exit to normal mode
@@ -18823,7 +18915,7 @@ fn format_hex_info_bar(state: &EditorState) -> Result<String> {
     // Build info bar
     // Show byte position as 1-indexed for human readability
     let info_bar = format!(
-        "{}HEX byte {}{}{} of {}{}{} {} (Enter Hex to Edit Cursor) {}> ",
+        "{}HEX byte {}{}{} of {}{}{} {} (Enter Hex to Edit In-Place, NN-i to insert) {}> ",
         YELLOW,
         RED,
         state.hex_cursor.byte_offset_linear_file_absolute_position + 1, // Human-friendly: 1-indexed
