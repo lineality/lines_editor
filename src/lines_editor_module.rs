@@ -5274,12 +5274,39 @@ impl EditorState {
             }
 
             "ge" | "G" => {
-                // TODO? ge is hexlic, what is G?
                 // Go to end of file
                 if file_size > 0 {
                     self.hex_cursor.byte_offset_linear_file_absolute_position = file_size - 1;
                     let _ = self.set_info_bar_message("End of file");
                 }
+            }
+
+            // === Add / REMOVE Q&A ===
+            /*
+            Q&A
+            Caution! Be Careful!
+            Are you sure you want to {add/remove} a byte?
+            To Proceed Enter: {ADD/REMOVE}
+            for add:
+            Enter byte value to add.
+
+            */
+            "ADD" => {
+                /*
+                pub fn add_single_byte_to_file(
+                    original_file_path: PathBuf,
+                    byte_position_from_start: usize,
+                    new_byte_value: u8,
+                ) -> io::Result<()> {
+                */
+            }
+
+            "REMOVE" | "DELETE" => {
+
+                /*pub fn remove_single_byte_from_file(
+                    original_file_path: PathBuf,
+                    byte_position_from_start: usize,
+                ) -> io::Result<()> {*/
             }
 
             // === UNKNOWN COMMAND ===
@@ -10661,8 +10688,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 lines_editor_state.cursor.row,
                 lines_editor_state.effective_rows,
             );
-            lines_editor_state.cursor.col = line_num_width + 1;
-            lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width + 1;
+            lines_editor_state.cursor.col = line_num_width;
+            lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
             // rebuild
