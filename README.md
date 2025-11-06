@@ -3,7 +3,7 @@
 Lines is a minimal text editor.
 
 ```
-quit save undo del|norm ins vis hex raw|cvy pasty|wrd,b,end ///cmmnt []rpt hjkl
+quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl
 1 # lines_editor
 2
 3 Lines is a minimal text editor.
@@ -15,16 +15,16 @@ quit save undo del|norm ins vis hex raw|cvy pasty|wrd,b,end ///cmmnt []rpt hjkl
 9
 10
 11
-12 
-13 
-14 
-15 
-16 
-17 
+12
+13
+14
+15
+16
+17
 18
 19
 21
-NORMAL 1:3 README.md >
+NORMAL 1:1 shorty.txt @0  > ⎕
 ```
 
 
@@ -78,14 +78,13 @@ In 2025 these are all common, yet there is no good way to deal with these.
 - empty-enter repeat last action
 - N-moves
 - end of line, end of file, insertions.
-
+- save-as
+- Undo (optional, with constrained history buffers)
+- Redo
 
 ## Future/Probably Scope:
 - Multi-cursor/ctrl+d functionality
-- save-as
 - Character encoding awareness
-- extended delete (line array slice)
-- Undo (optional, with constrained history buffers)
 - Encoding conversion (write in different encodings)
 - Search,
 - fuzzy search,
@@ -93,26 +92,26 @@ In 2025 these are all common, yet there is no good way to deal with these.
 - some Extended goto commands
 - Configuration files
 - build .rs for --version
-- super-mini directory file manager, for if "lines ." open in dir (list file/dir by number, if select file open in lines, if select dir show fiies, option 1 is back, option)
 - extract line
 - extract header
 - Select:
 --1. ctrl+d superpower
 --2. search for selection
 --3. maybe crawl-count selection in file (though not all shown...)
-
-## Out of Scope:
-- Redo functionality
 - Find/replace
 - Syntax highlighting
-- Multiple file tabs/buffers
-- Clipboard integration beyond terminal
+- File-Fantastic Integration
+
+## ?
+- super-mini directory file manager, for if "lines ." open in dir (list file/dir by number, if select file open in lines, if select dir show fiies, option 1 is back, option)
+
+## Out of Scope:
 - Mouse support
 - Advanced goto features (e.g. Helix has a massive goto suite menu)
 - Themes/colors beyond basic highlighting
 - Line wrapping toggle
 - relative lines
---1. delete a selection
+
 
 
 # Questions:
@@ -140,4 +139,6 @@ Here are some of the questions and thought behind, below, and around, the Lines-
 
 
 # Results:
-- Time to write a working MVP of Vi(Vim) in Rust: 1 week
+- Time to write a working MVP of Vi(Vim) in Rust, greenfield: 1 week
+
+- Time to build MVP-2, adding: hex editor (classic, in-place edit), raw string (showing escaped characters), select including: cursor, w(word forward) e(end of word forward), b(begining of word backwards), toggle standard comment (line or selected lines), toggle rust docstring (line or selected lines), indent/unident (line or selected lines), undo, redo, hex-add byte, hex-remove byte, hex-goto-byte, standardized number column indent (v1), clipboard, cut and paste, paste file from path, boot from(into) existing session(allowing for multiple windows and file-manager file select toggle), byte position display, continuation of cursor from line to line including select, boundaries to keep cursor in text-bounds, no-crash exception handling, save-as (which, strangely, was one of the least-simple to add), Goto (start of line end of line specific line, :boot to line, end of doc, start of doc, specific byte), sync hex-edit cursor and normal edit cursor locations, source-it (command to recreate source-code files ('crate')), delete selection, etc.: 3 weeks
