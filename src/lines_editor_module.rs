@@ -1181,7 +1181,7 @@ use super::toggle_comment_indent_module::{
 
 use super::buttons_reversible_edit_changelog_module::{
     ButtonError, EditType, add_single_byte_to_file, button_hexeditinplace_byte_make_log_file,
-    button_make_changeloge_from_user_character_action_level, button_safe_clear_all_redo_logs,
+    button_make_changelog_from_user_character_action_level, button_safe_clear_all_redo_logs,
     button_undo_redo_next_inverse_changelog_pop_lifo, detect_utf8_byte_count,
     get_redo_changelog_directory_path, get_undo_changelog_directory_path,
     read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
@@ -4758,7 +4758,7 @@ impl EditorState {
         // ============================================================
         // Clone the path to avoid borrow checker issues later
         // when we need to mutably borrow self for set_info_bar_message
-        let file_path = self
+        let readcopy_file_path_clone = self
             .read_copy_path
             .clone() // ← FIXED: Clone instead of borrowing
             .ok_or_else(|| LinesError::StateError("No file open".into()))?;
@@ -4793,7 +4793,7 @@ impl EditorState {
         let mut last_read_error: Option<String> = None;
 
         for attempt in 0..3 {
-            match read_single_byte_from_file(&file_path, position_u128) {
+            match read_single_byte_from_file(&readcopy_file_path_clone, position_u128) {
                 Ok(byte_val) => {
                     original_byte = Some(byte_val);
                     break;
@@ -4833,7 +4833,7 @@ impl EditorState {
         let mut last_write_error: Option<String> = None;
 
         for attempt in 0..3 {
-            match replace_byte_in_place(&file_path, byte_position, new_byte_value) {
+            match replace_byte_in_place(&readcopy_file_path_clone, byte_position, new_byte_value) {
                 Ok(_) => {
                     write_success = true;
                     break;
@@ -4869,7 +4869,7 @@ impl EditorState {
         let mut redo_clear_success = false;
 
         for attempt in 0..3 {
-            match button_safe_clear_all_redo_logs(&file_path) {
+            match button_safe_clear_all_redo_logs(&readcopy_file_path_clone) {
                 Ok(_) => {
                     redo_clear_success = true;
                     break;
@@ -4893,7 +4893,8 @@ impl EditorState {
         // ============================================================
         // STEP 4: Create Undo Log Entry (3 retries, 100ms pause)
         // ============================================================
-        let log_directory_path = match get_undo_changelog_directory_path(&file_path) {
+        let log_directory_path = match get_undo_changelog_directory_path(&readcopy_file_path_clone)
+        {
             Ok(path) => path,
             Err(e) => {
                 log_error(
@@ -4909,7 +4910,7 @@ impl EditorState {
 
         for attempt in 0..3 {
             match button_hexeditinplace_byte_make_log_file(
-                &file_path,
+                &readcopy_file_path_clone,
                 position_u128,
                 original_byte,
                 &log_directory_path,
@@ -5164,29 +5165,12 @@ impl EditorState {
 
             // === ADD Remove HEX Byte (not edit in place) ===
             // === HEX BYTE REPLACEMENT: Two hex digits ===
+            // Next two operation-sections: delete byte, then add byte
+
+            // ========================
+            // REMOVE Byte, DELETE Byte
+            // ========================
             "d" => {
-                let mut redo_clear_success = false;
-
-                for attempt in 0..3 {
-                    match button_safe_clear_all_redo_logs(&read_copy_path) {
-                        Ok(_) => {
-                            redo_clear_success = true;
-                            break;
-                        }
-                        Err(_) => {
-                            if attempt < 2 {
-                                thread::sleep(Duration::from_millis(100));
-                            }
-                        }
-                    }
-                }
-
-                if !redo_clear_success {
-                    log_error(
-                        &format!("Cannot clear redo logs"),
-                        Some("write_n_log_hex_edit_in_place:step3"),
-                    );
-                }
                 /*
                 "REMOVE" | "DELETE" => {
 
@@ -5197,14 +5181,139 @@ impl EditorState {
                 }
                  */
 
+                // Convert u64 position to u128 for API compatibility
+                let position_u128 =
+                    self.hex_cursor.byte_offset_linear_file_absolute_position as u128;
+
+                // Read BEFORE removing (to restore)
+                let byte_at_position = read_single_byte_from_file(read_copy_path, position_u128)?;
+
                 // message is successful
                 let result = remove_single_byte_from_file(
                     read_copy_path.clone(), // convert to pathbuf from &pathbuff
                     self.hex_cursor.byte_offset_linear_file_absolute_position,
                 );
 
+                let readcopy_pathclone = read_copy_path.clone();
+
                 if result.is_ok() {
-                    let _ = self.set_info_bar_message("Removed:No Undo");
+                    let _ = self.set_info_bar_message("Removed Byte");
+
+                    // ==================
+                    // Clear Redo Stack
+                    // before trying edit
+                    // ==================
+                    let mut redo_clear_success = false;
+                    for attempt in 0..3 {
+                        match button_safe_clear_all_redo_logs(&readcopy_pathclone) {
+                            Ok(_) => {
+                                redo_clear_success = true;
+                                break;
+                            }
+                            Err(_) => {
+                                if attempt < 2 {
+                                    thread::sleep(Duration::from_millis(100));
+                                }
+                            }
+                        }
+                    }
+                    if !redo_clear_success {
+                        log_error(
+                            &format!("Cannot clear redo logs"),
+                            Some("write_n_log_hex_edit_in_place:step3"),
+                        );
+                    }
+
+                    // ============================================
+                    // Create Inverse Changelog Entry
+                    // ============================================
+                    // Create undo log for newline insertion
+                    // Single character, no iteration needed
+                    //
+                    // User action: Rmv → Inverse log:  Add
+                    // This is non-critical - if it fails, insertion still succeeded
+
+                    let log_directory_path =
+                        match get_undo_changelog_directory_path(&readcopy_pathclone) {
+                            Ok(path) => Some(path), // ← Wrap in Some to match the None below
+                            Err(_e) => {
+                                // Non-critical: Log error but don't fail the insertion
+                                #[cfg(debug_assertions)]
+                                log_error(
+                                    &format!("Cannot get changelog directory: {}", _e),
+                                    Some("insert_newline_at_cursor_chunked:changelog"),
+                                );
+
+                                #[cfg(not(debug_assertions))]
+                                log_error(
+                                    "Cannot get changelog directory",
+                                    Some("insert_newline_at_cursor_chunked:changelog"),
+                                );
+
+                                // Continue without undo support - insertion succeeded
+                                None
+                            }
+                        };
+
+                    // Create log entry if directory path was obtained
+                    if let Some(log_dir) = log_directory_path {
+                        // Retry logic: 3 attempts with 50ms pause
+                        let mut log_success = false;
+
+                        for retry_attempt in 0..3 {
+                            /*
+                            pub fn button_make_changelog_from_user_character_action_level(
+                                target_file: &Path,
+                                character: Option<char>,
+                                byte_value: Option<u8>, // raw byte input
+                                position: u128,
+                                edit_type: EditType,
+                                log_directory_path: &Path,
+                            ) -> ButtonResult<()> {
+                            */
+
+                            match button_make_changelog_from_user_character_action_level(
+                                &readcopy_pathclone,
+                                None,                   // No Character being added
+                                Some(byte_at_position), // raw byte (option)
+                                position_u128,
+                                EditType::RmvByte, // User removed byte, inverse is add byte
+                                &log_dir,
+                            ) {
+                                Ok(_) => {
+                                    log_success = true;
+                                    break; // Success
+                                }
+                                Err(_e) => {
+                                    if retry_attempt == 2 {
+                                        // Final retry failed - log but don't fail operation
+                                        #[cfg(debug_assertions)]
+                                        log_error(
+                                            &format!(
+                                                "Failed to log newline at position {}: {}",
+                                                position_u128, _e
+                                            ),
+                                            Some("insert_newline_at_cursor_chunked:changelog"),
+                                        );
+
+                                        #[cfg(not(debug_assertions))]
+                                        log_error(
+                                            "Failed to log newline",
+                                            Some("insert_newline_at_cursor_chunked:changelog"),
+                                        );
+                                    } else {
+                                        // Retry after brief pause
+                                        std::thread::sleep(std::time::Duration::from_millis(50));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Optional: Set info bar if logging failed (non-intrusive)
+                        if !log_success {
+                            let _ = self.set_info_bar_message("undo disabled");
+                        }
+                    }
                 }
 
                 if !result.is_ok() {
@@ -5212,6 +5321,9 @@ impl EditorState {
                 }
             }
 
+            // ========
+            // Add Byte
+            // ========
             trimmed
                 if trimmed.len() == 4
                     && trimmed.as_bytes()[0].is_ascii_hexdigit()
@@ -5263,9 +5375,135 @@ impl EditorState {
                     byte_value,
                 );
 
+                // Convert u64 position to u128 for API compatibility
+                let position_u128 =
+                    self.hex_cursor.byte_offset_linear_file_absolute_position as u128;
+
+                // Read AFTER adding (to remove it later for UNDO)
+                let byte_at_position = read_single_byte_from_file(read_copy_path, position_u128)?;
+
+                let readcopy_pathclone = read_copy_path.clone();
+
                 if result.is_ok() {
-                    let _ = self.set_info_bar_message("Added:No Undo");
+                    let _ = self.set_info_bar_message("Added Byte");
+
+                    // ==================
+                    // Clear Redo Stack
+                    // before trying edit
+                    // ==================
+                    let mut redo_clear_success = false;
+                    for attempt in 0..3 {
+                        match button_safe_clear_all_redo_logs(&readcopy_pathclone) {
+                            Ok(_) => {
+                                redo_clear_success = true;
+                                break;
+                            }
+                            Err(_) => {
+                                if attempt < 2 {
+                                    thread::sleep(Duration::from_millis(100));
+                                }
+                            }
+                        }
+                    }
+                    if !redo_clear_success {
+                        log_error(
+                            &format!("Cannot clear redo logs"),
+                            Some("write_n_log_hex_edit_in_place:step3"),
+                        );
+                    }
+
+                    // ============================================
+                    // Create Inverse Changelog Entry
+                    // ============================================
+                    // Create undo log for newline insertion
+                    // Single character, no iteration needed
+                    //
+                    // User action: Rmv → Inverse log:  Add
+                    // This is non-critical - if it fails, insertion still succeeded
+
+                    let log_directory_path =
+                        match get_undo_changelog_directory_path(&readcopy_pathclone) {
+                            Ok(path) => Some(path), // ← Wrap in Some to match the None below
+                            Err(_e) => {
+                                // Non-critical: Log error but don't fail the insertion
+                                #[cfg(debug_assertions)]
+                                log_error(
+                                    &format!("Cannot get changelog directory: {}", _e),
+                                    Some("insert_newline_at_cursor_chunked:changelog"),
+                                );
+
+                                #[cfg(not(debug_assertions))]
+                                log_error(
+                                    "Cannot get changelog directory",
+                                    Some("insert_newline_at_cursor_chunked:changelog"),
+                                );
+
+                                // Continue without undo support - insertion succeeded
+                                None
+                            }
+                        };
+
+                    // Create log entry if directory path was obtained
+                    if let Some(log_dir) = log_directory_path {
+                        // Retry logic: 3 attempts with 50ms pause
+                        let mut log_success = false;
+
+                        for retry_attempt in 0..3 {
+                            /*
+                            pub fn button_make_changelog_from_user_character_action_level(
+                                target_file: &Path,
+                                character: Option<char>,
+                                byte_value: Option<u8>, // raw byte input
+                                position: u128,
+                                edit_type: EditType,
+                                log_directory_path: &Path,
+                            ) -> ButtonResult<()> {
+                            */
+
+                            match button_make_changelog_from_user_character_action_level(
+                                &readcopy_pathclone,
+                                None,                   // No Character being added
+                                Some(byte_at_position), // raw byte (option)
+                                position_u128,
+                                EditType::AddByte, // User added byte, inverse is remove byte
+                                &log_dir,
+                            ) {
+                                Ok(_) => {
+                                    log_success = true;
+                                    break; // Success
+                                }
+                                Err(_e) => {
+                                    if retry_attempt == 2 {
+                                        // Final retry failed - log but don't fail operation
+                                        #[cfg(debug_assertions)]
+                                        log_error(
+                                            &format!(
+                                                "Failed to log newline at position {}: {}",
+                                                position_u128, _e
+                                            ),
+                                            Some("insert_newline_at_cursor_chunked:changelog"),
+                                        );
+
+                                        #[cfg(not(debug_assertions))]
+                                        log_error(
+                                            "Failed to log newline",
+                                            Some("insert_newline_at_cursor_chunked:changelog"),
+                                        );
+                                    } else {
+                                        // Retry after brief pause
+                                        std::thread::sleep(std::time::Duration::from_millis(50));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Optional: Set info bar if logging failed (non-intrusive)
+                        if !log_success {
+                            let _ = self.set_info_bar_message("undo disabled");
+                        }
+                    }
                 }
+
                 if !result.is_ok() {
                     let _ = self.set_info_bar_message("Failed to Insert byte");
                 }
@@ -11034,13 +11272,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             match button_undo_redo_next_inverse_changelog_pop_lifo(&edit_file_path, &undo_path) {
                 Ok(_) => {
-                    println!("❌ ERROR: Should have failed (no redo logs)");
+                    #[cfg(debug_assertions)]
+                    println!("Undo Action: OK");
                 }
-                Err(e) => {
-                    println!("✓ Operation failed as expected");
-                    println!("Error: {}", e);
-                    println!();
-                    println!("✅ CORRECT: Cannot redo because redo logs were cleared");
+                Err(_e) => {
+                    println!("Undo Operation failed");
+                    #[cfg(debug_assertions)]
+                    println!("Error: {}", _e);
                 }
             }
 
@@ -11055,17 +11293,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 Ok(_) => {
                     #[cfg(debug_assertions)]
                     {
-                        println!("❌ ERROR: Should have failed (no redo logs)");
+                        println!("Redo Action: OK");
                     }
                 }
                 Err(_e) => {
+                    println!("Redo Operation failed");
                     #[cfg(debug_assertions)]
-                    {
-                        println!("✓ Operation failed as expected");
-                        println!("Error: {}", _e);
-                        println!();
-                        println!("✅ CORRECT: Cannot redo because redo logs were cleared");
-                    }
+                    println!("Error: {}", _e);
                 }
             }
 
@@ -11517,11 +11751,23 @@ fn backspace_style_delete_noload(
             // Convert u64 position to u128 for API compatibility
             let position_u128 = prev_char_start as u128;
 
-            match button_make_changeloge_from_user_character_action_level(
+            /*
+            pub fn button_make_changelog_from_user_character_action_level(
+                target_file: &Path,
+                character: Option<char>,
+                byte_value: Option<u8>, // raw byte input
+                position: u128,
+                edit_type: EditType,
+                log_directory_path: &Path,
+            ) -> ButtonResult<()> {
+            */
+
+            match button_make_changelog_from_user_character_action_level(
                 file_path,
                 Some(deleted_char), // Character that was deleted (for restore)
+                None,               // raw byte input
                 position_u128,
-                EditType::Rmv, // User removed, inverse is add
+                EditType::RmvCharacter, // User removed, inverse is add
                 &log_dir,
             ) {
                 Ok(_) => {
@@ -11866,7 +12112,7 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 /// 13. Iterate through temp file character-by-character (chunked)
 /// 14. For each UTF-8 character:
 ///     - Position = line_start (NOT line_start + offset!) ← Key insight!
-///     - Call button_make_changeloge_from_user_character_action_level()
+///     - Call button_make_changelog_from_user_character_action_level()
 ///     - EditType = Rmv (user removed line, inverse adds it back)
 ///     - Character = Some(char) (need character for restoration)
 /// 15. Handle UTF-8 boundaries across chunks (carry-over buffer)
@@ -12021,7 +12267,7 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 ///
 /// # See Also
 ///
-/// * `button_make_changeloge_from_user_character_action_level()` - Creates individual log entries
+/// * `button_make_changelog_from_user_character_action_level()` - Creates individual log entries
 /// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
 /// * `delete_byte_range_chunked()` - Performs the actual deletion
 /// * `find_line_start()` - Finds beginning of current line
@@ -12350,12 +12596,24 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 // Don't add _byte_offset_in_line!
                                 let char_position_u128 = line_start as u128;
 
+                                /*
+                                pub fn button_make_changelog_from_user_character_action_level(
+                                    target_file: &Path,
+                                    character: Option<char>,
+                                    byte_value: Option<u8>, // raw byte input
+                                    position: u128,
+                                    edit_type: EditType,
+                                    log_directory_path: &Path,
+                                ) -> ButtonResult<()> {
+                                */
+
                                 for retry_attempt in 0..3 {
-                                    match button_make_changeloge_from_user_character_action_level(
+                                    match button_make_changelog_from_user_character_action_level(
                                         file_path,
                                         Some(ch),
+                                        None,
                                         char_position_u128,
-                                        EditType::Rmv, // User removed, inverse is add
+                                        EditType::RmvCharacter, // User removed, inverse is add
                                         &log_dir,
                                     ) {
                                         Ok(_) => break,
@@ -12450,12 +12708,24 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                                 // USE LINE_START FOR ALL CHARACTERS (button stack trick)
                                 let char_position_u128 = line_start as u128;
 
+                                /*
+                                pub fn button_make_changelog_from_user_character_action_level(
+                                    target_file: &Path,
+                                    character: Option<char>,
+                                    byte_value: Option<u8>, // raw byte input
+                                    position: u128,
+                                    edit_type: EditType,
+                                    log_directory_path: &Path,
+                                ) -> ButtonResult<()> {
+                                */
+
                                 for retry_attempt in 0..3 {
-                                    match button_make_changeloge_from_user_character_action_level(
+                                    match button_make_changelog_from_user_character_action_level(
                                         file_path,
                                         Some(ch),
+                                        None,
                                         char_position_u128,
-                                        EditType::Rmv, // User removed, inverse is add
+                                        EditType::RmvCharacter, // User removed, inverse is add
                                         &log_dir,
                                     ) {
                                         Ok(_) => break,
@@ -12679,7 +12949,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 /// 13. Iterate through temp file character-by-character (chunked)
 /// 14. For each UTF-8 character:
 ///     - Position = range_start (NOT range_start + offset!) ← Key insight!
-///     - Call button_make_changeloge_from_user_character_action_level()
+///     - Call button_make_changelog_from_user_character_action_level()
 ///     - EditType = Rmv (user removed range, inverse adds it back)
 ///     - Character = Some(char) (need character for restoration)
 /// 15. Handle UTF-8 boundaries across chunks (carry-over buffer)
@@ -12894,7 +13164,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 /// * `delete_current_line_noload()` - Line-based deletion (finds line boundaries)
 /// * `normalize_sort_sanitize_selection_range()` - Handles backwards selections
 /// * `detect_utf8_byte_count()` - UTF-8 character length detection
-/// * `button_make_changeloge_from_user_character_action_level()` - Creates individual log entries
+/// * `button_make_changelog_from_user_character_action_level()` - Creates individual log entries
 /// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
 /// * `delete_byte_range_chunked()` - Performs the actual deletion
 ///
@@ -13126,7 +13396,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
             state.is_modified = true;
 
             state.cursor.col = 0;
-            let _ = state.set_info_bar_message("nO uNdo");
+            let _ = state.set_info_bar_message("err:nO uNdo");
             return Ok(());
         }
     };
@@ -13268,12 +13538,24 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 // Don't add _byte_offset_in_line!
                                 let char_position_u128 = line_start as u128;
 
+                                /*
+                                pub fn button_make_changelog_from_user_character_action_level(
+                                    target_file: &Path,
+                                    character: Option<char>,
+                                    byte_value: Option<u8>, // raw byte input
+                                    position: u128,
+                                    edit_type: EditType,
+                                    log_directory_path: &Path,
+                                ) -> ButtonResult<()> {
+                                */
+
                                 for retry_attempt in 0..3 {
-                                    match button_make_changeloge_from_user_character_action_level(
+                                    match button_make_changelog_from_user_character_action_level(
                                         file_path,
                                         Some(ch),
+                                        None,
                                         char_position_u128,
-                                        EditType::Rmv, // User removed, inverse is add
+                                        EditType::RmvCharacter, // User removed, inverse is add
                                         &log_dir,
                                     ) {
                                         Ok(_) => break,
@@ -13368,12 +13650,24 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                                 // USE LINE_START FOR ALL CHARACTERS (button stack trick)
                                 let char_position_u128 = line_start as u128;
 
+                                /*
+                                pub fn button_make_changelog_from_user_character_action_level(
+                                    target_file: &Path,
+                                    character: Option<char>,
+                                    byte_value: Option<u8>, // raw byte input
+                                    position: u128,
+                                    edit_type: EditType,
+                                    log_directory_path: &Path,
+                                ) -> ButtonResult<()> {
+                                */
+
                                 for retry_attempt in 0..3 {
-                                    match button_make_changeloge_from_user_character_action_level(
+                                    match button_make_changelog_from_user_character_action_level(
                                         file_path,
                                         Some(ch),
+                                        None,
                                         char_position_u128,
-                                        EditType::Rmv, // User removed, inverse is add
+                                        EditType::RmvCharacter, // User removed, inverse is add
                                         &log_dir,
                                     ) {
                                         Ok(_) => break,
@@ -13976,11 +14270,23 @@ fn insert_newline_at_cursor_chunked(
             // Convert u64 position to u128 for API compatibility
             let position_u128 = insert_position as u128;
 
-            match button_make_changeloge_from_user_character_action_level(
+            /*
+            pub fn button_make_changelog_from_user_character_action_level(
+                target_file: &Path,
+                character: Option<char>,
+                byte_value: Option<u8>, // raw byte input
+                position: u128,
+                edit_type: EditType,
+                log_directory_path: &Path,
+            ) -> ButtonResult<()> {
+            */
+
+            match button_make_changelog_from_user_character_action_level(
                 file_path,
                 Some('\n'), // Character being added
+                None,
                 position_u128,
-                EditType::Add, // User added, inverse is remove
+                EditType::AddCharacter, // User added, inverse is remove
                 &log_dir,
             ) {
                 Ok(_) => {
@@ -14789,13 +15095,25 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                                 start_byte_position + byte_offset_in_insertion;
                             let char_position_u128 = char_position_u64 as u128;
 
+                            /*
+                            pub fn button_make_changelog_from_user_character_action_level(
+                                target_file: &Path,
+                                character: Option<char>,
+                                byte_value: Option<u8>, // raw byte input
+                                position: u128,
+                                edit_type: EditType,
+                                log_directory_path: &Path,
+                            ) -> ButtonResult<()> {
+                            */
+
                             // Create inverse log entry (with retry)
                             for retry_attempt in 0..3 {
-                                match button_make_changeloge_from_user_character_action_level(
+                                match button_make_changelog_from_user_character_action_level(
                                     &target_file_path,
                                     Some(ch),
+                                    None,
                                     char_position_u128,
-                                    EditType::Add, // User added, inverse is remove
+                                    EditType::AddCharacter, // User added, inverse is remove
                                     &log_directory_path,
                                 ) {
                                     Ok(_) => break, // Success
@@ -14901,13 +15219,25 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
                                 start_byte_position + byte_offset_in_insertion;
                             let char_position_u128 = char_position_u64 as u128;
 
+                            /*
+                            pub fn button_make_changelog_from_user_character_action_level(
+                                target_file: &Path,
+                                character: Option<char>,
+                                byte_value: Option<u8>, // raw byte input
+                                position: u128,
+                                edit_type: EditType,
+                                log_directory_path: &Path,
+                            ) -> ButtonResult<()> {
+                            */
+
                             // Create inverse log entry (with retry)
                             for retry_attempt in 0..3 {
-                                match button_make_changeloge_from_user_character_action_level(
+                                match button_make_changelog_from_user_character_action_level(
                                     &target_file_path,
                                     Some(ch),
+                                    None,
                                     char_position_u128,
-                                    EditType::Add, // User added, inverse is remove
+                                    EditType::AddCharacter, // User added, inverse is remove
                                     &log_directory_path,
                                 ) {
                                     Ok(_) => break, // Success
@@ -15635,14 +15965,26 @@ pub fn insert_text_chunk_at_cursor_position(
                         let char_position_u64 = insert_position + byte_offset;
                         let char_position_u128 = char_position_u64 as u128;
 
+                        /*
+                        pub fn button_make_changelog_from_user_character_action_level(
+                            target_file: &Path,
+                            character: Option<char>,
+                            byte_value: Option<u8>, // raw byte input
+                            position: u128,
+                            edit_type: EditType,
+                            log_directory_path: &Path,
+                        ) -> ButtonResult<()> {
+                        */
+
                         // Create inverse log entry (with retry)
                         // User action: Add → Inverse log: Rmv
                         for retry_attempt in 0..3 {
-                            match button_make_changeloge_from_user_character_action_level(
+                            match button_make_changelog_from_user_character_action_level(
                                 file_path,
                                 Some(ch),
+                                None,
                                 char_position_u128,
-                                EditType::Add, // User added, inverse is remove
+                                EditType::AddCharacter, // User added, inverse is remove
                                 &log_directory_path,
                             ) {
                                 Ok(_) => break, // Success
