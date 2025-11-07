@@ -1407,6 +1407,7 @@ pub type Result<T> = std::result::Result<T, LinesError>;
 /// - Never interrupts normal program flow
 pub fn log_error(error_msg: &str, context: Option<&str>) {
     // Build error log path - if this fails, just print to stderr
+
     let log_path = match get_error_log_path() {
         Ok(path) => path,
         Err(e) => {
@@ -1436,10 +1437,25 @@ pub fn log_error(error_msg: &str, context: Option<&str>) {
 
     // Build log entry
     let log_entry = if let Some(ctx) = context {
-        format!("[{}] [{}] {}\n", timestamp, ctx, error_msg)
+        let num_1 = timestamp.to_string();
+        let num_2 = ctx.to_string();
+        let num_3 = error_msg.to_string();
+        let formatted_string_1 =
+            stack_format_it("[{}] [{}] {}\n", &[&num_1, &num_2, &num_3], "[N] [N] N\n");
+        formatted_string_1
     } else {
-        format!("[{}] {}\n", timestamp, error_msg)
+        let num_1 = timestamp.to_string();
+        let num_2 = error_msg.to_string();
+        let formatted_string_2 = stack_format_it("[{}] {}\n", &[&num_1, &num_2], "[N] N\n");
+        formatted_string_2
     };
+
+    // // Build log entry
+    // let log_entry = if let Some(ctx) = context {
+    //     format!("[{}] [{}] {}\n", timestamp, ctx, error_msg)
+    // } else {
+    //     format!("[{}] {}\n", timestamp, error_msg)
+    // };
 
     // Attempt to write to log file
     match OpenOptions::new().create(true).append(true).open(&log_path) {
@@ -1458,17 +1474,67 @@ pub fn log_error(error_msg: &str, context: Option<&str>) {
     }
 }
 
+// /// Gets the path to today's error log file
+// fn get_error_log_path() -> io::Result<PathBuf> {
+//     let home = get_home_directory()?;
+//     let timestamp = get_short_underscore_timestamp()?;
+
+//     let mut log_path = home;
+//     log_path.push("Documents");
+//     log_path.push("lines_editor");
+//     log_path.push("lines_data");
+//     log_path.push("error_logs");
+//     log_path.push(format!("{}.log", timestamp));
+
+//     Ok(log_path)
+// }
+
 /// Gets the path to today's error log file
+///
+/// Creates the error log directory structure if it doesn't exist:
+/// ```text
+/// {executable_dir}/
+///   lines_data/
+///     error_logs/
+///       {timestamp}.log
+/// ```
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Absolute canonicalized path to the error log file
+/// * `Err(io::Error)` - If directory creation/verification fails
 fn get_error_log_path() -> io::Result<PathBuf> {
-    let home = get_home_directory()?;
+    // Step 1: Ensure error_logs directory structure exists
+    // Creates: {executable_dir}/lines_data/error_logs/
+    let base_error_logs_path = "lines_data/error_logs";
+
+    let error_logs_dir = make_verify_or_create_executabledirectoryrelative_canonicalized_dir_path(
+        base_error_logs_path,
+    )
+    .map_err(|e| {
+        let formatted_e_string = stack_format_it(
+            "Failed to create error logs directory structure: {}",
+            &[&e.to_string()],
+            "Failed to create error logs directory structure",
+        );
+        io::Error::new(io::ErrorKind::Other, formatted_e_string)
+    })?;
+
+    // Defensive: Verify the path is a directory
+    if !error_logs_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Error logs path exists but is not a directory",
+        ));
+    }
+
+    // Step 2: Get timestamp for log filename
     let timestamp = get_short_underscore_timestamp()?;
 
-    let mut log_path = home;
-    log_path.push("Documents");
-    log_path.push("lines_editor");
-    log_path.push("lines_data");
-    log_path.push("error_logs");
-    log_path.push(format!("{}.log", timestamp));
+    let num_1 = timestamp.to_string();
+    let formatted_string = stack_format_it("{}.log", &[&num_1], "N.log");
+
+    // Step 3: Construct full log file path
+    let log_path = error_logs_dir.join(formatted_string);
 
     Ok(log_path)
 }
@@ -17822,6 +17888,104 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
     }
 }
 
+// /// Creates a read-only copy of the file in the session directory
+// ///
+// /// # Purpose
+// /// Creates a timestamped copy in the session directory that won't be modified
+// /// during editing. This prevents corruption if the editor crashes while writing.
+// /// Read-copies are VISIBLE (no hidden files) and located in session directory
+// /// for easy access and crash recovery.
+// ///
+// /// # Arguments
+// /// * `original_path` - Path to the original file
+// /// * `session_dir` - Path to this session's directory (from EditorState)
+// ///
+// /// # Returns
+// /// * `Ok(PathBuf)` - Path to the read-copy in session directory
+// /// * `Err(io::Error)` - Copy operation failed
+// ///
+// /// # File Naming
+// /// Original: `/path/to/file.txt`
+// /// Session dir: `{executable_dir}/lines_data/sessions/2025_01_15_14_30_45/`
+// /// Read-copy: `{session_dir}/2025_01_15_14_30_45_file.txt`
+// ///
+// /// # Design Notes
+// /// - NO hidden files (no leading dot) - files should be visible to user
+// /// - Stored in session directory for crash recovery
+// /// - Timestamp prefix ensures uniqueness
+// /// - Session directory persists after exit for recovery
+// pub fn create_a_readcopy_of_file(
+//     original_path: &Path,
+//     session_dir: &Path,
+//     session_time_stamp: String,
+// ) -> io::Result<PathBuf> {
+//     // Defensive: Validate inputs
+//     if !original_path.exists() {
+//         return Err(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             "Original file does not exist",
+//         ));
+//     }
+
+//     if !session_dir.exists() || !session_dir.is_dir() {
+//         return Err(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             "Session directory does not exist",
+//         ));
+//     }
+
+//     // Get original filename
+//     let file_name = original_path
+//         .file_name()
+//         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?
+//         .to_string_lossy();
+
+//     // Build read-copy filename: {timestamp}_{original_filename}
+//     // NO leading dot - file should be visible
+
+//     // let read_copy_name = format!("{}_{}", session_time_stamp, file_name);
+//     // let read_copy_path = session_dir.join(&read_copy_name);
+//     let st_formatted_read_copy_path =
+//         stack_format_it("{}_{}", &[&session_time_stamp, &file_name], "N_N");
+//     let read_copy_path = session_dir.join(&st_formatted_read_copy_path);
+
+//     // If read-copy already exists, return it immediately (idempotent)
+//     if read_copy_path.exists() {
+//         return Ok(read_copy_path);
+//     }
+
+//     // Copy the file to session directory
+//     fs::copy(original_path, &read_copy_path).map_err(|e| {
+//         io::Error::new(
+//             io::ErrorKind::Other,
+//             format!("Failed to create read-copy: {}", e),
+//         )
+//     })?;
+
+//     // Defensive: Verify copy succeeded
+//     if !read_copy_path.exists() {
+//         return Err(io::Error::new(
+//             io::ErrorKind::Other,
+//             "Read-copy creation reported success but file not found",
+//         ));
+//     }
+
+//     // // Diagnostic Log success for user visibility
+//     // println!("Read-copy created: {}", read_copy_path.display());
+
+//     // Assertion: Verify result is valid
+//     debug_assert!(
+//         read_copy_path.is_absolute(),
+//         "Read-copy path should be absolute"
+//     );
+//     debug_assert!(
+//         read_copy_path.exists(),
+//         "Read-copy should exist after creation"
+//     );
+
+//     Ok(read_copy_path)
+// }
+
 /// Creates a read-only copy of the file in the session directory
 ///
 /// # Purpose
@@ -17830,13 +17994,23 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
 /// Read-copies are VISIBLE (no hidden files) and located in session directory
 /// for easy access and crash recovery.
 ///
+/// # Behavior - Session Directory Timestamp Matching
+/// 1. Extracts timestamp from session directory name (e.g., from `2025_01_15_14_30_45/`)
+/// 2. Checks if file already exists with session directory's timestamp prefix
+/// 3. If found: Returns existing file (prevents duplicate copies in same session)
+/// 4. If not found: Creates new copy with input timestamp prefix
+///
+/// This ensures files within a session directory use that session's timestamp,
+/// preventing duplicate copies when reopening the same file in the same session.
+///
 /// # Arguments
 /// * `original_path` - Path to the original file
 /// * `session_dir` - Path to this session's directory (from EditorState)
+/// * `session_time_stamp` - Timestamp to use if creating new copy
 ///
 /// # Returns
-/// * `Ok(PathBuf)` - Path to the read-copy in session directory
-/// * `Err(io::Error)` - Copy operation failed
+/// * `Ok(PathBuf)` - Path to the read-copy in session directory (existing or new)
+/// * `Err(io::Error)` - Copy operation failed or validation failed
 ///
 /// # File Naming
 /// Original: `/path/to/file.txt`
@@ -17848,6 +18022,8 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
 /// - Stored in session directory for crash recovery
 /// - Timestamp prefix ensures uniqueness
 /// - Session directory persists after exit for recovery
+/// - Reuses existing timestamped copies within same session
+/// - Falls back gracefully if parent directory timestamp cannot be extracted
 pub fn create_a_readcopy_of_file(
     original_path: &Path,
     session_dir: &Path,
@@ -17857,29 +18033,76 @@ pub fn create_a_readcopy_of_file(
     if !original_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "Original file does not exist",
+            "create_a_readcopy_of_file: Original file does not exist",
         ));
     }
 
     if !session_dir.exists() || !session_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "Session directory does not exist",
+            "create_a_readcopy_of_file: Session directory does not exist",
         ));
     }
 
     // Get original filename
     let file_name = original_path
         .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "create_a_readcopy_of_file: Cannot determine filename",
+            )
+        })?
         .to_string_lossy();
 
-    // Build read-copy filename: {timestamp}_{original_filename}
-    // NO leading dot - file should be visible
-    let read_copy_name = format!("{}_{}", session_time_stamp, file_name);
-    let read_copy_path = session_dir.join(&read_copy_name);
+    // ===================================================================
+    // STEP 1: Extract timestamp from parent session directory name
+    // ===================================================================
+    // Session directories are named with timestamps (e.g., "2025_01_15_14_30_45")
+    // Extract this to check if a file with that timestamp already exists
+    let parent_dir_name = session_dir
+        .file_name()
+        .and_then(|os_str| os_str.to_str())
+        .unwrap_or("");
 
-    // If read-copy already exists, return it immediately (idempotent)
+    // Debug assertion: Directory name should not be empty in normal operation
+    debug_assert!(
+        !parent_dir_name.is_empty(),
+        "Session directory should have a valid name"
+    );
+
+    // ===================================================================
+    // STEP 2: Check if file with parent directory timestamp exists
+    // ===================================================================
+    // Format: {session_dir}/{parent_dir_timestamp}_{original_filename}
+    // If exists, return it (prevents duplicate copies in same session)
+    if !parent_dir_name.is_empty() {
+        let st_formatted_parent_timestamp_path =
+            stack_format_it("{}_{}", &[parent_dir_name, &file_name], "N_N");
+        let parent_timestamp_file_path = session_dir.join(&st_formatted_parent_timestamp_path);
+
+        // If file with parent directory's timestamp exists, return it
+        if parent_timestamp_file_path.exists() {
+            // Debug assertion: Verify path is absolute
+            debug_assert!(
+                parent_timestamp_file_path.is_absolute(),
+                "Existing file path should be absolute"
+            );
+
+            return Ok(parent_timestamp_file_path);
+        }
+    }
+
+    // ===================================================================
+    // STEP 3: File with parent timestamp not found - create with input timestamp
+    // ===================================================================
+    // Build read-copy filename: {input_timestamp}_{original_filename}
+    // NO leading dot - file should be visible
+    let st_formatted_read_copy_path =
+        stack_format_it("{}_{}", &[&session_time_stamp, &file_name], "N_N");
+    let read_copy_path = session_dir.join(&st_formatted_read_copy_path);
+
+    // If read-copy already exists with input timestamp, return it (idempotent)
     if read_copy_path.exists() {
         return Ok(read_copy_path);
     }
@@ -17888,7 +18111,10 @@ pub fn create_a_readcopy_of_file(
     fs::copy(original_path, &read_copy_path).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!("Failed to create read-copy: {}", e),
+            format!(
+                "create_a_readcopy_of_file: Failed to create read-copy: {}",
+                e
+            ),
         )
     })?;
 
@@ -17896,12 +18122,9 @@ pub fn create_a_readcopy_of_file(
     if !read_copy_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "Read-copy creation reported success but file not found",
+            "create_a_readcopy_of_file: Read-copy creation reported success but file not found",
         ));
     }
-
-    // // Diagnostic Log success for user visibility
-    // println!("Read-copy created: {}", read_copy_path.display());
 
     // Assertion: Verify result is valid
     debug_assert!(
@@ -19536,7 +19759,8 @@ pub fn lines_full_file_editor(
     if !target_path.exists() {
         // new file header = longer readable timestamp
         let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
-        let header = format!("# {}", header_readable_timestamp);
+        let header = stack_format_it("# {}", &[&header_readable_timestamp], "");
+        // let header = format!("# {}", header_readable_timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
@@ -19681,7 +19905,8 @@ pub fn lines_fullfileeditor_core(
     if !target_path.exists() {
         // new file header = longer readable timestamp
         let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
-        let header = format!("# {}", header_readable_timestamp);
+        let header = stack_format_it("# {}", &[&header_readable_timestamp], "");
+        // let header = format!("# {}", header_readable_timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
