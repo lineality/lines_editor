@@ -826,7 +826,7 @@ use std::path::PathBuf;
 // import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
-    LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
+    LinesError, lines_full_file_editor, get_default_filepath, is_in_home_directory,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
@@ -1123,7 +1123,7 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = current_dir.join(filename);
 
                 // Call full editor with session path if provided
-                full_lines_editor(Some(original_file_path), None, parsed.session_path)
+                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
             }
         }
         Some(file_path) => {
@@ -1142,7 +1142,7 @@ fn main() -> Result<(), LinesError> {
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
                 // Full editor mode with file
-                full_lines_editor(Some(file_path), parsed.starting_line, parsed.session_path)
+                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
             }
         }
     }
@@ -1838,14 +1838,206 @@ where
         // Bounded by: attempt < max_attempts (checked above)
     }
 }
-
 // ============================================================================
 // (end) SAVE-AS-COPY OPERATION: Retry Logic Helper Functions
 // ============================================================================
-
 // ============================================================================
 // (end) ERROR Section HANDLING SYSTEM
 // ============================================================================
+
+// =========
+// Utilities
+// =========
+/// Formats a message with multiple variable parts inserted at {} placeholders.
+///
+/// ## Project Context
+/// Provides simple string formatting for UI messages and error messages using
+/// stack-allocated buffers. Designed for display text where formatting failure
+/// can gracefully degrade to a fallback message without compromising program
+/// operation.
+///
+/// **Use for:**
+/// - Status bar updates
+/// - User notifications
+/// - Progress indicators
+/// - Display-only error messages
+///
+/// **Do NOT use for:**
+/// - output that may exceed a known size
+/// - where a known default is less optimal than erroring-out
+///
+/// Stack allocation makes this function safer and more predictable than
+/// heap-based formatting for bounded display messages.
+///
+/// ## Operation
+/// Takes a template string with one or more "{}" placeholders and inserts variable
+/// strings in order. Processes each placeholder sequentially, replacing with the
+/// corresponding insert string.
+///
+/// Examples:
+/// - stack_format_it("inserted {} bytes", &["42"]) -> "inserted 42 bytes"
+/// - stack_format_it("range: start={} > end={}", &["10", "5"]) -> "range: start=10 > end=5"
+/// - stack_format_it("a {} b {} c {}", &["1", "2", "3"]) -> "a 1 b 2 c 3"
+///
+/// ## Safety & Error Handling
+/// - No panic: Always returns a valid string (formatted or fallback)
+/// - No unwrap: Direct return, no Result to unwrap
+/// - Uses 256-byte stack buffer for formatting
+/// - Returns fallback if result exceeds buffer size
+/// - Returns fallback if placeholder count doesn't match insert count
+/// - Returns fallback if template has no {} placeholders
+/// - Maximum 8 inserts supported (configurable via MAX_INSERTS)
+///
+/// ## Parameters
+/// - `template`: String with one or more "{}" placeholders
+/// - `inserts`: Slice of strings to insert at placeholders (in order)
+/// - `fallback`: Message to return if formatting fails
+///
+/// ## Returns
+/// Formatted string on success, fallback string on any error (always valid)
+///
+/// ## Use Examples:
+/// ```rust
+/// let bytes = total_bytes_written.saturating_sub(1);
+/// let num_str = bytes.to_string();
+/// let message = stack_format_it("inserted {} bytes", &[&num_str], "inserted data");
+/// ```
+///
+/// ```rust
+/// let num_1 = start_byte.to_string();
+/// let num_2 = end_byte.to_string();
+/// let formatted_string = stack_format_it(
+///     "Invalid byte range: start={} > end={}",
+///     &[&num_1, &num_2],
+///     "Invalid byte range"
+/// );
+/// ```
+fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
+    // Internal stack buffer for result
+    let mut buf = [0u8; 256];
+
+    // Maximum number of inserts to prevent abuse
+    const MAX_INSERTS: usize = 128;
+
+    // Check insert count
+    if inserts.is_empty() {
+        #[cfg(debug_assertions)]
+        eprintln!("stack_format_it: No inserts provided");
+        return fallback.to_string();
+    }
+
+    if inserts.len() > MAX_INSERTS {
+        #[cfg(debug_assertions)]
+        eprintln!("stack_format_it: Too many inserts (max {})", MAX_INSERTS);
+        return fallback.to_string();
+    }
+
+    // Count placeholders in template
+    let placeholder = "{}";
+    let placeholder_count = template.matches(placeholder).count();
+
+    if placeholder_count == 0 {
+        #[cfg(debug_assertions)]
+        eprintln!("stack_format_it: No '{{}}' placeholders found in template");
+        return fallback.to_string();
+    }
+
+    if placeholder_count != inserts.len() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "stack_format_it: Placeholder count ({}) doesn't match insert count ({})",
+            placeholder_count,
+            inserts.len()
+        );
+        return fallback.to_string();
+    }
+
+    // Calculate total length needed
+    let mut total_len = template.len();
+
+    // Subtract placeholder lengths
+    total_len = match total_len.checked_sub(placeholder.len() * placeholder_count) {
+        Some(len) => len,
+        None => {
+            #[cfg(debug_assertions)]
+            eprintln!("stack_format_it: Length calculation underflow");
+            return fallback.to_string();
+        }
+    };
+
+    // Add insert lengths
+    for insert in inserts {
+        total_len = match total_len.checked_add(insert.len()) {
+            Some(len) => len,
+            None => {
+                #[cfg(debug_assertions)]
+                eprintln!("stack_format_it: Length overflow");
+                return fallback.to_string();
+            }
+        };
+    }
+
+    // Check buffer capacity
+    if total_len > buf.len() {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "stack_format_it: Result too large (need {}, have {})",
+            total_len,
+            buf.len()
+        );
+        return fallback.to_string();
+    }
+
+    // Build the result by processing each placeholder
+    let mut pos = 0;
+    let mut remaining_template = template;
+    let mut insert_idx = 0;
+
+    while let Some(placeholder_pos) = remaining_template.find(placeholder) {
+        // Copy text before placeholder
+        let before = &remaining_template[..placeholder_pos];
+        if pos + before.len() > buf.len() {
+            #[cfg(debug_assertions)]
+            eprintln!("stack_format_it: Buffer overflow during copy");
+            return fallback.to_string();
+        }
+        buf[pos..pos + before.len()].copy_from_slice(before.as_bytes());
+        pos += before.len();
+
+        // Copy insert
+        let insert = inserts[insert_idx];
+        if pos + insert.len() > buf.len() {
+            #[cfg(debug_assertions)]
+            eprintln!("stack_format_it: Buffer overflow during insert");
+            return fallback.to_string();
+        }
+        buf[pos..pos + insert.len()].copy_from_slice(insert.as_bytes());
+        pos += insert.len();
+
+        // Move to next segment
+        remaining_template = &remaining_template[placeholder_pos + placeholder.len()..];
+        insert_idx += 1;
+    }
+
+    // Copy remaining text after last placeholder
+    if pos + remaining_template.len() > buf.len() {
+        #[cfg(debug_assertions)]
+        eprintln!("stack_format_it: Buffer overflow during final copy");
+        return fallback.to_string();
+    }
+    buf[pos..pos + remaining_template.len()].copy_from_slice(remaining_template.as_bytes());
+    pos += remaining_template.len();
+
+    // Validate UTF-8 and return
+    match std::str::from_utf8(&buf[..pos]) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            #[cfg(debug_assertions)]
+            eprintln!("stack_format_it: Invalid UTF-8 in result");
+            fallback.to_string()
+        }
+    }
+}
 
 // ============================================================================
 // SAVE-AS-COPY OPERATION: Configuration Constants
@@ -4543,7 +4735,7 @@ impl EditorState {
 
                             // Log error and continue (non-fatal)
                             log_error(
-                                &format!("Cannot clear redo logs"),
+                                "Cannot clear redo logs",
                                 Some("backspace_style_delete_noload"),
                             );
                             let _ = self.set_info_bar_message("bsdn Redo clear failed");
@@ -5219,7 +5411,7 @@ impl EditorState {
                     }
                     if !redo_clear_success {
                         log_error(
-                            &format!("Cannot clear redo logs"),
+                            "Cannot clear redo logs",
                             Some("write_n_log_hex_edit_in_place:step3"),
                         );
                     }
@@ -5355,7 +5547,7 @@ impl EditorState {
 
                 if !redo_clear_success {
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("write_n_log_hex_edit_in_place:step3"),
                     );
                 }
@@ -5407,7 +5599,7 @@ impl EditorState {
                     }
                     if !redo_clear_success {
                         log_error(
-                            &format!("Cannot clear redo logs"),
+                            "Cannot clear redo logs",
                             Some("write_n_log_hex_edit_in_place:step3"),
                         );
                     }
@@ -6025,7 +6217,7 @@ impl EditorState {
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = self.set_info_bar_message("bsdn Redo clear failed");
@@ -6188,7 +6380,7 @@ impl EditorState {
     /// - "5g10" -> GotoLine(10) [count ignored]
     /// - "gg" -> GotoFileStart
     ///
-    /// Note: For other command handling, also see: full_lines_editor()
+    /// Note: For other command handling, also see: lines_full_file_editor()
     ///
     pub fn parse_commands_for_normal_visualselect_modes(
         &mut self,
@@ -6453,7 +6645,7 @@ impl EditorState {
         /*
         For another command area, also see:
         ```rust
-        fn full_lines_editor(){
+        fn lines_full_file_editor(){
         ...
         if state.mode == ...
         ```
@@ -9350,12 +9542,8 @@ fn process_line_with_offset(
 /// - Cannot determine current working directory
 pub fn is_in_home_directory() -> io::Result<bool> {
     // Get current working directory
-    let cwd = env::current_dir().map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Cannot determine current directory: {}", e),
-        )
-    })?;
+    let cwd = env::current_dir()
+        .map_err(|_| io::Error::new(io::ErrorKind::Other, "Cannot determine current directory"))?;
 
     // Get home directory
     let home = get_home_directory()?;
@@ -9395,7 +9583,7 @@ fn get_home_directory() -> io::Result<PathBuf> {
             if !home_path.exists() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Home directory does not exist: {:?}", home_path),
+                    "Home directory does not exist",
                 ));
             }
 
@@ -9403,7 +9591,7 @@ fn get_home_directory() -> io::Result<PathBuf> {
             if !home_path.is_dir() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Home path is not a directory: {:?}", home_path),
+                    "Home path is not a directory",
                 ));
             }
 
@@ -9412,7 +9600,8 @@ fn get_home_directory() -> io::Result<PathBuf> {
         Err(_) => {
             // Fallback: try USER environment variable with common paths
             if let Ok(user) = env::var("USER") {
-                let possible_home = PathBuf::from(format!("/home/{}", user));
+                let mut possible_home = PathBuf::from("/home");
+                possible_home.push(&user);
                 if possible_home.exists() && possible_home.is_dir() {
                     return Ok(possible_home);
                 }
@@ -9488,18 +9677,33 @@ pub fn prompt_for_filename() -> io::Result<String> {
     if trimmed.len() > 255 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Filename too long: {} characters (max 255)", trimmed.len()),
+            "Filename too long characters max 255",
         ));
     }
 
     // Add .txt extension if no extension provided
+    let mut buf = [0u8; 8]; // Adjust size as needed
+    let filename_bytes;
+
     let filename = if trimmed.contains('.') {
-        trimmed.to_string()
+        trimmed
     } else {
-        format!("{}.txt", trimmed)
+        let txt_suffix = b".txt";
+        let trimmed_bytes = trimmed.as_bytes();
+
+        if trimmed_bytes.len() + txt_suffix.len() <= buf.len() {
+            buf[..trimmed_bytes.len()].copy_from_slice(trimmed_bytes);
+            buf[trimmed_bytes.len()..trimmed_bytes.len() + txt_suffix.len()]
+                .copy_from_slice(txt_suffix);
+
+            filename_bytes = &buf[..trimmed_bytes.len() + txt_suffix.len()];
+            std::str::from_utf8(filename_bytes).unwrap()
+        } else {
+            trimmed // Fallback if name too long
+        }
     };
 
-    Ok(filename)
+    Ok(filename.to_string())
 }
 
 // ============================================================================
@@ -9630,10 +9834,7 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
     if !path_str.contains("lines_data") || !path_str.contains("sessions") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "Refusing to delete directory that doesn't look like a session dir: {}",
-                path_str
-            ),
+            "Refusing to delete directory that doesn't look like a session dir",
         ));
     }
 
@@ -9647,10 +9848,7 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
     if !session_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "Session path exists but is not a directory: {}",
-                session_dir.display()
-            ),
+            "Session path exists but is not a directory",
         ));
     }
 
@@ -10774,7 +10972,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -10799,7 +10997,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state
@@ -10841,7 +11039,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -10867,7 +11065,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11076,7 +11274,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11113,7 +11311,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11150,7 +11348,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11187,7 +11385,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11224,7 +11422,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11250,7 +11448,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error(
-                        &format!("Cannot clear redo logs"),
+                        "Cannot clear redo logs",
                         Some("backspace_style_delete_noload"),
                     );
                     let _ = lines_editor_state.set_info_bar_message("bsdn Redo clear failed");
@@ -11320,14 +11518,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             match save_file_as_newfile_with_newname(&edit_file_path, &save_as_path) {
                 // Success: file copied
                 Ok((FileOperationStatus::Copied, _)) => {
-                    let info_message = format!("File Saved As.",);
+                    let info_message = "File Saved As.";
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
                     Ok(true)
                 }
 
                 // Predicated outcome: destination already exists
                 Ok((FileOperationStatus::AlreadyExisted, _)) => {
-                    let info_message = format!("File already exists.");
+                    let info_message = "File already exists.";
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
                     // Still return Ok - this is expected, not an error
                     Ok(true)
@@ -11358,7 +11556,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
 
                     // Prod Safe
-                    let info_message = format!("Can't write,path exists?",);
+                    let info_message = "Can't write,path exists?";
 
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
                     Ok(true)
@@ -11394,12 +11592,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // How is that ok?
             // For special uses you CAN add must-save here, but think it though.
 
-            if let Err(e) = cleanup_session_directory(lines_editor_state) {
-                eprintln!("Warning: Session cleanup failed: {}", e);
-                log_error(
-                    &format!("Session cleanup failed: {}", e),
-                    Some("Command::Quit"),
-                );
+            if let Err(_e) = cleanup_session_directory(lines_editor_state) {
+                #[cfg(debug_assertions)]
+                eprintln!("Warning: Session cleanup failed: {}", _e);
+                log_error("Session cleanup failed", Some("Command::Quit"));
                 // Continue with exit anyway
             }
 
@@ -11411,12 +11607,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             save_file(lines_editor_state)?; // save file
 
             // Clean up session directory after save
-            if let Err(e) = cleanup_session_directory(lines_editor_state) {
-                eprintln!("Warning: Session cleanup failed: {}", e);
-                log_error(
-                    &format!("Session cleanup failed: {}", e),
-                    Some("Command::SaveAndQuit"),
-                );
+            if let Err(_e) = cleanup_session_directory(lines_editor_state) {
+                #[cfg(debug_assertions)]
+                eprintln!("Warning: Session cleanup failed: {}", _e);
+                log_error("Session cleanup failed: {}", Some("Command::SaveAndQuit"));
                 // Continue with exit anyway
             }
             Ok(false) // Signal to exit after save
@@ -11469,12 +11663,11 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
             let _ = lines_editor_state.set_info_bar_message("gl cursor pos. unavailable");
             return Ok(());
         }
-        Err(e) => {
+        Err(_e) => {
             let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
-            log_error(
-                &format!("goto_line_end window_map error: {}", e),
-                Some("goto_line_end"),
-            );
+            #[cfg(debug_assertions)]
+            eprintln!("e: {}", _e);
+            log_error("goto_line_end window_map error", Some("goto_line_end"));
             return Ok(());
         }
     };
@@ -11491,33 +11684,31 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 
     let mut file = match File::open(file_path) {
         Ok(f) => f,
-        Err(e) => {
+        Err(_e) => {
             let _ = lines_editor_state.set_info_bar_message("cannot open file");
-            log_error(
-                &format!("goto_line_end open error: {}", e),
-                Some("goto_line_end"),
-            );
+            #[cfg(debug_assertions)]
+            eprintln!("e: {}", _e);
+            log_error("goto_line_end open error", Some("goto_line_end"));
             return Ok(());
         }
     };
 
-    if let Err(e) = file.seek(SeekFrom::Start(line_start_byte)) {
+    if let Err(_e) = file.seek(SeekFrom::Start(line_start_byte)) {
         let _ = lines_editor_state.set_info_bar_message("cannot seek to line");
-        log_error(
-            &format!("goto_line_end seek error: {}", e),
-            Some("goto_line_end"),
-        );
+        #[cfg(debug_assertions)]
+        eprintln!("e: {}", _e);
+        log_error("goto_line_end seek error", Some("goto_line_end"));
         return Ok(());
     }
 
     let (_, line_length, _) = match read_single_line(&mut file, &mut line_buffer) {
         Ok(result) => result,
-        Err(e) => {
+        Err(_e) => {
             let _ = lines_editor_state.set_info_bar_message("cannot read line");
-            log_error(
-                &format!("goto_line_end read error: {}", e),
-                Some("goto_line_end"),
-            );
+            #[cfg(debug_assertions)]
+            eprintln!("e: {}", _e);
+            #[cfg(debug_assertions)]
+            log_error("goto_line_end read error", Some("goto_line_end"));
             return Ok(());
         }
     };
@@ -11609,17 +11800,18 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // ========================================================================
 
     if needs_rebuild {
-        if let Err(e) = build_windowmap_nowrap(lines_editor_state, file_path) {
+        if let Err(_e) = build_windowmap_nowrap(lines_editor_state, file_path) {
             let _ = lines_editor_state.set_info_bar_message("display update failed");
-            log_error(
-                &format!("goto_line_end rebuild error: {}", e),
-                Some("goto_line_end"),
-            );
+            #[cfg(debug_assertions)]
+            eprintln!("e: {}", _e);
+            #[cfg(debug_assertions)]
+            log_error("goto_line_end rebuild error", Some("goto_line_end"));
             // Continue anyway - cursor was updated
         }
     }
 
-    let _ = lines_editor_state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
+    // let _ = lines_editor_state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
+    let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
     Ok(())
 }
 
@@ -14116,10 +14308,17 @@ fn insert_newline_at_cursor_chunked(
             );
             return Ok(());
         }
-        Err(e) => {
-            eprintln!("Warning: Cannot get cursor position: {}", e);
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("Warning: Cannot get cursor position: {}", _e);
+            #[cfg(debug_assertions)]
             log_error(
-                &format!("Insert newline failed: {}", e),
+                &format!("Insert newline failed: {}", _e),
+                Some("insert_newline_at_cursor_chunked"),
+            );
+            // safe
+            log_error(
+                "Insert newline failed",
                 Some("insert_newline_at_cursor_chunked"),
             );
             return Ok(());
@@ -14162,10 +14361,10 @@ fn insert_newline_at_cursor_chunked(
             // EOF before insert position - this is an error
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!(
-                    "Insert position {} exceeds file length {}",
-                    insert_position, bytes_copied
-                ),
+                "Insert position exceeds file length", // format!(
+                                                       //     "Insert position {} exceeds file length {}",
+                                                       //     insert_position, bytes_copied
+                                                       // ),
             ));
         }
 
@@ -14643,7 +14842,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             Err(e) => {
                 let _ = state.set_info_bar_message("cannot get cwd");
                 log_error(
-                    &format!("Cannot get current directory: {}", e),
+                    "Cannot get current directory",
                     Some("insert_file_at_cursor"),
                 );
                 return Err(LinesError::Io(e));
@@ -14655,13 +14854,16 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Fail fast with clear error message
     if !source_path.exists() {
         let _ = state.set_info_bar_message("file not found");
+        #[cfg(debug_assertions)]
         log_error(
             &format!("Source file does not exist: {}", source_path.display()),
             Some("insert_file_at_cursor"),
         );
+        // safe
+        log_error("Source file does not exist", Some("insert_file_at_cursor"));
         return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("File not found: {}", source_path.display()),
+            "if !source_path.exists() File not found",
         )));
     }
 
@@ -14669,13 +14871,16 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Attempting to read a directory would cause confusing errors later
     if !source_path.is_file() {
         let _ = state.set_info_bar_message("not a file");
+        #[cfg(debug_assertions)]
         log_error(
             &format!("Source path is not a file: {}", source_path.display()),
             Some("insert_file_at_cursor"),
         );
+        // safe
+        log_error("Source path is not a file", Some("insert_file_at_cursor"));
         return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("Not a file: {}", source_path.display()),
+            "if !source_path.is_file() Not a file",
         )));
     }
 
@@ -14697,29 +14902,36 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Get starting byte position from cursor
     // This is the insertion point for the first chunk
     // Subsequent chunks insert at: start_position + bytes_already_written
-    let start_byte_position =
-        match state.get_row_col_file_position(state.cursor.row, state.cursor.col) {
-            Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
-            Ok(None) => {
-                let _ = state.set_info_bar_message("invalid cursor position");
-                log_error(
-                    "Cannot get byte position from cursor",
-                    Some("insert_file_at_cursor"),
-                );
-                return Err(LinesError::Io(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Invalid cursor position",
-                )));
-            }
-            Err(e) => {
-                let _ = state.set_info_bar_message("cursor position error");
-                log_error(
-                    &format!("Error getting cursor position: {}", e),
-                    Some("insert_file_at_cursor"),
-                );
-                return Err(LinesError::Io(e));
-            }
-        };
+    let start_byte_position = match state
+        .get_row_col_file_position(state.cursor.row, state.cursor.col)
+    {
+        Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
+        Ok(None) => {
+            let _ = state.set_info_bar_message("invalid cursor position");
+            log_error(
+                "Cannot get byte position from cursor",
+                Some("insert_file_at_cursor"),
+            );
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::Other,
+                "Invalid cursor position",
+            )));
+        }
+        Err(e) => {
+            let _ = state.set_info_bar_message("cursor position error");
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!("Error getting cursor position: {}", e),
+                Some("insert_file_at_cursor"),
+            );
+            // safe
+            log_error(
+                "match state.get_row_col_file_position(state.cursor.row, state.cursor.col) Error getting cursor position",
+                Some("insert_file_at_cursor"),
+            );
+            return Err(LinesError::Io(e));
+        }
+    };
 
     // ============================================
     // Phase 3: Open Source File
@@ -14731,10 +14943,13 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         Ok(file) => file,
         Err(e) => {
             let _ = state.set_info_bar_message("cannot read file");
+            #[cfg(debug_assertions)]
             log_error(
                 &format!("Cannot open source file: {} - {}", source_path.display(), e),
                 Some("insert_file_at_cursor"),
             );
+            // safe
+            log_error("Cannot open source file", Some("insert_file_at_cursor"));
             return Err(LinesError::Io(e));
         }
     };
@@ -14762,7 +14977,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         if chunk_counter >= MAX_CHUNKS {
             let _ = state.set_info_bar_message("file too large");
             log_error(
-                &format!("Maximum chunk limit reached: {}", MAX_CHUNKS),
+                "Maximum chunk limit reached MAX_CHUNKS",
                 Some("insert_file_at_cursor"),
             );
             return Err(LinesError::Io(io::Error::new(
@@ -14788,7 +15003,8 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         let bytes_read = match source_file.read(&mut buffer) {
             Ok(n) => n,
             Err(e) => {
-                let _ = state.set_info_bar_message(&format!("read error chunk {}", chunk_counter));
+                let _ = state.set_info_bar_message("read error chunk");
+                #[cfg(debug_assertions)]
                 log_error(
                     &format!("Read error at chunk {}: {}", chunk_counter, e),
                     Some("insert_file_at_cursor"),
@@ -15369,25 +15585,19 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // Done once at end, not per-chunk (efficiency and simplicity)
     build_windowmap_nowrap(state, &target_file_path)?;
 
-    // Set success message in info bar
-    // Shows total bytes (after final byte deletion)
-    // state.set_info_bar_message(&format!(
-    //     "inserted {} bytes",
-    //     total_bytes_written.saturating_sub(1) // -1 because we deleted final byte
-    // ));
+    let bytes = total_bytes_written.saturating_sub(1);
+    let num_str = bytes.to_string();
+
+    let message = stack_format_it("inserted {} bytes", &[&num_str], "inserted data");
 
     // Set success message in info bar
     // If it fails, continue operation (message display is non-critical)
-    let _ = state
-        .set_info_bar_message(&format!(
-            "inserted {} bytes",
-            total_bytes_written.saturating_sub(1)
-        ))
-        .or_else(|e| {
-            // Log error but don't propagate (message is cosmetic)
-            eprintln!("Warning: Failed to set info bar message: {}", e);
-            Ok::<(), LinesError>(()) // Convert to Ok to discard error
-        });
+    let _ = state.set_info_bar_message(&message).or_else(|_e| {
+        // Log error but don't propagate (message is cosmetic)
+        #[cfg(debug_assertions)]
+        eprintln!("Warning: Failed to set info bar message: {}", _e);
+        Ok::<(), LinesError>(()) // Convert to Ok to discard error
+    });
 
     // "Finis"
     Ok(())
@@ -16568,6 +16778,7 @@ fn normalize_sort_sanitize_selection_range(start: u64, end: u64) -> Result<(u64,
 pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64> {
     // Open file for reading
     let mut file = File::open(file_path).map_err(|e| {
+        #[cfg(debug_assertions)]
         log_error(
             &format!("Cannot open file for UTF-8 character end check: {}", e),
             Some("find_utf8_char_end"),
@@ -16577,6 +16788,7 @@ pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64>
 
     // Seek to character start position
     file.seek(SeekFrom::Start(char_start_byte)).map_err(|e| {
+        #[cfg(debug_assertions)]
         log_error(
             &format!("Cannot seek to byte {}: {}", char_start_byte, e),
             Some("find_utf8_char_end"),
@@ -16610,13 +16822,18 @@ pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64>
                 4
             } else {
                 // Invalid UTF-8 or continuation byte - treat as 1 byte
-                log_error(
-                    &format!(
-                        "Invalid UTF-8 start byte 0x{:02X} at position {}",
-                        first_byte, char_start_byte
-                    ),
-                    Some("find_utf8_char_end"),
+
+                // Stack Format It!
+                let num_str1 = first_byte.to_string();
+                let num_str2 = char_start_byte.to_string();
+
+                let formatted_string = stack_format_it(
+                    "Invalid UTF-8 start byte 0x{} at position {}",
+                    &[&num_str1, &num_str2],
+                    "Invalid UTF-8 ",
                 );
+
+                log_error(&formatted_string, Some("find_utf8_char_end"));
                 1
             };
 
@@ -16630,6 +16847,7 @@ pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64>
             Ok(last_byte_position)
         }
         Err(e) => {
+            #[cfg(debug_assertions)]
             log_error(
                 &format!("Error reading byte for UTF-8 character length: {}", e),
                 Some("find_utf8_char_end"),
@@ -16712,13 +16930,16 @@ pub fn generate_clipboard_filename(
 
     // Production-Catch-Handle: Invalid byte range
     if start_byte > end_byte {
-        log_error(
-            &format!(
-                "Invalid byte range: start={} > end={}",
-                start_byte, end_byte
-            ),
-            Some("generate_clipboard_filename"),
+        let num_str_1 = start_byte.to_string();
+        let num_str_2 = end_byte.to_string();
+
+        let formatted_string = stack_format_it(
+            "Invalid byte range: start={} > end={}",
+            &[&num_str_1, &num_str_2],
+            "Invalid byte range",
         );
+
+        log_error(&formatted_string, Some("generate_clipboard_filename"));
         return Err(LinesError::InvalidInput(
             "start_byte must be less than or equal to end_byte".into(),
         ));
@@ -16733,20 +16954,35 @@ pub fn generate_clipboard_filename(
     let mut name_length: usize = 0;
 
     // Open source file for reading
-    let mut file = File::open(source_file_path).map_err(|e| {
+    let mut file = File::open(source_file_path).map_err(|_e| {
+        #[cfg(debug_assertions)]
+        let formated_string = stack_format_it(
+            "Cannot open source file: {}",
+            &[&_e.to_string()],
+            "Cannot open source file",
+        );
+        #[cfg(debug_assertions)]
+        log_error(&formated_string, Some("generate_clipboard_filename"));
+        // safe
         log_error(
-            &format!("Cannot open source file: {}", e),
+            "Cannot open source file",
             Some("generate_clipboard_filename"),
         );
-        LinesError::Io(e)
+        LinesError::Io(_e)
     })?;
 
     // Seek to start position
     file.seek(SeekFrom::Start(start_byte)).map_err(|e| {
+        let num_1 = start_byte.to_string();
+        let formated_string2 =
+            stack_format_it("Cannot seek to byte {}", &[&num_1], "Cannot seek to byte");
+
         log_error(
             &format!("Cannot seek to byte {}: {}", start_byte, e),
             Some("generate_clipboard_filename"),
         );
+        // safe
+        log_error(&formated_string2, Some("generate_clipboard_filename"));
         LinesError::Io(e)
     })?;
 
@@ -16788,12 +17024,19 @@ pub fn generate_clipboard_filename(
                 }
                 // Skip non-alphanumeric bytes (punctuation, whitespace, etc.)
             }
-            Err(e) => {
+            Err(_e) => {
                 // Read error - log and stop reading
+                #[cfg(debug_assertions)]
                 log_error(
-                    &format!("Error reading source file: {}", e),
+                    &format!("Error reading source file: {}", _e),
                     Some("generate_clipboard_filename"),
                 );
+                // safe
+                log_error(
+                    "Error reading source file",
+                    Some("generate_clipboard_filename"),
+                );
+
                 break;
             }
         }
@@ -16811,10 +17054,16 @@ pub fn generate_clipboard_filename(
         // We know these are valid ASCII alphanumeric, so UTF-8 conversion is safe
         match std::str::from_utf8(&name_buffer[..name_length]) {
             Ok(s) => String::from(s),
-            Err(e) => {
+            Err(_e) => {
                 // This should never happen with ASCII alphanumeric, but handle defensively
+                #[cfg(debug_assertions)]
                 log_error(
-                    &format!("UTF-8 conversion error (using fallback): {}", e),
+                    &format!("UTF-8 conversion error (using fallback): {}", _e),
+                    Some("generate_clipboard_filename"),
+                );
+                // safe
+                log_error(
+                    "UTF-8 conversion error (using fallback)",
                     Some("generate_clipboard_filename"),
                 );
                 String::from("item")
@@ -16859,18 +17108,23 @@ pub fn generate_clipboard_filename(
     // ERROR: All 1000 filename slots are taken
     // =========================================================================
 
-    log_error(
-        &format!(
-            "All {} filename variants exist for base name: {}",
-            MAX_ATTEMPTS, base_name
-        ),
-        Some("generate_clipboard_filename"),
+    let num_1 = MAX_ATTEMPTS.to_string();
+    let num_2 = base_name.to_string();
+    let formatted_string = stack_format_it(
+        "GCF: All {} filename variants exist for base name: {}",
+        &[&num_1, &num_2],
+        "gcf: error: All filename variants exist for base name.",
     );
 
-    Err(LinesError::StateError(format!(
+    log_error(&formatted_string, Some("generate_clipboard_filename"));
+
+    let formatted_string_2 = stack_format_it(
         "Cannot generate unique filename - all {} variants of '{}' already exist",
-        MAX_ATTEMPTS, base_name
-    )))
+        &[&num_1, &num_2],
+        "gcf: error: Cannot generate unique filename - all variants of already exist",
+    );
+
+    Err(LinesError::StateError(formatted_string_2))
 }
 
 /// Appends a range of bytes from one file to another, one byte at a time
@@ -16992,10 +17246,14 @@ pub fn append_bytes_from_file_to_file(
     // Validate byte positions: start must not be greater than end
     // This is a logic error in the caller's arguments
     if start_byte_position > end_byte_position {
-        let error_msg = format!(
-            "Invalid byte range: start position ({}) is greater than end position ({})",
-            start_byte_position, end_byte_position
+        let num_1 = start_byte_position.to_string();
+        let num_2 = end_byte_position.to_string();
+        let formatted_string = stack_format_it(
+            "Invalid byte range: start position ({}) is > than end pos ({})",
+            &[&num_1, &num_2],
+            "Invalid byte range: start position is > than end pos",
         );
+        let error_msg = formatted_string;
         log_error(&error_msg, Some("append_bytes_from_file_to_file"));
         return Err(LinesError::InvalidInput(error_msg));
     }
@@ -17020,8 +17278,22 @@ pub fn append_bytes_from_file_to_file(
     let mut source_file = match File::open(source_file_path) {
         Ok(file) => file,
         Err(e) => {
-            let error_msg = format!("Cannot open source file: {}", e);
-            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            #[cfg(debug_assertions)]
+            {
+                let num_2 = e.to_string();
+                let formatted_string = stack_format_it(
+                    "Cannot open source file: {}",
+                    &[&num_2],
+                    "Invalid byte range",
+                );
+
+                log_error(&formatted_string, Some("append_bytes_from_file_to_file"));
+            }
+            //safe
+            log_error(
+                "Cannot open source file",
+                Some("append_bytes_from_file_to_file"),
+            );
             return Err(LinesError::Io(e));
         }
     };
@@ -17040,8 +17312,17 @@ pub fn append_bytes_from_file_to_file(
     {
         Ok(file) => file,
         Err(e) => {
-            let error_msg = format!("Cannot open or create target file: {}", e);
-            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            #[cfg(debug_assertions)]
+            {
+                let error_msg = format!("Cannot open or create target file: {}", e);
+                log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            }
+            // safe
+            log_error(
+                "Cannot open or create target file",
+                Some("append_bytes_from_file_to_file"),
+            );
+
             return Err(LinesError::Io(e));
         }
     };
@@ -17103,13 +17384,17 @@ pub fn append_bytes_from_file_to_file(
     // Seek to start position in source file
     // SeekFrom::Start is absolute positioning from beginning of file
     // If we can't seek (hardware failure, invalid position), return error
-    if let Err(e) = source_file.seek(SeekFrom::Start(start_byte_position)) {
+    if let Err(_e) = source_file.seek(SeekFrom::Start(start_byte_position)) {
+        #[cfg(debug_assertions)]
+        eprintln!("e: {}", _e);
+        #[cfg(debug_assertions)]
         let error_msg = format!(
             "Cannot seek to start position {} in source file: {}",
-            start_byte_position, e
+            start_byte_position, _e
         );
+        #[cfg(debug_assertions)]
         log_error(&error_msg, Some("append_bytes_from_file_to_file"));
-        return Err(LinesError::Io(e));
+        return Err(LinesError::Io(_e));
     }
 
     // ========================================================================
@@ -17147,11 +17432,22 @@ pub fn append_bytes_from_file_to_file(
             Err(e) => {
                 // Other read error (hardware failure, permissions, cosmic ray bit flip)
                 // This IS an error - log it and return
-                let error_msg = format!(
-                    "Cannot read byte at position {} in source file: {}",
-                    current_position, e
+                #[cfg(debug_assertions)]
+                {
+                    let error_msg = format!(
+                        "Cannot read byte at position {} in source file: {}",
+                        current_position, e
+                    );
+                    log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+                }
+                // safe
+                let num_2 = current_position.to_string();
+                let formatted_string = stack_format_it(
+                    "Cannot read byte at position {} in source file",
+                    &[&num_2],
+                    "Cannot read byte at position in source file",
                 );
-                log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+                log_error(&formatted_string, Some("append_bytes_from_file_to_file"));
                 return Err(LinesError::Io(e));
             }
         }
@@ -17164,11 +17460,22 @@ pub fn append_bytes_from_file_to_file(
         // write_all() ensures the entire buffer (1 byte) is written
         // If write fails: disk full, hardware failure, permissions, cosmic ray bit flip
         if let Err(e) = target_file.write_all(&single_byte_buffer) {
-            let error_msg = format!(
+            #[cfg(debug_assertions)]
+            {
+                let error_msg = format!(
+                    "Cannot write byte from position {} to target file: {}",
+                    current_position, e
+                );
+                log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            }
+            // safe
+            let num_2 = current_position.to_string();
+            let formatted_string = stack_format_it(
                 "Cannot write byte from position {} to target file: {}",
-                current_position, e
+                &[&num_2],
+                "Cannot write byte from position to target file",
             );
-            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+            log_error(&formatted_string, Some("append_bytes_from_file_to_file"));
             return Err(LinesError::Io(e));
         }
 
@@ -17184,8 +17491,16 @@ pub fn append_bytes_from_file_to_file(
     // Flush target file to ensure data is written to physical disk
     // This protects against data loss from power failure or system crash
     if let Err(e) = target_file.flush() {
-        let error_msg = format!("Cannot flush target file to disk: {}", e);
-        log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+        #[cfg(debug_assertions)]
+        {
+            let error_msg = format!("Cannot flush target file to disk: {}", e);
+            log_error(&error_msg, Some("append_bytes_from_file_to_file"));
+        }
+        // safe
+        log_error(
+            "Cannot flush target file to disk",
+            Some("append_bytes_from_file_to_file"),
+        );
         return Err(LinesError::Io(e));
     }
 
@@ -17229,24 +17544,35 @@ pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<
 
 /// Formats the Pasty legend with color-coded commands
 fn format_pasty_tui_legend() -> io::Result<String> {
-    Ok(format!(
+    // Ok(format!(
+    //     "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
+    //     YELLOW,
+    //     RED,
+    //     YELLOW,
+    //     RED,
+    //     YELLOW,
+    //     RED,
+    //     YELLOW,
+    //     YELLOW,
+    //     RED,
+    //     YELLOW,
+    //     RED,
+    //     RESET,
+    //     RED,
+    //     YELLOW,
+    //     RESET
+    // ))
+
+    let stack_formatted_legend = stack_format_it(
         "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
-        YELLOW,
-        RED,
-        YELLOW,
-        RED,
-        YELLOW,
-        RED,
-        YELLOW,
-        YELLOW,
-        RED,
-        YELLOW,
-        RED,
-        RESET,
-        RED,
-        YELLOW,
-        RESET
-    ))
+        &[
+            &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &YELLOW, &RED, &YELLOW, &RED,
+            &RESET, &RED, &YELLOW, &RESET,
+        ],
+        "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+    );
+
+    Ok(stack_formatted_legend)
 }
 
 /// Formats the Pasty info bar with count, pagination, and error messages
@@ -17262,23 +17588,49 @@ fn format_pasty_info_bar(
         String::new()
     };
 
-    Ok(format!(
-        // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
+    // Ok(format!(
+    //     // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
+    //     "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
+    //     RED,
+    //     total_count,
+    //     YELLOW,
+    //     YELLOW,
+    //     RED,
+    //     first_count_visible,
+    //     YELLOW,
+    //     RED,
+    //     last_count_visible,
+    //     YELLOW,
+    //     infobar_message_display,
+    //     YELLOW,
+    //     RESET
+    // ))
+
+    let string_totalcount = total_count.to_string();
+    let string_firstcount_visible = first_count_visible.to_string();
+    let string_last_count_visible = last_count_visible.to_string();
+
+    let stack_formatted_infobar = stack_format_it(
         "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
-        RED,
-        total_count,
-        YELLOW,
-        YELLOW,
-        RED,
-        first_count_visible,
-        YELLOW,
-        RED,
-        last_count_visible,
-        YELLOW,
-        infobar_message_display,
-        YELLOW,
-        RESET
-    ))
+        &[
+            &RED,
+            &string_totalcount,
+            &YELLOW,
+            &YELLOW,
+            &RED,
+            &string_firstcount_visible,
+            &YELLOW,
+            &RED,
+            &string_last_count_visible,
+            &YELLOW,
+            &infobar_message_display,
+            &YELLOW,
+            &RESET,
+        ],
+        "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+    );
+
+    Ok(stack_formatted_infobar)
 }
 
 /// Clears all files from clipboard directory
@@ -17505,14 +17857,14 @@ pub fn create_a_readcopy_of_file(
     if !original_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Original file does not exist: {:?}", original_path),
+            "Original file does not exist",
         ));
     }
 
     if !session_dir.exists() || !session_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("Session directory does not exist: {:?}", session_dir),
+            "Session directory does not exist",
         ));
     }
 
@@ -17527,12 +17879,9 @@ pub fn create_a_readcopy_of_file(
     let read_copy_name = format!("{}_{}", session_time_stamp, file_name);
     let read_copy_path = session_dir.join(&read_copy_name);
 
-    // Defensive: Check if read-copy already exists (shouldn't happen with timestamp)
+    // If read-copy already exists, return it immediately (idempotent)
     if read_copy_path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("Read-copy already exists: {:?}", read_copy_path),
-        ));
+        return Ok(read_copy_path);
     }
 
     // Copy the file to session directory
@@ -19165,6 +19514,129 @@ fn parse_file_with_line(input: &str) -> (String, Option<usize>) {
     }
 }
 */
+/// Recovery-reboot wrapper for lines_fullfileeditor_core
+pub fn lines_full_file_editor(
+    original_file_path: Option<PathBuf>,
+    starting_line: Option<usize>,
+    use_this_session: Option<PathBuf>,
+) -> Result<()> {
+    // Same code as core function to set-up
+
+    //  ///////////////////////////////////////
+    //  Initialization & Bootstrap Lines Editor
+    //  ///////////////////////////////////////
+
+    // Resolve target file path (all path handling logic extracted)
+    let target_path = resolve_target_file_path(original_file_path)?;
+    // // Diagnostic
+    // println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
+    // println!("File: {}", target_path.display());
+
+    // Create file if it doesn't exist
+    if !target_path.exists() {
+        // new file header = longer readable timestamp
+        let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
+        let header = format!("# {}", header_readable_timestamp);
+
+        // Create with header
+        let mut file = File::create(&target_path)?;
+        writeln!(file, "{}", header)?;
+        writeln!(file)?; // Empty line after header
+        file.flush()?;
+    }
+
+    // Initialize editor state
+    let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
+
+    let (session_time_stamp1, session_time_stamp2) =
+        match split_timestamp_no_heap(&session_time_base) {
+            Ok((ts4, ts5)) => (ts4, ts5),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                // Create two empty FixedSize32Timestamp structs as defaults
+                let empty =
+                    FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
+                        // If even the fallback fails, create manually
+                        FixedSize32Timestamp {
+                            data: [0u8; 32],
+                            len: 0,
+                        }
+                    });
+                (empty, empty)
+            }
+        };
+
+    //  ////////////////////////
+    //  Set Up & Build The State
+    //  ////////////////////////
+
+    let mut lines_editor_state = EditorState::new();
+    lines_editor_state.original_file_path = Some(target_path.clone());
+
+    // Initialize session directory FIRST
+    initialize_session_directory(
+        &mut lines_editor_state,
+        session_time_stamp1,
+        use_this_session,
+    )?;
+
+    // Get session directory path (we just initialized it)
+    let session_dir = lines_editor_state
+        .session_directory_path
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
+
+    // Create read-copy for safety
+    let _ = create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
+
+    //  ===============================================
+    //  FAIL-SAFE RECOVERY LOOP
+    //  ===============================================
+
+    let mut recovery_attempt = 0;
+    const MAX_RECOVERY_ATTEMPTS: usize = 5;
+
+    loop {
+        recovery_attempt += 1;
+
+        if recovery_attempt > MAX_RECOVERY_ATTEMPTS {
+            eprintln!("Error: Maximum recovery attempts exceeded");
+            return Err(LinesError::StateError("Too many recovery attempts".into()));
+        }
+
+        if recovery_attempt > 1 {
+            println!("\n=== RECOVERY REBOOT #{} ===\n", recovery_attempt - 1);
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        // Call core with SAME session directory
+        match lines_fullfileeditor_core(
+            Some(target_path.clone()),
+            starting_line,
+            Some(session_dir.clone()),
+        ) {
+            Ok(user_quit) => {
+                if user_quit {
+                    // User explicitly quit
+                    println!("\nExiting Lines Editor!");
+                    return Ok(());
+                } else {
+                    // Unexpected exit - reboot
+                    eprintln!("Warning: Unexpected exit, rebooting...");
+                }
+            }
+            Err(_e) => {
+                // Error occurred - reboot
+                #[cfg(debug_assertions)]
+                {
+                    log_error(&format!("{}", _e), Some("wrapper:recovery"));
+                    eprintln!("Error: {}, rebooting...", _e);
+                }
+                eprintln!("Rebooting...");
+            }
+        }
+    }
+}
 
 /// Line-Editor, Full-Mode for editing files
 ///
@@ -19190,11 +19662,11 @@ fn parse_file_with_line(input: &str) -> (String, Option<usize>) {
 /// - Creates parent directories if needed
 /// - Initializes new files with timestamp header
 /// - Creates read-copy for safety
-pub fn full_lines_editor(
+pub fn lines_fullfileeditor_core(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
     use_this_session: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     //  ///////////////////////////////////////
     //  Initialization & Bootstrap Lines Editor
     //  ///////////////////////////////////////
@@ -19510,7 +19982,7 @@ pub fn full_lines_editor(
         }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 // Keep This
@@ -19564,7 +20036,7 @@ pub fn full_lines_editor(
 //                 let filename = prompt_for_filename()?;
 //                 let current_dir = env::current_dir()?;
 //                 let original_file_path = current_dir.join(filename);
-//                 full_lines_editor(Some(original_file_path))
+//                 lines_full_file_editor(Some(original_file_path))
 //             }
 //         }
 //         2 => {
@@ -19597,7 +20069,7 @@ pub fn full_lines_editor(
 //                     } else {
 //                         // Full editor mode with specified path
 //                         let path = PathBuf::from(arg);
-//                         full_lines_editor(Some(path))
+//                         lines_full_file_editor(Some(path))
 //                     }
 //                 }
 //             }
@@ -19647,7 +20119,7 @@ use std::path::PathBuf;
 // import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
-    LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
+    LinesError, lines_full_file_editor, get_default_filepath, is_in_home_directory,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
@@ -19943,7 +20415,7 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = current_dir.join(filename);
 
                 // Call full editor with session path if provided
-                full_lines_editor(Some(original_file_path), None, parsed.session_path)
+                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
             }
         }
         Some(file_path) => {
@@ -19962,7 +20434,7 @@ fn main() -> Result<(), LinesError> {
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
                 // Full editor mode with file
-                full_lines_editor(Some(file_path), parsed.starting_line, parsed.session_path)
+                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
             }
         }
     }

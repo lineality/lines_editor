@@ -1,3 +1,33 @@
+// useful
+    // Add .txt extension if no extension provided
+    let mut buf = [0u8; 8]; // Adjust size as needed
+    let filename_bytes;
+
+    let filename = if trimmed.contains('.') {
+        trimmed
+    } else {
+        let txt_suffix = b".txt";
+        let trimmed_bytes = trimmed.as_bytes();
+
+        if trimmed_bytes.len() + txt_suffix.len() <= buf.len() {
+            buf[..trimmed_bytes.len()].copy_from_slice(trimmed_bytes);
+            buf[trimmed_bytes.len()..trimmed_bytes.len() + txt_suffix.len()]
+                .copy_from_slice(txt_suffix);
+
+            filename_bytes = &buf[..trimmed_bytes.len() + txt_suffix.len()];
+            std::str::from_utf8(filename_bytes).unwrap()
+        } else {
+            trimmed // Fallback if name too long
+        }
+    };
+
+    Ok(filename.to_string())
+
+to use:
+                #[cfg(debug_assertions)]
+                eprintln!("e: {}", e);
+
+
 
 /// Creates a timestamp string with full year prefix for archive file naming
 ///

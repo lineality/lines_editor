@@ -5,7 +5,7 @@ use std::path::PathBuf;
 // import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
-    LinesError, full_lines_editor, get_default_filepath, is_in_home_directory,
+    LinesError, get_default_filepath, is_in_home_directory, lines_full_file_editor,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
@@ -302,7 +302,7 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = current_dir.join(filename);
 
                 // Call full editor with session path if provided
-                full_lines_editor(Some(original_file_path), None, parsed.session_path)
+                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
             }
         }
         Some(file_path) => {
@@ -321,7 +321,7 @@ fn main() -> Result<(), LinesError> {
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
                 // Full editor mode with file
-                full_lines_editor(Some(file_path), parsed.starting_line, parsed.session_path)
+                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
             }
         }
     }
