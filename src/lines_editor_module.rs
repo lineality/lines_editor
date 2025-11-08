@@ -10129,7 +10129,7 @@ fn cleanup_session_directory_draft(state: &EditorState) -> io::Result<()> {
 /// Called on normal exit (quit/save-quit) to cleanup temporary files.
 ///
 /// # Arguments
-/// * `state` - Editor state containing session directory path
+/// * session directory path
 ///
 /// # Returns
 /// * `Ok(())` - Cleanup successful or no session directory to clean
@@ -10139,16 +10139,7 @@ fn cleanup_session_directory_draft(state: &EditorState) -> io::Result<()> {
 /// - Only removes directories under lines_data/tmp/sessions/
 /// - Defensive checks prevent removing wrong directories
 /// - Errors are logged but don't prevent exit
-pub fn cleanup_all_session_directory(state: &EditorState) -> io::Result<()> {
-    // Get session directory path
-    let session_dir = match &state.session_directory_path {
-        Some(path) => path,
-        None => {
-            // No session directory - nothing to clean
-            return Ok(());
-        }
-    };
-
+pub fn cleanup_all_session_directory(session_dir: &Path) -> io::Result<()> {
     // Defensive: Verify this is a session directory
     let path_str = session_dir.to_string_lossy();
     if !path_str.contains("lines_data") || !path_str.contains("sessions") {
@@ -20040,9 +20031,6 @@ fn render_utf8txt_row_with_cursor(
 /// - Provided path is outside the sessions directory structure (security)
 /// - Cannot canonicalize or access the path
 ///
-/// # Future Enhancement
-/// TODO: On startup, detect existing session directories and offer user
-/// the option to recover interrupted sessions. Display path to recovery files.
 pub fn initialize_session_directory(
     state: &mut EditorState,
     session_time_stamp: FixedSize32Timestamp,
@@ -20248,6 +20236,168 @@ pub fn initialize_session_directory(
     Ok(())
 }
 
+/// Creates a new session directory and returns its path
+///
+/// # Purpose
+/// Simple session directory creation for wrappers and tools that don't need
+/// full EditorState infrastructure. Creates timestamped session directory
+/// in standard location and returns absolute path.
+///
+/// # Project Context
+/// Provides session isolation for draft copies without requiring EditorState.
+/// Useful for:
+/// - Wrappers around lines_core that need session directories
+/// - Tools that want session isolation without full editor state
+/// - Testing and utilities that need temporary organized workspaces
+///
+/// # Directory Structure Created
+/// ```text
+/// {executable_dir}/
+///   lines_data/
+///     sessions/
+///       {timestamp}/          <- Created directory (returned)
+/// ```
+///
+/// # Arguments
+/// * `session_time_stamp` - Timestamp string for directory name (e.g., "2025_01_15_14_30_45")
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Absolute path to newly created session directory
+/// * `Err(io::Error)` - Directory creation or validation failed
+///
+/// # Behavior
+/// - Creates base infrastructure (lines_data/sessions/) if needed
+/// - Creates new timestamped session directory
+/// - Returns absolute canonicalized path
+/// - Idempotent: Returns path if directory already exists with this timestamp
+///
+/// # Design Notes
+/// - Does NOT use or require EditorState (no phantom state memory)
+/// - Does NOT support recovery mode (use full version for that)
+/// - Always creates new directory (or validates existing)
+/// - Simpler alternative to initialize_session_directory for basic use cases
+///
+/// # Example
+/// ```rust
+/// let timestamp = "2025_01_15_14_30_45".to_string();
+/// let session_path = simple_make_lines_editor_session_directory(timestamp)?;
+/// // session_path is now: "/path/to/exe/lines_data/sessions/2025_01_15_14_30_45"
+/// ```
+pub fn simple_make_lines_editor_session_directory(
+    session_time_stamp: String,
+) -> io::Result<PathBuf> {
+    // =================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // =================================================
+
+    // Defensive: Validate timestamp is not empty
+    debug_assert!(
+        !session_time_stamp.is_empty(),
+        "Session timestamp should not be empty"
+    );
+
+    #[cfg(test)]
+    assert!(
+        !session_time_stamp.is_empty(),
+        "Session timestamp should not be empty"
+    );
+
+    // Production catch: Handle empty timestamp
+    if session_time_stamp.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "simple_make_lines_editor_session_directory: Empty timestamp provided",
+        ));
+    }
+
+    // ===================================================================
+    // STEP 1: Ensure base directory structure exists
+    // ===================================================================
+    // Creates: {executable_dir}/lines_data/sessions/
+    let base_sessions_path = "lines_data/sessions";
+
+    let sessions_dir = make_verify_or_create_executabledirectoryrelative_canonicalized_dir_path(
+        base_sessions_path,
+    )
+    .map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            stack_format_it(
+                "simple_make_lines_editor_session_directory: Failed to create sessions structure: {}",
+                &[&e.to_string()],
+                "simple_make_lines_editor_session_directory: Failed to create sessions structure",
+            ),
+        )
+    })?;
+
+    // Defensive: Verify the path is a directory
+    if !sessions_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "simple_make_lines_editor_session_directory: Sessions path exists but is not a directory",
+        ));
+    }
+
+    // ===================================================================
+    // STEP 2: Create timestamped session directory
+    // ===================================================================
+    let session_path = sessions_dir.join(&session_time_stamp);
+
+    // Check if directory already exists (idempotent)
+    if session_path.exists() {
+        // Defensive: Verify it's actually a directory
+        if !session_path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "simple_make_lines_editor_session_directory: Path exists but is not a directory",
+            ));
+        }
+
+        // Already exists as directory - return it (idempotent)
+        debug_assert!(
+            session_path.is_absolute(),
+            "Session path should be absolute"
+        );
+
+        return Ok(session_path);
+    }
+
+    // Create the session directory
+    fs::create_dir(&session_path).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            stack_format_it(
+                "simple_make_lines_editor_session_directory: Failed to create directory: {}",
+                &[&e.to_string()],
+                "simple_make_lines_editor_session_directory: Failed to create directory",
+            ),
+        )
+    })?;
+
+    // Defensive: Verify creation succeeded
+    if !session_path.exists() || !session_path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "simple_make_lines_editor_session_directory: Creation reported success but directory not found",
+        ));
+    }
+
+    // Assertion: Verify path is absolute
+    debug_assert!(
+        session_path.is_absolute(),
+        "Session path should be absolute"
+    );
+
+    // Test assertion: Verify path is absolute
+    #[cfg(test)]
+    assert!(
+        session_path.is_absolute(),
+        "Session path should be absolute"
+    );
+
+    Ok(session_path)
+}
+
 /*
 for main
 /// Parses "filename:line" format and returns (filename, optional_line)
@@ -20286,9 +20436,9 @@ pub fn lines_full_file_editor(
 ) -> Result<()> {
     // Same code as core function to set-up
 
-    //  ///////////////////////////////////////
+    //  =======================================
     //  Initialization & Bootstrap Lines Editor
-    //  ///////////////////////////////////////
+    //  =======================================
 
     // Resolve target file path (all path handling logic extracted)
     let target_path = resolve_target_file_path(original_file_path)?;
@@ -20310,49 +20460,25 @@ pub fn lines_full_file_editor(
         file.flush()?;
     }
 
-    // Initialize editor state
-    let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
-
-    let (session_time_stamp1, _) = match split_timestamp_no_heap(&session_time_base) {
-        Ok((ts4, ts5)) => (ts4, ts5),
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            // Create two empty FixedSize32Timestamp structs as defaults
-            let empty = FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
-                // If even the fallback fails, create manually
-                FixedSize32Timestamp {
-                    data: [0u8; 32],
-                    len: 0,
-                }
-            });
-            (empty, empty)
-        }
+    /*
+    If there already is directory iput, use it.
+    If not, make a directory.
+    */
+    //  =======================
+    //  Set Up & Build The Path
+    //  =======================
+    let session_dir: PathBuf = if let Some(path) = use_this_session {
+        // If `use_this_session` is Some, use the provided path
+        path
+    } else {
+        // If `use_this_session` is None, create a new directory
+        let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
+        simple_make_lines_editor_session_directory(session_time_base)?
     };
 
-    //  ////////////////////////
-    //  Set Up & Build The State
-    //  ////////////////////////
-
-    let mut lines_editor_state = EditorState::new();
-    lines_editor_state.original_file_path = Some(target_path.clone());
-
-    // Initialize session directory FIRST
-    initialize_session_directory(
-        &mut lines_editor_state,
-        session_time_stamp1,
-        use_this_session,
-    )?;
-
-    // Get session directory path (we just initialized it)
-    let session_dir = lines_editor_state
-        .session_directory_path
-        .as_ref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
-
-    //  ===============================================
+    //  =======================
     //  FAIL-SAFE RECOVERY LOOP
-    //  ===============================================
-
+    //  =======================
     let mut recovery_attempt = 0;
     const MAX_RECOVERY_ATTEMPTS: usize = 5;
 
@@ -20396,7 +20522,7 @@ pub fn lines_full_file_editor(
     }
 
     // remove all files and session directory(folder)
-    _ = cleanup_all_session_directory(&lines_editor_state);
+    _ = cleanup_all_session_directory(&session_dir);
     return Ok(());
 }
 
