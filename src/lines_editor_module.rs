@@ -10031,7 +10031,97 @@ pub enum Command {
     // No operation
     None,
 }
+/// Cleans up the specific draft copy file used in this editing session
+///
+/// # Purpose
+/// Removes only the draft copy file that was being edited in this session.
+/// Session directory and other draft copies remain intact for version management
+/// and crash recovery across multiple files and editor sessions.
+///
+/// # Project Context - Version Management
+/// Session directories persist to support:
+/// - Multiple draft copies across time (version history)
+/// - Recovery after crashes or unexpected exits
+/// - Multi-file workflows with copy/paste between files
+/// - Reopening same file multiple times in same session
+///
+/// This function removes only the current draft being edited, leaving session
+/// infrastructure and other drafts available for future recovery and selection.
+///
+/// # Behavior
+/// - Does NOT remove session directory itself
+/// - Does NOT remove other draft copies in session directory
+/// - Only removes the specific file at state.read_copy_path
+/// - Silent success if file already gone (idempotent)
+///
+/// # Arguments
+/// * `state` - Editor state containing read_copy_path to the draft file
+///
+/// # Returns
+/// * `Ok(())` - Cleanup successful or no file to clean
+/// * `Err(io::Error)` - Cleanup failed (non-fatal, should be logged but not halt exit)
+///
+/// # Design Notes
+/// - Defensive checks prevent removing wrong files
+/// - Errors should be logged but must not prevent program exit
+/// - Called on normal exit (quit/save-quit) for cleanup
+/// - Debug builds show cleanup notification; production builds silent
+fn cleanup_session_directory_draft(state: &EditorState) -> io::Result<()> {
+    // Get draft copy file path
+    let draft_path = match &state.read_copy_path {
+        Some(path) => path,
+        None => {
+            // No draft file to clean - nothing to do
+            return Ok(());
+        }
+    };
 
+    // Defensive: Verify this looks like a session draft file
+    // Must contain both "lines_data" and "sessions" in path
+    let path_str = draft_path.to_string_lossy();
+    if !path_str.contains("lines_data") || !path_str.contains("sessions") {
+        // return Err(io::Error::new(
+        //     io::ErrorKind::InvalidInput,
+        //     "cleanup_draft_copy_file: Path does not appear to be a session draft file",
+        // ));
+
+        // wrong file? Nothing to do, move on.
+        return Ok(());
+    }
+
+    // Check if file exists
+    if !draft_path.exists() {
+        // Already gone - idempotent success
+        return Ok(());
+    }
+
+    // Defensive: Verify it's a file (not a directory)
+    if !draft_path.is_file() {
+        // not a file, move on, nothing to do.
+        return Ok(());
+    }
+
+    // At end during shut down, so, maybe ok to err.
+    // Remove only this specific draft file
+    fs::remove_file(draft_path).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            stack_format_it(
+                "cleanup_draft_copy_file: Failed to remove: {}",
+                &[&e.to_string()],
+                "cleanup_draft_copy_file: Failed to remove draft file",
+            ),
+        )
+    })?;
+
+    // Debug-only notification (production builds silent per security rules)
+    #[cfg(debug_assertions)]
+    {
+        println!("Draft copy cleaned up: {}", draft_path.display());
+    }
+
+    Ok(())
+}
 /// Cleans up session directory and all its contents
 ///
 /// # Purpose
@@ -10049,7 +10139,7 @@ pub enum Command {
 /// - Only removes directories under lines_data/tmp/sessions/
 /// - Defensive checks prevent removing wrong directories
 /// - Errors are logged but don't prevent exit
-fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
+pub fn cleanup_all_session_directory(state: &EditorState) -> io::Result<()> {
     // Get session directory path
     let session_dir = match &state.session_directory_path {
         Some(path) => path,
@@ -11839,12 +11929,16 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // How is that ok?
             // For special uses you CAN add must-save here, but think it though.
 
-            if let Err(_e) = cleanup_session_directory(lines_editor_state) {
+            if let Err(_e) = cleanup_session_directory_draft(lines_editor_state) {
                 #[cfg(debug_assertions)]
                 eprintln!("Warning: Session cleanup failed: {}", _e);
                 log_error("Session cleanup failed", Some("Command::Quit"));
                 // Continue with exit anyway
             }
+
+            // Note:
+            // If using as module, you may need to call:
+            //     _ = cleanup_all_session_directory(&lines_editor_state);
 
             // Default behavior: Let User Decide
             Ok(false) // Signal to exit loop
@@ -11854,12 +11948,17 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             save_file(lines_editor_state)?; // save file
 
             // Clean up session directory after save
-            if let Err(_e) = cleanup_session_directory(lines_editor_state) {
+            if let Err(_e) = cleanup_session_directory_draft(lines_editor_state) {
                 #[cfg(debug_assertions)]
                 eprintln!("Warning: Session cleanup failed: {}", _e);
                 log_error("Session cleanup failed: {}", Some("Command::SaveAndQuit"));
                 // Continue with exit anyway
             }
+
+            // Note:
+            // If using as module, you may need to call:
+            //     _ = cleanup_all_session_directory(&lines_editor_state);
+
             Ok(false) // Signal to exit after save
         }
 
@@ -18080,120 +18179,29 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
     }
 }
 
-// /// Creates a read-only copy of the file in the session directory
-// ///
-// /// # Purpose
-// /// Creates a timestamped copy in the session directory that won't be modified
-// /// during editing. This prevents corruption if the editor crashes while writing.
-// /// Read-copies are VISIBLE (no hidden files) and located in session directory
-// /// for easy access and crash recovery.
-// ///
-// /// # Arguments
-// /// * `original_path` - Path to the original file
-// /// * `session_dir` - Path to this session's directory (from EditorState)
-// ///
-// /// # Returns
-// /// * `Ok(PathBuf)` - Path to the read-copy in session directory
-// /// * `Err(io::Error)` - Copy operation failed
-// ///
-// /// # File Naming
-// /// Original: `/path/to/file.txt`
-// /// Session dir: `{executable_dir}/lines_data/sessions/2025_01_15_14_30_45/`
-// /// Read-copy: `{session_dir}/2025_01_15_14_30_45_file.txt`
-// ///
-// /// # Design Notes
-// /// - NO hidden files (no leading dot) - files should be visible to user
-// /// - Stored in session directory for crash recovery
-// /// - Timestamp prefix ensures uniqueness
-// /// - Session directory persists after exit for recovery
-// pub fn create_a_readcopy_of_file(
-//     original_path: &Path,
-//     session_dir: &Path,
-//     session_time_stamp: String,
-// ) -> io::Result<PathBuf> {
-//     // Defensive: Validate inputs
-//     if !original_path.exists() {
-//         return Err(io::Error::new(
-//             io::ErrorKind::NotFound,
-//             "Original file does not exist",
-//         ));
-//     }
-
-//     if !session_dir.exists() || !session_dir.is_dir() {
-//         return Err(io::Error::new(
-//             io::ErrorKind::NotFound,
-//             "Session directory does not exist",
-//         ));
-//     }
-
-//     // Get original filename
-//     let file_name = original_path
-//         .file_name()
-//         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?
-//         .to_string_lossy();
-
-//     // Build read-copy filename: {timestamp}_{original_filename}
-//     // NO leading dot - file should be visible
-
-//     // let read_copy_name = format!("{}_{}", session_time_stamp, file_name);
-//     // let read_copy_path = session_dir.join(&read_copy_name);
-//     let st_formatted_read_copy_path =
-//         stack_format_it("{}_{}", &[&session_time_stamp, &file_name], "N_N");
-//     let read_copy_path = session_dir.join(&st_formatted_read_copy_path);
-
-//     // If read-copy already exists, return it immediately (idempotent)
-//     if read_copy_path.exists() {
-//         return Ok(read_copy_path);
-//     }
-
-//     // Copy the file to session directory
-//     fs::copy(original_path, &read_copy_path).map_err(|e| {
-//         io::Error::new(
-//             io::ErrorKind::Other,
-//             format!("Failed to create read-copy: {}", e),
-//         )
-//     })?;
-
-//     // Defensive: Verify copy succeeded
-//     if !read_copy_path.exists() {
-//         return Err(io::Error::new(
-//             io::ErrorKind::Other,
-//             "Read-copy creation reported success but file not found",
-//         ));
-//     }
-
-//     // // Diagnostic Log success for user visibility
-//     // println!("Read-copy created: {}", read_copy_path.display());
-
-//     // Assertion: Verify result is valid
-//     debug_assert!(
-//         read_copy_path.is_absolute(),
-//         "Read-copy path should be absolute"
-//     );
-//     debug_assert!(
-//         read_copy_path.exists(),
-//         "Read-copy should exist after creation"
-//     );
-
-//     Ok(read_copy_path)
-// }
-
-/// Creates a read-only copy of the file in the session directory
+/// Creates or selects a read-only copy of the file in the session directory with version management
 ///
 /// # Purpose
-/// Creates a timestamped copy in the session directory that won't be modified
-/// during editing. This prevents corruption if the editor crashes while writing.
-/// Read-copies are VISIBLE (no hidden files) and located in session directory
-/// for easy access and crash recovery.
+/// Provides version management for draft copies within a session directory.
+/// When pre-existing draft copies are detected, presents user with selection menu.
+/// User decides which version to continue editing, or creates fresh copy.
 ///
-/// # Behavior - Session Directory Timestamp Matching
-/// 1. Extracts timestamp from session directory name (e.g., from `2025_01_15_14_30_45/`)
-/// 2. Checks if file already exists with session directory's timestamp prefix
-/// 3. If found: Returns existing file (prevents duplicate copies in same session)
-/// 4. If not found: Creates new copy with input timestamp prefix
+/// # Project Context - Version Management v1
+/// Session directories persist across file edits and editor restarts, allowing users to:
+/// - Recover from crashes with timestamped drafts
+/// - Move between files (copy/paste) while preserving session state
+/// - Select from previous draft versions when reopening files
+/// - Create fresh copies when desired
 ///
-/// This ensures files within a session directory use that session's timestamp,
-/// preventing duplicate copies when reopening the same file in the same session.
+/// This supports multi-file workflows where session directory contains drafts
+/// from multiple file editing sessions, potentially across editor restarts.
+///
+/// # Behavior Flow
+/// 1. Scans session directory for existing drafts matching `*_{original_filename}`
+/// 2. If none found: Creates new copy with session_time_stamp (no menu)
+/// 3. If found: Shows menu with up to 8 options, sorted newest first
+/// 4. User selects version (0=new, 1-8=existing) via stdin
+/// 5. Returns path to selected or newly created file
 ///
 /// # Arguments
 /// * `original_path` - Path to the original file
@@ -18201,139 +18209,348 @@ fn resolve_new_path(original_path: PathBuf, absolute_path: PathBuf) -> io::Resul
 /// * `session_time_stamp` - Timestamp to use if creating new copy
 ///
 /// # Returns
-/// * `Ok(PathBuf)` - Path to the read-copy in session directory (existing or new)
-/// * `Err(io::Error)` - Copy operation failed or validation failed
+/// * `Ok(PathBuf)` - Path to selected existing draft or newly created copy
+/// * `Err(io::Error)` - Critical failure (falls back to new copy when possible)
 ///
-/// # File Naming
-/// Original: `/path/to/file.txt`
-/// Session dir: `{executable_dir}/lines_data/sessions/2025_01_15_14_30_45/`
-/// Read-copy: `{session_dir}/2025_01_15_14_30_45_file.txt`
+/// # User Interface
+/// ```text
+/// File Version Choice & Recovery Q&A
+///
+/// Pre-existing draft-copies of this file have been detected.
+/// Please select which, if any, existing draft-copy you want
+/// to continue to edit. Or, by default (empty-enter), you
+/// can start life afresh: "sing, heigh-ho! unto the green holly"
+///
+/// Directory: /path/to/sessions/2025_01_15_14_30_45
+///
+/// Options:
+/// 0. Create new draft-copy
+///
+/// 1. 2025_01_15_14_30_45_file.txt
+/// 2. 2025_01_14_10_20_30_file.txt
+///
+/// Enter choice (0-2): _
+/// ```
 ///
 /// # Design Notes
-/// - NO hidden files (no leading dot) - files should be visible to user
-/// - Stored in session directory for crash recovery
-/// - Timestamp prefix ensures uniqueness
-/// - Session directory persists after exit for recovery
-/// - Reuses existing timestamped copies within same session
-/// - Falls back gracefully if parent directory timestamp cannot be extracted
+/// - NO automatic selection - user compares and decides
+/// - Stack-allocated only (no heap format!)
+/// - Uses stdin.read() for single-byte input
+/// - Bounded to 8 draft copies maximum
+/// - Filenames truncated to 32 bytes for display (shows timestamp)
+/// - Sorts newest first (timestamp descending)
+/// - Falls back to creating new copy on any scan/display/input error
+/// - Session directory path shown once; list shows filenames only
 pub fn create_a_readcopy_of_file(
     original_path: &Path,
     session_dir: &Path,
     session_time_stamp: String,
 ) -> io::Result<PathBuf> {
+    // Maximum draft copies shown in version selection menu
+    const MAX_DRAFT_COPIES: usize = 8;
+
+    // Display width for truncated filenames (shows timestamp)
+    const FILENAME_DISPLAY_SIZE: usize = 32;
+
+    // Input buffer for stdin read (single digit + newline)
+    const USER_INPUT_BUFFER_SIZE: usize = 4;
+
     // Defensive: Validate inputs
     if !original_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "create_a_readcopy_of_file: Original file does not exist",
+            "create_or_select_readcopy_of_file: Original file does not exist",
         ));
     }
 
     if !session_dir.exists() || !session_dir.is_dir() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "create_a_readcopy_of_file: Session directory does not exist",
+            "create_or_select_readcopy_of_file: Session directory does not exist",
         ));
     }
 
-    // Get original filename
+    // Get original filename for pattern matching
     let file_name = original_path
         .file_name()
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "create_a_readcopy_of_file: Cannot determine filename",
+                "create_or_select_readcopy_of_file: Cannot determine filename",
             )
         })?
         .to_string_lossy();
 
     // ===================================================================
-    // STEP 1: Extract timestamp from parent session directory name
+    // STEP 1: Scan for existing draft copies matching *_{original_filename}
     // ===================================================================
-    // Session directories are named with timestamps (e.g., "2025_01_15_14_30_45")
-    // Extract this to check if a file with that timestamp already exists
-    let parent_dir_name = session_dir
-        .file_name()
-        .and_then(|os_str| os_str.to_str())
-        .unwrap_or("");
 
-    // Debug assertion: Directory name should not be empty in normal operation
-    debug_assert!(
-        !parent_dir_name.is_empty(),
-        "Session directory should have a valid name"
-    );
+    // Stack array to hold existing draft paths
+    let mut draft_paths: [Option<PathBuf>; MAX_DRAFT_COPIES] = Default::default();
+    let mut draft_count: usize = 0;
 
-    // ===================================================================
-    // STEP 2: Check if file with parent directory timestamp exists
-    // ===================================================================
-    // Format: {session_dir}/{parent_dir_timestamp}_{original_filename}
-    // If exists, return it (prevents duplicate copies in same session)
-    if !parent_dir_name.is_empty() {
-        let st_formatted_parent_timestamp_path =
-            stack_format_it("{}_{}", &[parent_dir_name, &file_name], "N_N");
-        let parent_timestamp_file_path = session_dir.join(&st_formatted_parent_timestamp_path);
-
-        // If file with parent directory's timestamp exists, return it
-        if parent_timestamp_file_path.exists() {
-            // Debug assertion: Verify path is absolute
-            debug_assert!(
-                parent_timestamp_file_path.is_absolute(),
-                "Existing file path should be absolute"
+    // Read directory entries and filter for matching pattern
+    let read_dir = match fs::read_dir(session_dir) {
+        Ok(rd) => rd,
+        Err(_) => {
+            // Fallback: If directory scan fails, create new copy
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "create_or_select_readcopy_of_file: Failed to read session directory, creating new copy"
             );
+            return create_new_draft_copy(
+                original_path,
+                session_dir,
+                &session_time_stamp,
+                &file_name,
+            );
+        }
+    };
 
-            return Ok(parent_timestamp_file_path);
+    // Collect matching files
+    for entry_result in read_dir {
+        if draft_count >= MAX_DRAFT_COPIES {
+            break; // Bounded: Stop at max
+        }
+
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(_) => continue, // Skip invalid entries
+        };
+
+        let entry_path = entry.path();
+
+        // Only consider files (not directories)
+        if !entry_path.is_file() {
+            continue;
+        }
+
+        // Check if filename matches pattern: *_{original_filename}
+        if let Some(entry_filename) = entry_path.file_name() {
+            let entry_filename_str = entry_filename.to_string_lossy();
+
+            // Pattern: Must end with _{original_filename}
+            let suffix_pattern = stack_format_it("_{}", &[&file_name], "");
+            if entry_filename_str.ends_with(&suffix_pattern) {
+                draft_paths[draft_count] = Some(entry_path);
+                draft_count += 1;
+            }
         }
     }
 
     // ===================================================================
-    // STEP 3: File with parent timestamp not found - create with input timestamp
+    // STEP 2: Branch on results - If no drafts, create new copy
     // ===================================================================
-    // Build read-copy filename: {input_timestamp}_{original_filename}
-    // NO leading dot - file should be visible
-    let st_formatted_read_copy_path =
-        stack_format_it("{}_{}", &[&session_time_stamp, &file_name], "N_N");
-    let read_copy_path = session_dir.join(&st_formatted_read_copy_path);
 
-    // If read-copy already exists with input timestamp, return it (idempotent)
-    if read_copy_path.exists() {
-        return Ok(read_copy_path);
+    if draft_count == 0 {
+        // No existing drafts found - skip menu, create new copy
+        return create_new_draft_copy(original_path, session_dir, &session_time_stamp, &file_name);
+    }
+
+    // ===================================================================
+    // STEP 3: Display menu
+    // ===================================================================
+
+    // Show header
+    println!("\nFile Version Choice & Recovery Q&A\n");
+    println!("Pre-existing draft-copies of this file have been detected.");
+    println!("Please select which, if any, existing draft-copy you want");
+    println!("to continue to edit. Or, by default (empty-enter), you");
+    println!("can start life afresh: \"sing, heigh-ho! unto the green holly\"\n");
+
+    // Show session directory path
+    println!("Directory: {}\n", session_dir.display());
+
+    println!("Options:");
+    println!("0. Create new draft-copy\n");
+
+    // Show existing drafts (filenames only, truncated)
+    for i in 0..draft_count {
+        if let Some(ref path) = draft_paths[i] {
+            if let Some(filename) = path.file_name() {
+                let filename_str = filename.to_string_lossy();
+
+                // Truncate to FILENAME_DISPLAY_SIZE if needed
+                let display_name = if filename_str.len() > FILENAME_DISPLAY_SIZE {
+                    &filename_str[..FILENAME_DISPLAY_SIZE]
+                } else {
+                    &filename_str
+                };
+
+                let option_num = (i + 1).to_string();
+                let display_line =
+                    stack_format_it("{}. {}", &[&option_num, display_name], "Option unavailable");
+                println!("{}", display_line);
+            }
+        }
+    }
+
+    // Prompt for input
+    let max_choice = draft_count.to_string();
+    let prompt = stack_format_it(
+        "\nEnter choice (0-{}): ",
+        &[&max_choice],
+        "\nEnter choice: ",
+    );
+    print!("{}", prompt);
+
+    // Flush stdout to ensure prompt appears
+    if let Err(_) = io::stdout().flush() {
+        #[cfg(debug_assertions)]
+        eprintln!("create_or_select_readcopy_of_file: Failed to flush stdout");
+        // Continue anyway
+    }
+
+    // ===================================================================
+    // STEP 5: Read user input using stdin.read()
+    // ===================================================================
+
+    let mut input_buffer = [0u8; USER_INPUT_BUFFER_SIZE];
+    let user_choice: usize;
+
+    {
+        let stdin = io::stdin();
+        let mut stdin_handle = stdin.lock();
+
+        let bytes_read = match stdin_handle.read(&mut input_buffer) {
+            Ok(n) => n,
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "create_or_select_readcopy_of_file: Failed to read stdin, defaulting to new copy"
+                );
+                0 // Default to 0 on read failure
+            }
+        };
+
+        // Parse first byte as ASCII digit
+        if bytes_read > 0 {
+            let first_byte = input_buffer[0];
+
+            // Check if it's ASCII digit '0'-'9' (48-57)
+            if first_byte >= b'0' && first_byte <= b'9' {
+                user_choice = (first_byte - b'0') as usize;
+            } else {
+                // Non-digit input defaults to 0
+                user_choice = 0;
+            }
+        } else {
+            // Empty input or error defaults to 0
+            user_choice = 0;
+        }
+    } // stdin_handle dropped here
+
+    // Defensive: Validate choice is in range
+    if user_choice > draft_count {
+        // Out of range defaults to 0
+        #[cfg(debug_assertions)]
+        eprintln!("create_or_select_readcopy_of_file: Choice out of range, creating new copy");
+        return create_new_draft_copy(original_path, session_dir, &session_time_stamp, &file_name);
+    }
+
+    // ===================================================================
+    // STEP 6: Act on selection
+    // ===================================================================
+
+    if user_choice == 0 {
+        // User selected to create new copy
+        return create_new_draft_copy(original_path, session_dir, &session_time_stamp, &file_name);
+    }
+
+    // User selected existing draft (1-based index)
+    let selected_index = user_choice - 1;
+
+    if let Some(ref selected_path) = draft_paths[selected_index] {
+        // Defensive: Verify selected file still exists
+        if selected_path.exists() {
+            debug_assert!(
+                selected_path.is_absolute(),
+                "Selected draft path should be absolute"
+            );
+
+            return Ok(selected_path.clone());
+        } else {
+            // File disappeared between scan and selection - fall back to new copy
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "create_or_select_readcopy_of_file: Selected file no longer exists, creating new copy"
+            );
+            return create_new_draft_copy(
+                original_path,
+                session_dir,
+                &session_time_stamp,
+                &file_name,
+            );
+        }
+    }
+
+    // Should not reach here, but fall back to new copy if we do
+    #[cfg(debug_assertions)]
+    eprintln!("create_or_select_readcopy_of_file: Invalid selection state, creating new copy");
+    create_new_draft_copy(original_path, session_dir, &session_time_stamp, &file_name)
+}
+
+/// Helper function: Creates new draft copy with timestamp prefix
+///
+/// # Purpose
+/// Creates timestamped copy in session directory. Used by version management
+/// when user selects "new copy" option or when no existing drafts found.
+///
+/// # Project Context
+/// Supports version management system by providing clean draft creation
+/// with consistent naming: {timestamp}_{original_filename}
+///
+/// # Arguments
+/// * `original_path` - Path to original file to copy
+/// * `session_dir` - Session directory for draft storage
+/// * `timestamp` - Timestamp prefix for filename
+/// * `file_name` - Original filename (from original_path)
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Path to newly created draft copy
+/// * `Err(io::Error)` - Copy operation failed
+///
+/// # File Naming
+/// Format: `{timestamp}_{original_filename}`
+/// Example: `2025_01_15_14_30_45_file.txt`
+fn create_new_draft_copy(
+    original_path: &Path,
+    session_dir: &Path,
+    timestamp: &str,
+    file_name: &str,
+) -> io::Result<PathBuf> {
+    // Build draft filename: {timestamp}_{original_filename}
+    let draft_name = stack_format_it("{}_{}", &[timestamp, file_name], "draft_copy");
+
+    let draft_path = session_dir.join(&draft_name);
+
+    // If draft already exists (idempotent), return it
+    if draft_path.exists() {
+        debug_assert!(draft_path.is_absolute(), "Draft path should be absolute");
+        return Ok(draft_path);
     }
 
     // Copy the file to session directory
-    fs::copy(original_path, &read_copy_path).map_err(|e| {
+    fs::copy(original_path, &draft_path).map_err(|_| {
         io::Error::new(
             io::ErrorKind::Other,
-            // format!(
-            //     "create_a_readcopy_of_file: Failed to create read-copy: {}",
-            //     e
-            // ),
-            stack_format_it(
-                "create_a_readcopy_of_file: Failed to create read-copy: {}",
-                &[&e.to_string()],
-                "create_a_readcopy_of_file: Failed to create read-copy",
-            ),
+            "create_new_draft_copy: Failed to copy file",
         )
     })?;
 
     // Defensive: Verify copy succeeded
-    if !read_copy_path.exists() {
+    if !draft_path.exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "create_a_readcopy_of_file: Read-copy creation reported success but file not found",
+            "create_new_draft_copy: Copy reported success but file not found",
         ));
     }
 
     // Assertion: Verify result is valid
-    debug_assert!(
-        read_copy_path.is_absolute(),
-        "Read-copy path should be absolute"
-    );
-    debug_assert!(
-        read_copy_path.exists(),
-        "Read-copy should exist after creation"
-    );
+    debug_assert!(draft_path.is_absolute(), "Draft path should be absolute");
+    debug_assert!(draft_path.exists(), "Draft should exist after creation");
 
-    Ok(read_copy_path)
+    Ok(draft_path)
 }
 
 /// Prints help message to stdout
@@ -20096,23 +20313,21 @@ pub fn lines_full_file_editor(
     // Initialize editor state
     let session_time_base = createarchive_timestamp_with_precision(SystemTime::now(), true);
 
-    let (session_time_stamp1, session_time_stamp2) =
-        match split_timestamp_no_heap(&session_time_base) {
-            Ok((ts4, ts5)) => (ts4, ts5),
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                // Create two empty FixedSize32Timestamp structs as defaults
-                let empty =
-                    FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
-                        // If even the fallback fails, create manually
-                        FixedSize32Timestamp {
-                            data: [0u8; 32],
-                            len: 0,
-                        }
-                    });
-                (empty, empty)
-            }
-        };
+    let (session_time_stamp1, _) = match split_timestamp_no_heap(&session_time_base) {
+        Ok((ts4, ts5)) => (ts4, ts5),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            // Create two empty FixedSize32Timestamp structs as defaults
+            let empty = FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
+                // If even the fallback fails, create manually
+                FixedSize32Timestamp {
+                    data: [0u8; 32],
+                    len: 0,
+                }
+            });
+            (empty, empty)
+        }
+    };
 
     //  ////////////////////////
     //  Set Up & Build The State
@@ -20133,9 +20348,6 @@ pub fn lines_full_file_editor(
         .session_directory_path
         .as_ref()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "Session directory not initialized"))?;
-
-    // Create read-copy for safety
-    let _ = create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
 
     //  ===============================================
     //  FAIL-SAFE RECOVERY LOOP
@@ -20165,9 +20377,7 @@ pub fn lines_full_file_editor(
         ) {
             Ok(user_quit) => {
                 if user_quit {
-                    // User explicitly quit
-                    println!("\nExiting Lines Editor!");
-                    return Ok(());
+                    break;
                 } else {
                     // Unexpected exit - reboot
                     eprintln!("Warning: Unexpected exit, rebooting...");
@@ -20184,6 +20394,10 @@ pub fn lines_full_file_editor(
             }
         }
     }
+
+    // remove all files and session directory(folder)
+    _ = cleanup_all_session_directory(&lines_editor_state);
+    return Ok(());
 }
 
 /// Line-Editor, Full-Mode for editing files
