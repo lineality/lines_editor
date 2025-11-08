@@ -8157,7 +8157,11 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     if !readcopy_file_path.exists() {
         return Err(LinesError::Io(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("File not found: {:?}", readcopy_file_path),
+            stack_format_it(
+                "File not found: {:?}",
+                &[&readcopy_file_path.to_string_lossy()],
+                "File not found",
+            ),
         )));
     }
 
@@ -17997,7 +18001,6 @@ fn format_pasty_info_bar(
     info_bar_message: &str,
 ) -> io::Result<String> {
     let infobar_message_display = if !info_bar_message.is_empty() {
-        // format!(" {}", info_bar_message)
         stack_format_it(" {}", &[&info_bar_message], "")
     } else {
         String::new()
@@ -19046,7 +19049,12 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
                     BOLD, RED, BG_WHITE, display_char, RESET
                 ));
             } else {
-                utf8_line.push_str(&format!("{}  ", display_char));
+                // utf8_line.push_str(&format!("{}  ", display_char));
+                utf8_line.push_str(&stack_format_it(
+                    "{}  ",
+                    &[&display_char.to_string()],
+                    "_  ",
+                ));
             }
         } else {
             // Past EOF - show empty space
@@ -20275,10 +20283,6 @@ pub fn initialize_session_directory(
         fs::create_dir(&session_path).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
-                // format!(
-                //     "Failed to create session directory {}: {}",
-                //     session_time_stamp, e
-                // ),
                 stack_format_it(
                     "Failed to create session directory {}: {}",
                     &[&session_time_stamp.to_string(), &e.to_string()],
@@ -20533,7 +20537,6 @@ pub fn lines_full_file_editor(
         // new file header = longer readable timestamp
         let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
         let header = stack_format_it("# {}", &[&header_readable_timestamp], "");
-        // let header = format!("# {}", header_readable_timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
