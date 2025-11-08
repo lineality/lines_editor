@@ -1613,7 +1613,8 @@ impl From<ButtonError> for LinesError {
             // Assertion violations map to our catch-handle error
             ButtonError::AssertionViolation { check } => {
                 LinesError::GeneralAssertionCatchViolation(
-                    format!("Button system: {}", check).into(),
+                    // format!("Button system: {}", check).into(),
+                    stack_format_it("Button system: {}", &[&check], "Button system").into(),
                 )
             }
         }
@@ -1914,59 +1915,72 @@ where
 // =========
 // Utilities
 // =========
-/// Formats a message with multiple variable parts inserted at {} placeholders.
+
+// experimental formatting... e.g. :<3
+/// Formats a message with placeholders supporting alignment and width specifiers.
 ///
 /// ## Project Context
-/// Provides simple string formatting for UI messages and error messages using
-/// stack-allocated buffers. Designed for display text where formatting failure
-/// can gracefully degrade to a fallback message without compromising program
-/// operation.
+/// Provides string formatting for UI messages, tables, and aligned output using
+/// stack-allocated buffers. Supports basic format specifiers for padding and
+/// alignment without heap allocation.
 ///
-/// **Use for:**
-/// - Status bar updates
-/// - User notifications
-/// - Progress indicators
-/// - Display-only error messages
-///
-/// **Do NOT use for:**
-/// - output that may exceed a known size
-/// - where a known default is less optimal than erroring-out
-///
-/// Stack allocation makes this function safer and more predictable than
-/// heap-based formatting for bounded display messages.
-///
-/// ## Operation
-/// Takes a template string with one or more "{}" placeholders and inserts variable
-/// strings in order. Processes each placeholder sequentially, replacing with the
-/// corresponding insert string.
+/// ## Supported Format Specifiers
+/// - `{}` - Plain replacement
+/// - `{:<N}` - Left-align with width N (pad right with spaces)
+/// - `{:>N}` - Right-align with width N (pad left with spaces)
+/// - `{:^N}` - Center-align with width N (pad both sides with spaces)
+/// - `{:N}` - Default right-align with width N
 ///
 /// Examples:
-/// - stack_format_it("inserted {} bytes", &["42"]) -> "inserted 42 bytes"
-/// - stack_format_it("range: start={} > end={}", &["10", "5"]) -> "range: start=10 > end=5"
-/// - stack_format_it("a {} b {} c {}", &["1", "2", "3"]) -> "a 1 b 2 c 3"
+/// - ("ID: {:<5}", &["42"]) -> "ID: 42   " (left-align, width 5)
+/// - ("ID: {:>5}", &["42"]) -> "ID:    42" (right-align, width 5)
+/// - ("ID: {:^5}", &["42"]) -> "ID:  42  " (center-align, width 5)
 ///
 /// ## Safety & Error Handling
-/// - No panic: Always returns a valid string (formatted or fallback)
-/// - No unwrap: Direct return, no Result to unwrap
-/// - Uses 256-byte stack buffer for formatting
-/// - Returns fallback if result exceeds buffer size
-/// - Returns fallback if placeholder count doesn't match insert count
-/// - Returns fallback if template has no {} placeholders
-/// - Maximum 8 inserts supported (configurable via MAX_INSERTS)
+/// - No panic: Always returns valid string or fallback
+/// - No unwrap: All error paths return fallback
+/// - Uses 256-byte stack buffer
+/// - Returns fallback if result exceeds buffer
+/// - Returns fallback if format specifiers are invalid
+/// - Maximum 8 inserts supported
 ///
 /// ## Parameters
-/// - `template`: String with one or more "{}" placeholders
-/// - `inserts`: Slice of strings to insert at placeholders (in order)
+/// - `template`: String with format placeholders
+/// - `inserts`: Slice of strings to insert
 /// - `fallback`: Message to return if formatting fails
 ///
 /// ## Returns
-/// Formatted string on success, fallback string on any error (always valid)
+/// Formatted string on success, fallback string on any error
 ///
 /// ## Use Examples:
+/// ```rust
+/// // Table-like alignment
+/// let id = "42";
+/// let name = "Alice";
+/// let row = stack_format_it(
+///     "ID: {:<5} Name: {:<10}",
+///     &[id, name],
+///     "Data unavailable"
+/// );
+/// // Result: "ID: 42    Name: Alice     "
+/// ```
+///
+///
 /// ```rust
 /// let bytes = total_bytes_written.saturating_sub(1);
 /// let num_str = bytes.to_string();
 /// let message = stack_format_it("inserted {} bytes", &[&num_str], "inserted data");
+/// ```
+///
+/// Error Formatting:
+/// ```
+/// io::stdout().flush().map_err(|e| {
+///     LinesError::DisplayError(stack_format_it(
+///         "Failed to flush stdout: {}",
+///         &[&e.to_string()],
+///         "Failed to flush stdout",
+///     ))
+/// })?;
 /// ```
 ///
 /// ```rust
@@ -1980,7 +1994,7 @@ where
 /// ```
 fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
     // Internal stack buffer for result
-    let mut buf = [0u8; 256];
+    let mut buf = [0u8; 512];
 
     // Maximum number of inserts to prevent abuse
     const MAX_INSERTS: usize = 128;
@@ -1998,101 +2012,74 @@ fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
         return fallback.to_string();
     }
 
-    // Count placeholders in template
-    let placeholder = "{}";
-    let placeholder_count = template.matches(placeholder).count();
-
-    if placeholder_count == 0 {
-        #[cfg(debug_assertions)]
-        eprintln!("stack_format_it: No '{{}}' placeholders found in template");
-        return fallback.to_string();
-    }
-
-    if placeholder_count != inserts.len() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "stack_format_it: Placeholder count ({}) doesn't match insert count ({})",
-            placeholder_count,
-            inserts.len()
-        );
-        return fallback.to_string();
-    }
-
-    // Calculate total length needed
-    let mut total_len = template.len();
-
-    // Subtract placeholder lengths
-    total_len = match total_len.checked_sub(placeholder.len() * placeholder_count) {
-        Some(len) => len,
+    // Parse format specifiers and validate
+    let format_specs = match parse_format_specs(template, inserts.len()) {
+        Some(specs) => specs,
         None => {
             #[cfg(debug_assertions)]
-            eprintln!("stack_format_it: Length calculation underflow");
+            eprintln!("stack_format_it: Failed to parse format specifiers");
             return fallback.to_string();
         }
     };
 
-    // Add insert lengths
-    for insert in inserts {
-        total_len = match total_len.checked_add(insert.len()) {
-            Some(len) => len,
+    // Build the result
+    let mut pos = 0;
+    let mut insert_idx = 0;
+    let mut search_start = 0;
+
+    while insert_idx < inserts.len() {
+        // Find next placeholder
+        let placeholder_start = match template[search_start..].find('{') {
+            Some(offset) => search_start + offset,
+            None => break,
+        };
+
+        let placeholder_end = match template[placeholder_start..].find('}') {
+            Some(offset) => placeholder_start + offset + 1,
             None => {
                 #[cfg(debug_assertions)]
-                eprintln!("stack_format_it: Length overflow");
+                eprintln!("stack_format_it: Unclosed placeholder");
                 return fallback.to_string();
             }
         };
-    }
 
-    // Check buffer capacity
-    if total_len > buf.len() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "stack_format_it: Result too large (need {}, have {})",
-            total_len,
-            buf.len()
-        );
-        return fallback.to_string();
-    }
-
-    // Build the result by processing each placeholder
-    let mut pos = 0;
-    let mut remaining_template = template;
-    let mut insert_idx = 0;
-
-    while let Some(placeholder_pos) = remaining_template.find(placeholder) {
         // Copy text before placeholder
-        let before = &remaining_template[..placeholder_pos];
+        let before = &template[search_start..placeholder_start];
         if pos + before.len() > buf.len() {
             #[cfg(debug_assertions)]
-            eprintln!("stack_format_it: Buffer overflow during copy");
+            eprintln!("stack_format_it: Buffer overflow");
             return fallback.to_string();
         }
         buf[pos..pos + before.len()].copy_from_slice(before.as_bytes());
         pos += before.len();
 
-        // Copy insert
+        // Apply format specifier and insert
+        let spec = &format_specs[insert_idx];
         let insert = inserts[insert_idx];
-        if pos + insert.len() > buf.len() {
+
+        let formatted = apply_format_spec(insert, spec);
+
+        if pos + formatted.len() > buf.len() {
             #[cfg(debug_assertions)]
             eprintln!("stack_format_it: Buffer overflow during insert");
             return fallback.to_string();
         }
-        buf[pos..pos + insert.len()].copy_from_slice(insert.as_bytes());
-        pos += insert.len();
+        buf[pos..pos + formatted.len()].copy_from_slice(formatted.as_bytes());
+        pos += formatted.len();
 
-        // Move to next segment
-        remaining_template = &remaining_template[placeholder_pos + placeholder.len()..];
+        search_start = placeholder_end;
         insert_idx += 1;
     }
 
     // Copy remaining text after last placeholder
-    if pos + remaining_template.len() > buf.len() {
+    let remaining = &template[search_start..];
+    if pos + remaining.len() > buf.len() {
         #[cfg(debug_assertions)]
         eprintln!("stack_format_it: Buffer overflow during final copy");
         return fallback.to_string();
     }
-    buf[pos..pos + remaining_template.len()].copy_from_slice(remaining_template.as_bytes());
-    pos += remaining_template.len();
+    buf[pos..pos + remaining.len()].copy_from_slice(remaining.as_bytes());
+    pos += remaining.len();
 
     // Validate UTF-8 and return
     match std::str::from_utf8(&buf[..pos]) {
@@ -2101,6 +2088,147 @@ fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
             #[cfg(debug_assertions)]
             eprintln!("stack_format_it: Invalid UTF-8 in result");
             fallback.to_string()
+        }
+    }
+}
+
+/// Format specifier parsed from placeholder
+#[derive(Debug, Clone, Copy)]
+enum Alignment {
+    Left,
+    Right,
+    Center,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FormatSpec {
+    alignment: Alignment,
+    width: Option<usize>,
+}
+
+/// Parse format specifiers from template
+/// Returns None if parsing fails or placeholder count doesn't match insert count
+fn parse_format_specs(template: &str, expected_count: usize) -> Option<Vec<FormatSpec>> {
+    let mut specs = Vec::new();
+    let mut remaining = template;
+
+    while let Some(start) = remaining.find('{') {
+        let end = remaining[start..].find('}')?;
+        let placeholder = &remaining[start + 1..start + end];
+
+        let spec = if placeholder.is_empty() {
+            // Plain {} placeholder
+            FormatSpec {
+                alignment: Alignment::Left,
+                width: None,
+            }
+        } else if placeholder.starts_with(':') {
+            // Format specifier like {:<5} or {:>10}
+            parse_single_spec(&placeholder[1..])?
+        } else {
+            // Invalid format
+            return None;
+        };
+
+        specs.push(spec);
+        remaining = &remaining[start + end + 1..];
+    }
+
+    if specs.len() == expected_count {
+        Some(specs)
+    } else {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "parse_format_specs: Placeholder count ({}) doesn't match insert count ({})",
+            specs.len(),
+            expected_count
+        );
+        None
+    }
+}
+
+/// Parse a single format specifier like "<5" or ">10" or "^8"
+fn parse_single_spec(spec: &str) -> Option<FormatSpec> {
+    if spec.is_empty() {
+        return Some(FormatSpec {
+            alignment: Alignment::Right,
+            width: None,
+        });
+    }
+
+    let (alignment, width_str) = if spec.starts_with('<') {
+        (Alignment::Left, &spec[1..])
+    } else if spec.starts_with('>') {
+        (Alignment::Right, &spec[1..])
+    } else if spec.starts_with('^') {
+        (Alignment::Center, &spec[1..])
+    } else if spec.chars().next()?.is_ascii_digit() {
+        // No alignment character means right-align
+        (Alignment::Right, spec)
+    } else {
+        return None;
+    };
+
+    let width = if width_str.is_empty() {
+        None
+    } else {
+        match width_str.parse::<usize>() {
+            Ok(w) if w <= 64 => Some(w), // Reasonable width limit
+            _ => return None,
+        }
+    };
+
+    Some(FormatSpec { alignment, width })
+}
+
+/// Apply format specifier to a string value
+fn apply_format_spec(value: &str, spec: &FormatSpec) -> String {
+    let width = match spec.width {
+        Some(w) => w,
+        None => return value.to_string(), // No width, return as-is
+    };
+
+    let value_len = value.len();
+
+    if value_len >= width {
+        // Value already meets or exceeds width
+        return value.to_string();
+    }
+
+    let padding = width - value_len;
+
+    match spec.alignment {
+        Alignment::Left => {
+            // Pad right: "42   "
+            let mut result = String::with_capacity(width);
+            result.push_str(value);
+            for _ in 0..padding {
+                result.push(' ');
+            }
+            result
+        }
+        Alignment::Right => {
+            // Pad left: "   42"
+            let mut result = String::with_capacity(width);
+            for _ in 0..padding {
+                result.push(' ');
+            }
+            result.push_str(value);
+            result
+        }
+        Alignment::Center => {
+            // Pad both sides: " 42  "
+            let left_pad = padding / 2;
+            let right_pad = padding - left_pad;
+            let mut result = String::with_capacity(width);
+            for _ in 0..left_pad {
+                result.push(' ');
+            }
+            result.push_str(value);
+            for _ in 0..right_pad {
+                result.push(' ');
+            }
+            result
         }
     }
 }
@@ -2407,9 +2535,21 @@ fn create_readable_archive_timestamp(time: SystemTime) -> String {
     }
 
     // Format as YYYY-MM-DD, HH-MM-SS UTC
-    format!(
+    // format!(
+    //     "{:04}-{:02}-{:02}, {:02}-{:02}-{:02} UTC",
+    //     year, month, day, hour, minute, second
+    // )
+    stack_format_it(
         "{:04}-{:02}-{:02}, {:02}-{:02}-{:02} UTC",
-        year, month, day, hour, minute, second
+        &[
+            &year.to_string(),
+            &month.to_string(),
+            &day.to_string(),
+            &hour.to_string(),
+            &minute.to_string(),
+            &second.to_string(),
+        ],
+        "... UTC",
     )
 }
 
@@ -2938,7 +3078,12 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
 
     let mut file = File::open(file_path).map_err(|e| {
         log_error(
-            &format!("Cannot open file for line count: {}", e),
+            // &format!("Cannot open file for line count: {}", e),
+            &stack_format_it(
+                "Cannot open file for line count: {}",
+                &[&e.to_string()],
+                "Cannot open file for line count",
+            ),
             Some("count_lines_in_file"),
         );
         LinesError::Io(e)
@@ -2971,10 +3116,8 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
     loop {
         // Defensive: Check iteration limit (cosmic ray protection)
         if iterations >= MAX_ITERATIONS {
-            let error_msg = format!(
-                "Line count exceeded maximum iterations ({}). File may be corrupted.",
-                MAX_ITERATIONS
-            );
+            let error_msg =
+                "Line count exceeded maximum iterations (MAX_ITERATIONS). File may be corrupted.";
             log_error(&error_msg, Some("count_lines_in_file"));
             return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::Other,
@@ -3000,9 +3143,10 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
             }
             Ok(n) => {
                 // Unexpected: read() should return 0 or 1 for 1-byte buffer
-                let error_msg = format!(
+                let error_msg = stack_format_it(
                     "read() returned unexpected byte count: {} (expected 0 or 1)",
-                    n
+                    &[&n.to_string()],
+                    "read() returned unexpected byte count (expected 0 or 1)",
                 );
                 log_error(&error_msg, Some("count_lines_in_file"));
                 return Err(LinesError::Io(io::Error::new(
@@ -3090,64 +3234,76 @@ fn format_navigation_legend() -> Result<String> {
     // Legend is approximately 200 characters plus color codes
     let mut legend = String::with_capacity(300);
 
-    // Build the legend string with error handling for format operations
-    // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
-    let formatted = format!(
-        "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
-        // YELLOW, // Overall legend color
-        RED,
-        YELLOW, // RED q + YELLOW uit
-        RED,
-        GREEN, // RED b + YELLOW ack
-        YELLOW,
-        RED,
-        YELLOW, // RED b + YELLOW ack
-        RED,
-        YELLOW, // RED t + YELLOW erm
-        RED,
-        YELLOW, // RED d + YELLOW ir
-        RED,
-        YELLOW, // RED f + YELLOW ile
-        RED,
-        YELLOW, // RED n + YELLOW ame
-        RED,
-        YELLOW, // RED s + YELLOW ize
-        RED,
-        YELLOW, // RED m + YELLOW od
-        RED,
-        YELLOW, // RED m + YELLOW od
-        RED,
-        YELLOW, // RED g + YELLOW et
-        RED,
-        YELLOW, // RED v + YELLOW ,
-        RED,
-        YELLOW, // RED y + YELLOW ,
-        RED,
-        YELLOW, // RED p + YELLOW ,
-        RED,
-        YELLOW, // RED str + YELLOW ...
-        RED,
-        YELLOW,
-        RED,
-        // YELLOW, // RED enter + YELLOW ...
-        GREEN,  // RED b + YELLOW ack
-        YELLOW, // RED enter + YELLOW ...
-        RED,
-        YELLOW, // RED enter + YELLOW ...
-        RED,
-        YELLOW, // RED enter + YELLOW ...
-        RESET
-    );
+    // // Build the legend string with error handling for format operations
+    // // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
+    // let formatted_legend = format!(
+    //     "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+    //     // YELLOW, // Overall legend color
+    //     RED,
+    //     YELLOW, // RED q + YELLOW uit
+    //     RED,
+    //     GREEN, // RED b + YELLOW ack
+    //     YELLOW,
+    //     RED,
+    //     YELLOW, // RED b + YELLOW ack
+    //     RED,
+    //     YELLOW, // RED t + YELLOW erm
+    //     RED,
+    //     YELLOW, // RED d + YELLOW ir
+    //     RED,
+    //     YELLOW, // RED f + YELLOW ile
+    //     RED,
+    //     YELLOW, // RED n + YELLOW ame
+    //     RED,
+    //     YELLOW, // RED s + YELLOW ize
+    //     RED,
+    //     YELLOW, // RED m + YELLOW od
+    //     RED,
+    //     YELLOW, // RED m + YELLOW od
+    //     RED,
+    //     YELLOW, // RED g + YELLOW et
+    //     RED,
+    //     YELLOW, // RED v + YELLOW ,
+    //     RED,
+    //     YELLOW, // RED y + YELLOW ,
+    //     RED,
+    //     YELLOW, // RED p + YELLOW ,
+    //     RED,
+    //     YELLOW, // RED str + YELLOW ...
+    //     RED,
+    //     YELLOW,
+    //     RED,
+    //     // YELLOW, // RED enter + YELLOW ...
+    //     GREEN,  // RED b + YELLOW ack
+    //     YELLOW, // RED enter + YELLOW ...
+    //     RED,
+    //     YELLOW, // RED enter + YELLOW ...
+    //     RED,
+    //     YELLOW, // RED enter + YELLOW ...
+    //     RESET
+    // );
 
+    let formatted_legend = stack_format_it(
+        "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+        &[
+            &RED, &YELLOW, &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+            &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED,
+            &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+            &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RESET,
+        ],
+        "quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl",
+    );
     // Check if the formatted string is reasonable
     // (defensive programming against format! macro issues)
-    if formatted.is_empty() {
+    if formatted_legend.is_empty() {
         return Err(LinesError::FormatError(String::from(
             "Legend formatting produced empty string",
         )));
     }
 
-    legend.push_str(&formatted);
+    // TODO (push in smaller segments?)
+    legend.push_str(&formatted_legend);
+
     Ok(legend)
 }
 
@@ -8859,11 +9015,19 @@ fn save_file(state: &mut EditorState) -> io::Result<()> {
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?;
 
-    let backup_path = archive_dir.join(format!(
+    let formatted_string = stack_format_it(
         "{}_{}",
-        timestamp,
-        original_filename.to_string_lossy()
-    ));
+        &[&timestamp, &original_filename.to_string_lossy()],
+        "N_N",
+    );
+
+    // let backup_path = archive_dir.join(format!(
+    //     "{}_{}",
+    //     timestamp,
+    //     original_filename.to_string_lossy()
+    // ));
+
+    let backup_path = archive_dir.join(formatted_string);
 
     // Step 3: Copy original to backup (if original exists)
     if original_path.exists() {
@@ -9922,7 +10086,12 @@ fn cleanup_session_directory(state: &EditorState) -> io::Result<()> {
     fs::remove_dir_all(session_dir).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!("Failed to remove session directory: {}", e),
+            // format!("Failed to remove session directory: {}", e),
+            stack_format_it(
+                "Failed to remove session directory: {}",
+                &[&e.to_string()],
+                "Failed to remove session directory",
+            ),
         )
     })?;
 
@@ -10867,7 +11036,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
                     let _ = lines_editor_state
-                        .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                        // .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                        .set_info_bar_message(&stack_format_it(
+                            "Jumped to line {}",
+                            &[&line_number.to_string()],
+                            "Jumped to line",
+                        ));
                     Ok(true)
                 }
                 Err(_) => {
@@ -10937,8 +11111,15 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
+                    // let _ = lines_editor_state
+                    //     .set_info_bar_message(&format!("Jumped to line {}", line_number));
                     let _ = lines_editor_state
-                        .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                        // .set_info_bar_message(&format!("Jumped to line {}", line_number));
+                        .set_info_bar_message(&stack_format_it(
+                            "Jumped to line {}",
+                            &[&line_number.to_string()],
+                            "Jumped to line",
+                        ));
                     Ok(true)
                 }
                 Err(_) => {
@@ -11934,7 +12115,12 @@ fn backspace_style_delete_noload(
                         // Invalid UTF-8 - log but continue with deletion
                         #[cfg(debug_assertions)]
                         log_error(
-                            &format!("Invalid UTF-8 at position {}", prev_char_start),
+                            // &format!("Invalid UTF-8 at position {}", prev_char_start),
+                            &stack_format_it(
+                                "Invalid UTF-8 at position {}",
+                                &[&prev_char_start.to_string()],
+                                "Invalid UTF-8 at position",
+                            ),
                             Some("backspace_style_delete_noload:read_char"),
                         );
 
@@ -11952,9 +12138,14 @@ fn backspace_style_delete_noload(
                 // Cannot read character - log but continue with deletion
                 #[cfg(debug_assertions)]
                 log_error(
-                    &format!(
+                    // &format!(
+                    //     "Cannot read character at position {}: {}",
+                    //     prev_char_start, _e
+                    // ),
+                    &stack_format_it(
                         "Cannot read character at position {}: {}",
-                        prev_char_start, _e
+                        &[&prev_char_start.to_string(), &_e.to_string()],
+                        "Cannot read character at position",
                     ),
                     Some("backspace_style_delete_noload:read_char"),
                 );
@@ -17649,7 +17840,8 @@ fn format_pasty_info_bar(
     info_bar_message: &str,
 ) -> io::Result<String> {
     let infobar_message_display = if !info_bar_message.is_empty() {
-        format!(" {}", info_bar_message)
+        // format!(" {}", info_bar_message)
+        stack_format_it(" {}", &[&info_bar_message], "")
     } else {
         String::new()
     };
@@ -18111,9 +18303,14 @@ pub fn create_a_readcopy_of_file(
     fs::copy(original_path, &read_copy_path).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!(
+            // format!(
+            //     "create_a_readcopy_of_file: Failed to create read-copy: {}",
+            //     e
+            // ),
+            stack_format_it(
                 "create_a_readcopy_of_file: Failed to create read-copy: {}",
-                e
+                &[&e.to_string()],
+                "create_a_readcopy_of_file: Failed to create read-copy",
             ),
         )
     })?;
@@ -18278,29 +18475,51 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
     //     .to_string();
 
     // Build the info bar
-    let info = format!(
-        // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
-        "{}{} {}{}{}:{}{}{} {}{} @{}{}{} {}{} > ",
-        YELLOW,
-        mode_str,
-        // YELLOW,
-        RED,
-        line_display,
-        YELLOW,
-        YELLOW,
-        RED,
-        col_display,
-        YELLOW,
-        filename,
-        // GREEN,
-        RED,
-        file_position_string,
-        YELLOW,
-        message_for_infobar,
-        RESET,
-    );
+    // let info = format!(
+    //     // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
+    //     "{}{} {}{}{}:{}{}{} {}{} @{}{}{} {}{} > ",
+    //     YELLOW,
+    //     mode_str,
+    //     // YELLOW,
+    //     RED,
+    //     line_display,
+    //     YELLOW,
+    //     YELLOW,
+    //     RED,
+    //     col_display,
+    //     YELLOW,
+    //     filename,
+    //     // GREEN,
+    //     RED,
+    //     file_position_string,
+    //     YELLOW,
+    //     message_for_infobar,
+    //     RESET,
+    // );
 
-    Ok(info)
+    // Build the info bar (no-heap)
+    let info_bar = stack_format_it(
+        "{}{} {}{}{}:{}{}{} {}{} @{}{}{} {}{} > ",
+        &[
+            &YELLOW,
+            &mode_str,
+            &RED,
+            &line_display.to_string(),
+            &YELLOW,
+            &YELLOW,
+            &RED,
+            &col_display.to_string(),
+            &YELLOW,
+            &filename,
+            &RED,
+            &file_position_string,
+            &YELLOW,
+            &message_for_infobar,
+            &RESET,
+        ],
+        " > ",
+    );
+    Ok(info_bar)
 }
 
 //  ======================
@@ -18390,9 +18609,13 @@ impl HexCursor {
 pub fn render_tui_hex(state: &EditorState) -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[H");
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     // === TOP LINE: LEGEND (same as UTF-8 mode) ===
     let legend = format_navigation_legend()?;
@@ -18416,9 +18639,13 @@ pub fn render_tui_hex(state: &EditorState) -> Result<()> {
     let info_bar = format_hex_info_bar(state)?;
     print!("{}", info_bar);
 
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     Ok(())
 }
@@ -18521,6 +18748,7 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
         if i < bytes_read {
             let byte = byte_buffer[i];
 
+            // TODO: formatting?
             // === HEX LINE ===
             // Highlight if this is cursor position
             if i == cursor_col {
@@ -18590,9 +18818,13 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
 pub fn render_tui_raw(state: &EditorState) -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[H");
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     // === TOP LINE: LEGEND (same as hex mode) ===
     let legend = format_navigation_legend()?;
@@ -18616,9 +18848,13 @@ pub fn render_tui_raw(state: &EditorState) -> Result<()> {
     let info_bar = format_raw_info_bar(state)?;
     print!("{}", info_bar);
 
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     Ok(())
 }
@@ -18918,6 +19154,7 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
         if i < bytes_read {
             let byte = byte_buffer[i];
 
+            // TODO: explore stack based formatting...
             // === RAW LINE (with escape sequences) ===
             let raw_repr = byte_to_raw_escape(byte);
 
@@ -18926,8 +19163,17 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
                     "{}{}{}{:<3}{}", // Left-align in 3-char field
                     BOLD, RED, BG_WHITE, raw_repr, RESET
                 ));
+
+                // let formatted_string_1 = stack_format_it(
+                //     "{}{}{}{:<3}{}", // "{}{}{}{:<3}{}",
+                //     &[&BOLD, &RED, &BG_WHITE, &raw_repr.to_string(), &RESET],
+                //     "NNNNN",
+                // );
+                // raw_line.push_str(&formatted_string_1);
             } else {
                 raw_line.push_str(&format!("{:<3}", raw_repr));
+                // let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr.to_string()], "N");
+                // raw_line.push_str(&formatted_string_2);
             }
 
             // === INTERPRETED LINE (same as hex mode) ===
@@ -18938,8 +19184,21 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
                     "{}{}{}{}{}  ",
                     BOLD, RED, BG_WHITE, display_char, RESET
                 ));
+
+                // let formatted_string_3 = stack_format_it(
+                //     "{}{}{}{}{}",
+                //     &[&BOLD, &RED, &BG_WHITE, &display_char.to_string(), &RESET],
+                //     "NNNNN",
+                // );
+
+                // interpreted_line.push_str(&formatted_string_3);
             } else {
                 interpreted_line.push_str(&format!("{}  ", display_char));
+                // interpreted_line.push_str(&stack_format_it(
+                //     "{}  ",
+                //     &[&display_char.to_string()],
+                //     "N   ",
+                // ));
             }
         } else {
             // Past EOF
@@ -18949,6 +19208,13 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
     }
 
     let result = format!("{}\n{}\n", raw_line.trim_end(), interpreted_line.trim_end());
+
+    // let result = stack_format_it(
+    //     "{}\n{}\n",
+    //     &[&raw_line.trim_end(), &interpreted_line.trim_end()],
+    //     "^\n^\n",
+    // );
+
     Ok(result)
 }
 
@@ -19273,22 +19539,44 @@ fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
             .unwrap_or(""); // Empty string if invalid UTF-8
 
     // Build info bar
-    // Show byte position as 1-indexed for human readability
-    let info_bar = format!(
+    // // Show byte position as 1-indexed for human readability
+    // let info_bar = format!(
+    //     "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN {} {}> ",
+    //     YELLOW,
+    //     RED,
+    //     lines_editor_state
+    //         .hex_cursor
+    //         .byte_offset_linear_file_absolute_position
+    //         + 1, // Human-friendly: 1-indexed
+    //     YELLOW,
+    //     RED,
+    //     file_size,
+    //     YELLOW,
+    //     filename,
+    //     message_for_infobar,
+    //     RESET,
+    // );
+
+    let string_lines = &lines_editor_state
+        .hex_cursor
+        .byte_offset_linear_file_absolute_position
+        + 1;
+
+    let info_bar = stack_format_it(
         "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN {} {}> ",
-        YELLOW,
-        RED,
-        lines_editor_state
-            .hex_cursor
-            .byte_offset_linear_file_absolute_position
-            + 1, // Human-friendly: 1-indexed
-        YELLOW,
-        RED,
-        file_size,
-        YELLOW,
-        filename,
-        message_for_infobar,
-        RESET,
+        &[
+            &YELLOW,
+            &RED,
+            &string_lines.to_string(),
+            &YELLOW,
+            &RED,
+            &file_size.to_string(),
+            &YELLOW,
+            &filename,
+            &message_for_infobar,
+            &RESET,
+        ],
+        "Invalid byte range",
     );
 
     Ok(info_bar)
@@ -19327,9 +19615,13 @@ fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
 pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     // Clear screen
     print!("\x1B[2J\x1B[H");
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     // === TOP LINE: LEGEND ===
     let legend = format_navigation_legend()?;
@@ -19364,9 +19656,13 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     let info_bar = format_info_bar_cafe_normal_visualselect(state)?;
     print!("{}", info_bar);
 
-    io::stdout()
-        .flush()
-        .map_err(|e| LinesError::DisplayError(format!("Failed to flush stdout: {}", e)))?;
+    io::stdout().flush().map_err(|e| {
+        LinesError::DisplayError(stack_format_it(
+            "Failed to flush stdout: {}",
+            &[&e.to_string()],
+            "Failed to flush stdout",
+        ))
+    })?;
 
     Ok(())
 }
@@ -19417,10 +19713,16 @@ fn render_utf8txt_row_with_cursor(
     // Process each character in the row
     for col in 0..chars.len() {
         let ch = chars[col];
-
+        let ch_string = ch.to_string();
         // PRIORITY 1: Cursor highlighting (takes precedence)
         if cursor_on_this_row && col == cursor_col {
-            result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
+            let formatted_string_1 = stack_format_it(
+                "{}{}{}{}{}",
+                &[&BOLD, &RED, &BG_WHITE, &ch_string, &RESET],
+                "NNNNN",
+            );
+            // result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
+            result.push_str(&formatted_string_1);
             continue;
         }
 
@@ -19438,7 +19740,13 @@ fn render_utf8txt_row_with_cursor(
                 )?;
 
                 if in_selection {
-                    result.push_str(&format!("{}{}{}{}{}", BOLD, YELLOW, BG_CYAN, ch, RESET));
+                    let formatted_string_2 = stack_format_it(
+                        "{}{}{}{}{}",
+                        &[&BOLD, &YELLOW, &BG_CYAN, &ch_string, &RESET],
+                        "NNNNN",
+                    );
+                    // result.push_str(&format!("{}{}{}{}{}", BOLD, YELLOW, BG_CYAN, ch, RESET));
+                    result.push_str(&formatted_string_2);
                     continue;
                 }
             }
@@ -19450,7 +19758,13 @@ fn render_utf8txt_row_with_cursor(
 
     // Handle cursor at/past end of line
     if cursor_on_this_row && cursor_col >= chars.len() {
-        result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
+        // result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
+
+        result.push_str(&stack_format_it(
+            "{}{}{}█{}",
+            &[&BOLD, &RED, &BG_WHITE, &RESET],
+            "NNN█N",
+        ));
     }
 
     Ok(result)
@@ -19552,7 +19866,12 @@ pub fn initialize_session_directory(
     .map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!("Failed to create sessions directory structure: {}", e),
+            // format!("Failed to create sessions directory structure: {}", e),
+            stack_format_it(
+                "Failed to create sessions directory structure: {}",
+                &[&e.to_string()],
+                "Failed to create sessions directory structure",
+            ),
         )
     })?;
 
@@ -19670,9 +19989,14 @@ pub fn initialize_session_directory(
         fs::create_dir(&session_path).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::Other,
-                format!(
+                // format!(
+                //     "Failed to create session directory {}: {}",
+                //     session_time_stamp, e
+                // ),
+                stack_format_it(
                     "Failed to create session directory {}: {}",
-                    session_time_stamp, e
+                    &[&session_time_stamp.to_string(), &e.to_string()],
+                    "Failed to create session directory",
                 ),
             )
         })?;
@@ -20125,19 +20449,31 @@ pub fn lines_fullfileeditor_core(
             //  HEX Render a Flesh TUI
             //  ======================
             render_tui_hex(&lines_editor_state).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
+                )
             })?;
         } else if lines_editor_state.mode == EditorMode::RawMode {
             //  =====================
             //  Sashimi Raw TUI Ramen
             //  =====================
             render_tui_raw(&lines_editor_state).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
+                )
             })?;
         } else {
             // Render TUI (convert LinesError to io::Error)
             render_tui_utf8txt(&lines_editor_state).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
+                )
             })?;
         }
 
