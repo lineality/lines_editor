@@ -6,7 +6,7 @@ use std::path::PathBuf;
 mod lines_editor_module;
 use lines_editor_module::{
     LinesError, get_default_filepath, is_in_home_directory, lines_full_file_editor,
-    memo_mode_mini_editor_loop, print_help, prompt_for_filename,
+    memo_mode_mini_editor_loop, print_help, prompt_for_filename, stack_format_it,
 };
 
 mod buttons_reversible_edit_changelog_module;
@@ -37,6 +37,7 @@ const SOURCE_FILES: &[SourcedFile] = &[
         "src/toggle_comment_indent_module.rs",
         include_str!("toggle_comment_indent_module.rs"),
     ),
+    SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
     // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
     SourcedFile::new("README.md", include_str!("../README.md")),
     SourcedFile::new("LICENSE", include_str!("../LICENSE")),
@@ -151,7 +152,11 @@ fn parse_arguments(args: &[String]) -> Result<ParsedArgs, String> {
             }
             // Unknown flag
             arg_str if arg_str.starts_with("--") || arg_str.starts_with('-') => {
-                return Err(format!("Error: Unknown flag '{}'", arg_str));
+                return Err(stack_format_it(
+                    "Error: Unknown flag '{}'",
+                    &[&arg_str],
+                    "Error: Unknown flag",
+                ));
             }
             // Non-flag argument (file path)
             _ => {
@@ -302,7 +307,15 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = current_dir.join(filename);
 
                 // Call full editor with session path if provided
-                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
+                /*
+                pub fn lines_full_file_editor(
+                    original_file_path: Option<PathBuf>,
+                    starting_line: Option<usize>,
+                    use_this_session: Option<PathBuf>,
+                    state_persists: bool,
+                ) -> Result<()> {
+                */
+                lines_full_file_editor(Some(original_file_path), None, parsed.session_path, false)
             }
         }
         Some(file_path) => {
@@ -320,8 +333,21 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = get_default_filepath(Some(&file_path_str))?;
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
+                /*
+                pub fn lines_full_file_editor(
+                    original_file_path: Option<PathBuf>,
+                    starting_line: Option<usize>,
+                    use_this_session: Option<PathBuf>,
+                    state_persists: bool,
+                ) -> Result<()> {
+                */
                 // Full editor mode with file
-                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
+                lines_full_file_editor(
+                    Some(file_path),
+                    parsed.starting_line,
+                    parsed.session_path,
+                    false,
+                )
             }
         }
     }

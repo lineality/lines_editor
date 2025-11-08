@@ -826,7 +826,7 @@ use std::path::PathBuf;
 // import lines_editor_module lines_editor_module w/ these 2 lines:
 mod lines_editor_module;
 use lines_editor_module::{
-    LinesError, lines_full_file_editor, get_default_filepath, is_in_home_directory,
+    LinesError, get_default_filepath, is_in_home_directory, lines_full_file_editor,
     memo_mode_mini_editor_loop, print_help, prompt_for_filename,
 };
 
@@ -1123,7 +1123,15 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = current_dir.join(filename);
 
                 // Call full editor with session path if provided
-                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
+                /*
+                pub fn lines_full_file_editor(
+                    original_file_path: Option<PathBuf>,
+                    starting_line: Option<usize>,
+                    use_this_session: Option<PathBuf>,
+                    state_persists: bool,
+                ) -> Result<()> {
+                */
+                lines_full_file_editor(Some(original_file_path), None, parsed.session_path, false)
             }
         }
         Some(file_path) => {
@@ -1141,8 +1149,21 @@ fn main() -> Result<(), LinesError> {
                 let original_file_path = get_default_filepath(Some(&file_path_str))?;
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
+                /*
+                pub fn lines_full_file_editor(
+                    original_file_path: Option<PathBuf>,
+                    starting_line: Option<usize>,
+                    use_this_session: Option<PathBuf>,
+                    state_persists: bool,
+                ) -> Result<()> {
+                */
                 // Full editor mode with file
-                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
+                lines_full_file_editor(
+                    Some(file_path),
+                    parsed.starting_line,
+                    parsed.session_path,
+                    false,
+                )
             }
         }
     }
@@ -1613,7 +1634,6 @@ impl From<ButtonError> for LinesError {
             // Assertion violations map to our catch-handle error
             ButtonError::AssertionViolation { check } => {
                 LinesError::GeneralAssertionCatchViolation(
-                    // format!("Button system: {}", check).into(),
                     stack_format_it("Button system: {}", &[&check], "Button system").into(),
                 )
             }
@@ -1992,7 +2012,7 @@ where
 ///     "Invalid byte range"
 /// );
 /// ```
-fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
+pub fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
     // Internal stack buffer for result
     let mut buf = [0u8; 512];
 
@@ -2780,18 +2800,34 @@ pub fn createarchive_timestamp_with_precision(
             return String::from("1970_70_01_01_00_00_00");
         }
     }
+    let two_dig = year % 100;
 
     // Build base timestamp with YYYY prefix
-    let base_timestamp = format!(
+    let base_timestamp = stack_format_it(
         "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
-        year,       // Four-digit year
-        year % 100, // Two-digit year
-        month,
-        day,
-        hour,
-        minute,
-        second
+        &[
+            &year.to_string(),
+            &two_dig.to_string(),
+            &month.to_string(),
+            &day.to_string(),
+            &hour.to_string(),
+            &minute.to_string(),
+            &second.to_string(),
+        ],
+        "YYYY_MM_DD_HH_MM_OOPS",
     );
+
+    // // Build base timestamp with YYYY prefix
+    // let base_timestamp = format!(
+    //     "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+    //     year,       // Four-digit year
+    //     year % 100, // Two-digit year
+    //     month,
+    //     day,
+    //     hour,
+    //     minute,
+    //     second
+    // );
 
     if !include_microseconds {
         return base_timestamp;
@@ -2799,6 +2835,13 @@ pub fn createarchive_timestamp_with_precision(
 
     // Add microseconds component
     let microseconds = duration_since_epoch.as_micros() % 1_000_000;
+
+    // // TODO add formatting ability?
+    // stack_format_it(
+    //     "{}_{:06}",
+    //     &[&base_timestamp.to_string(), &base_timestamp.to_string()],
+    //     "{}_{:06}",
+    // )
 
     format!("{}_{:06}", base_timestamp, microseconds)
 }
@@ -2832,7 +2875,11 @@ impl FixedSize32Timestamp {
         if s.len() > MAX_LEN {
             return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("String too long: {} bytes, max: {}", s.len(), MAX_LEN),
+                stack_format_it(
+                    "impl FixedSize32Timestamp String too long: {} bytes, max: {}",
+                    &[&s.len().to_string(), &MAX_LEN.to_string()],
+                    "impl FixedSize32Timestamp String too long: __ bytes, max: __",
+                ),
             )));
         }
 
@@ -2885,7 +2932,11 @@ impl FixedSize32Timestamp {
         std::str::from_utf8(&self.data[..self.len]).map_err(|e| {
             LinesError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid UTF-8 in FixedSize32Timestamp: {}", e),
+                stack_format_it(
+                    "Invalid UTF-8 in FixedSize32Timestamp: {}",
+                    &[&e.to_string()],
+                    "Invalid UTF-8 in FixedSize32Timestamp",
+                ),
             ))
         })
     }
@@ -3078,7 +3129,6 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
 
     let mut file = File::open(file_path).map_err(|e| {
         log_error(
-            // &format!("Cannot open file for line count: {}", e),
             &stack_format_it(
                 "Cannot open file for line count: {}",
                 &[&e.to_string()],
@@ -3156,8 +3206,18 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
             }
             Err(e) => {
                 // Read error - propagate
+                #[cfg(debug_assertions)]
                 log_error(
-                    &format!("Read error at byte {}: {}", current_byte_position, e),
+                    &stack_format_it(
+                        "Read error at byte {}: {}",
+                        &[&current_byte_position.to_string(), &e.to_string()],
+                        "count_lines_in_file Read error",
+                    ),
+                    Some("count_lines_in_file"),
+                );
+                // safe
+                log_error(
+                    "count_lines_in_file Read error",
                     Some("count_lines_in_file"),
                 );
                 return Err(LinesError::Io(e));
@@ -7666,7 +7726,12 @@ pub fn get_default_filepath(custom_name: Option<&str>) -> io::Result<PathBuf> {
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("Could not find home directory: {}", e),
+                // format!("get_default_filepath Could not find home directory: {}", e),
+                stack_format_it(
+                    "get_default_filepath Could not find home directory: {}",
+                    &[&e.to_string()],
+                    "get_default_filepath Could not find home directory",
+                ),
             )
         })?;
 
@@ -7683,8 +7748,10 @@ pub fn get_default_filepath(custom_name: Option<&str>) -> io::Result<PathBuf> {
 
     // Create filename based on whether custom_name is provided
     let filename = match custom_name {
-        Some(name) => format!("{}_{}.txt", name, timestamp),
-        None => format!("{}.txt", timestamp),
+        // Some(name) => format!("{}_{}.txt", name, timestamp),
+        // None => format!("{}.txt", timestamp),
+        Some(name) => stack_format_it("{}_{}.txt", &[&name, &timestamp.to_string()], "N_N.txt"),
+        None => stack_format_it("{}.txt", &[&timestamp.to_string()], "N_N.txt"),
     };
 
     // Join the base path with the filename
@@ -10167,7 +10234,6 @@ pub fn cleanup_all_session_directory(session_dir: &Path) -> io::Result<()> {
     fs::remove_dir_all(session_dir).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            // format!("Failed to remove session directory: {}", e),
             stack_format_it(
                 "Failed to remove session directory: {}",
                 &[&e.to_string()],
@@ -11116,13 +11182,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
-                    let _ = lines_editor_state
-                        // .set_info_bar_message(&format!("Jumped to line {}", line_number));
-                        .set_info_bar_message(&stack_format_it(
-                            "Jumped to line {}",
-                            &[&line_number.to_string()],
-                            "Jumped to line",
-                        ));
+                    let _ = lines_editor_state.set_info_bar_message(&stack_format_it(
+                        "Jumped to line {}",
+                        &[&line_number.to_string()],
+                        "Jumped to line",
+                    ));
                     Ok(true)
                 }
                 Err(_) => {
@@ -11192,15 +11256,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
 
-                    // let _ = lines_editor_state
-                    //     .set_info_bar_message(&format!("Jumped to line {}", line_number));
-                    let _ = lines_editor_state
-                        // .set_info_bar_message(&format!("Jumped to line {}", line_number));
-                        .set_info_bar_message(&stack_format_it(
-                            "Jumped to line {}",
-                            &[&line_number.to_string()],
-                            "Jumped to line",
-                        ));
+                    let _ = lines_editor_state.set_info_bar_message(&stack_format_it(
+                        "Jumped to line {}",
+                        &[&line_number.to_string()],
+                        "Jumped to line",
+                    ));
                     Ok(true)
                 }
                 Err(_) => {
@@ -12147,8 +12207,10 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         }
     }
 
+    // message? 'end of line'?
     // let _ = lines_editor_state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
-    let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
+    // let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
+    let _ = lines_editor_state.set_info_bar_message("end of line");
     Ok(())
 }
 
@@ -12205,11 +12267,10 @@ fn backspace_style_delete_noload(
                         // Invalid UTF-8 - log but continue with deletion
                         #[cfg(debug_assertions)]
                         log_error(
-                            // &format!("Invalid UTF-8 at position {}", prev_char_start),
                             &stack_format_it(
-                                "Invalid UTF-8 at position {}",
+                                "backspace_style_delete_noload Invalid UTF-8 at position {}",
                                 &[&prev_char_start.to_string()],
-                                "Invalid UTF-8 at position",
+                                "backspace_style_delete_noload Invalid UTF-8 at position",
                             ),
                             Some("backspace_style_delete_noload:read_char"),
                         );
@@ -12228,14 +12289,10 @@ fn backspace_style_delete_noload(
                 // Cannot read character - log but continue with deletion
                 #[cfg(debug_assertions)]
                 log_error(
-                    // &format!(
-                    //     "Cannot read character at position {}: {}",
-                    //     prev_char_start, _e
-                    // ),
                     &stack_format_it(
-                        "Cannot read character at position {}: {}",
+                        "bsdn Cannot read char at pos {}: {}",
                         &[&prev_char_start.to_string(), &_e.to_string()],
-                        "Cannot read character at position",
+                        "bsdn Cannot read char at pos",
                     ),
                     Some("backspace_style_delete_noload:read_char"),
                 );
@@ -12266,7 +12323,11 @@ fn backspace_style_delete_noload(
             // Non-critical: Log error but don't fail the deletion
             #[cfg(debug_assertions)]
             log_error(
-                &format!("Cannot get changelog directory: {}", _e),
+                &stack_format_it(
+                    "Cannot get changelog directory: {}",
+                    &[&_e.to_string()],
+                    "Cannot get changelog directory",
+                ),
                 Some("backspace_style_delete_noload:changelog"),
             );
 
@@ -12318,9 +12379,14 @@ fn backspace_style_delete_noload(
                         // Final retry failed - log but don't fail operation
                         #[cfg(debug_assertions)]
                         log_error(
-                            &format!(
-                                "Failed to log deleted char '{}' at position {}: {}",
-                                deleted_char, position_u128, _e
+                            &stack_format_it(
+                                "bsdn Fail log deleted char '{}' pos {}: {}",
+                                &[
+                                    &deleted_char.to_string(),
+                                    &position_u128.to_string(),
+                                    &_e.to_string(),
+                                ],
+                                "bsdn Fail to log deleted char at position",
                             ),
                             Some("backspace_style_delete_noload:changelog"),
                         );
@@ -12867,9 +12933,10 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     if line_start > delete_end {
         #[cfg(debug_assertions)]
         log_error(
-            &format!(
+            &stack_format_it(
                 "Invalid line bounds: start {} > end {}",
-                line_start, delete_end
+                &[&line_start.to_string(), &delete_end.to_string()],
+                "Invalid line bounds",
             ),
             Some("delete_current_line_noload"),
         );
@@ -18991,6 +19058,7 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
     // Combine into two-line output
     let result = format!("{}\n{}\n", hex_line.trim_end(), utf8_line.trim_end());
 
+    // TODO: stack formatting in this function
     Ok(result)
 }
 
@@ -19367,39 +19435,39 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
             let raw_repr = byte_to_raw_escape(byte);
 
             if i == cursor_col {
-                raw_line.push_str(&format!(
-                    "{}{}{}{:<3}{}", // Left-align in 3-char field
-                    BOLD, RED, BG_WHITE, raw_repr, RESET
-                ));
+                // raw_line.push_str(&format!(
+                //     "{}{}{}{:<3}{}", // Left-align in 3-char field
+                //     BOLD, RED, BG_WHITE, raw_repr, RESET
+                // ));
 
-                // let formatted_string_1 = stack_format_it(
-                //     "{}{}{}{:<3}{}", // "{}{}{}{:<3}{}",
-                //     &[&BOLD, &RED, &BG_WHITE, &raw_repr.to_string(), &RESET],
-                //     "NNNNN",
-                // );
-                // raw_line.push_str(&formatted_string_1);
+                let formatted_string_1 = stack_format_it(
+                    "{}{}{}{:<3}{}", // "{}{}{}{:<3}{}",
+                    &[&BOLD, &RED, &BG_WHITE, &raw_repr.to_string(), &RESET],
+                    "NNNNN",
+                );
+                raw_line.push_str(&formatted_string_1);
             } else {
-                raw_line.push_str(&format!("{:<3}", raw_repr));
-                // let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr.to_string()], "N");
-                // raw_line.push_str(&formatted_string_2);
+                // raw_line.push_str(&format!("{:<3}", raw_repr));
+                let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr.to_string()], "N");
+                raw_line.push_str(&formatted_string_2);
             }
 
             // === INTERPRETED LINE (same as hex mode) ===
             let display_char = byte_to_display_char(byte);
 
             if i == cursor_col {
-                interpreted_line.push_str(&format!(
+                // interpreted_line.push_str(&format!(
+                //     "{}{}{}{}{}  ",
+                //     BOLD, RED, BG_WHITE, display_char, RESET
+                // ));
+
+                let formatted_string_3 = stack_format_it(
                     "{}{}{}{}{}  ",
-                    BOLD, RED, BG_WHITE, display_char, RESET
-                ));
+                    &[&BOLD, &RED, &BG_WHITE, &display_char.to_string(), &RESET],
+                    "NNNNN",
+                );
 
-                // let formatted_string_3 = stack_format_it(
-                //     "{}{}{}{}{}",
-                //     &[&BOLD, &RED, &BG_WHITE, &display_char.to_string(), &RESET],
-                //     "NNNNN",
-                // );
-
-                // interpreted_line.push_str(&formatted_string_3);
+                interpreted_line.push_str(&formatted_string_3);
             } else {
                 interpreted_line.push_str(&format!("{}  ", display_char));
                 // interpreted_line.push_str(&stack_format_it(
@@ -19415,13 +19483,13 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
         }
     }
 
-    let result = format!("{}\n{}\n", raw_line.trim_end(), interpreted_line.trim_end());
+    // let result = format!("{}\n{}\n", raw_line.trim_end(), interpreted_line.trim_end());
 
-    // let result = stack_format_it(
-    //     "{}\n{}\n",
-    //     &[&raw_line.trim_end(), &interpreted_line.trim_end()],
-    //     "^\n^\n",
-    // );
+    let result = stack_format_it(
+        "{}\n{}\n",
+        &[&raw_line.trim_end(), &interpreted_line.trim_end()],
+        "^\n^\n",
+    );
 
     Ok(result)
 }
@@ -19490,9 +19558,22 @@ fn format_raw_info_bar(state: &EditorState) -> Result<String> {
         0
     };
 
-    Ok(format!(
+    // Ok(format!(
+    //     "RAW byte {} of {} {} > ",
+    //     state.hex_cursor.byte_offset_linear_file_absolute_position, file_size, filename
+    // ))
+
+    Ok(stack_format_it(
         "RAW byte {} of {} {} > ",
-        state.hex_cursor.byte_offset_linear_file_absolute_position, file_size, filename
+        &[
+            &state
+                .hex_cursor
+                .byte_offset_linear_file_absolute_position
+                .to_string(),
+            &file_size.to_string(),
+            &filename,
+        ],
+        "RAW byte __ of _ _ > ",
     ))
 }
 
@@ -20433,6 +20514,7 @@ pub fn lines_full_file_editor(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
     use_this_session: Option<PathBuf>,
+    state_persists: bool, // if you want to keep session files.
 ) -> Result<()> {
     // Same code as core function to set-up
 
@@ -20464,9 +20546,9 @@ pub fn lines_full_file_editor(
     If there already is directory iput, use it.
     If not, make a directory.
     */
-    //  =======================
-    //  Set Up & Build The Path
-    //  =======================
+    //  ========================================
+    //  Set Up & Build The Path for Lines Editor
+    //  ========================================
     let session_dir: PathBuf = if let Some(path) = use_this_session {
         // If `use_this_session` is Some, use the provided path
         path
@@ -20521,8 +20603,10 @@ pub fn lines_full_file_editor(
         }
     }
 
-    // remove all files and session directory(folder)
-    _ = cleanup_all_session_directory(&session_dir);
+    if !state_persists {
+        // remove all files and session directory(folder)
+        _ = cleanup_all_session_directory(&session_dir);
+    }
     return Ok(());
 }
 
@@ -20570,7 +20654,6 @@ pub fn lines_fullfileeditor_core(
         // new file header = longer readable timestamp
         let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
         let header = stack_format_it("# {}", &[&header_readable_timestamp], "");
-        // let header = format!("# {}", header_readable_timestamp);
 
         // Create with header
         let mut file = File::create(&target_path)?;
@@ -20789,7 +20872,6 @@ pub fn lines_fullfileeditor_core(
             //  HEX Render a Flesh TUI
             //  ======================
             render_tui_hex(&lines_editor_state).map_err(|e| {
-                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
                 io::Error::new(
                     io::ErrorKind::Other,
                     stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
@@ -20800,7 +20882,6 @@ pub fn lines_fullfileeditor_core(
             //  Sashimi Raw TUI Ramen
             //  =====================
             render_tui_raw(&lines_editor_state).map_err(|e| {
-                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
                 io::Error::new(
                     io::ErrorKind::Other,
                     stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
@@ -20809,7 +20890,6 @@ pub fn lines_fullfileeditor_core(
         } else {
             // Render TUI (convert LinesError to io::Error)
             render_tui_utf8txt(&lines_editor_state).map_err(|e| {
-                // io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e))
                 io::Error::new(
                     io::ErrorKind::Other,
                     stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
@@ -21011,337 +21091,6 @@ pub fn lines_fullfileeditor_core(
 //         }
 //     }
 // }
-
-/*
-// src/main.rs
-use std::env;
-use std::path::PathBuf;
-
-// import lines_editor_module lines_editor_module w/ these 2 lines:
-mod lines_editor_module;
-use lines_editor_module::{
-    LinesError, lines_full_file_editor, get_default_filepath, is_in_home_directory,
-    memo_mode_mini_editor_loop, print_help, prompt_for_filename,
-};
-
-mod buttons_reversible_edit_changelog_module;
-mod toggle_comment_indent_module;
-
-// "Source-It" allows build source code transparency: --source
-mod source_it_module;
-use source_it_module::{SourcedFile, handle_sourceit_command};
-
-// Source-It: Developer explicitly lists files to embed w/
-const SOURCE_FILES: &[SourcedFile] = &[
-    SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
-    SourcedFile::new("src/main.rs", include_str!("main.rs")),
-    SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
-    SourcedFile::new(
-        "src/source_it_module.rs",
-        include_str!("source_it_module.rs"),
-    ),
-    SourcedFile::new(
-        "src/lines_editor_module.rs",
-        include_str!("lines_editor_module.rs"),
-    ),
-    SourcedFile::new(
-        "src/buttons_reversible_edit_changelog_module.rs",
-        include_str!("buttons_reversible_edit_changelog_module.rs"),
-    ),
-    SourcedFile::new(
-        "src/toggle_comment_indent_module.rs",
-        include_str!("toggle_comment_indent_module.rs"),
-    ),
-    // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
-    SourcedFile::new("README.md", include_str!("../README.md")),
-    SourcedFile::new("LICENSE", include_str!("../LICENSE")),
-    SourcedFile::new(".gitignore", include_str!("../.gitignore")),
-];
-
-// Cargo-tests in tests.rs // run: cargo test
-#[cfg(test)]
-mod tests;
-
-/// Parsed command line arguments for the editor
-///
-/// # Purpose
-/// Holds the structured result of parsing command line arguments,
-/// separating concerns of file path, line number, and session recovery.
-///
-/// # Fields
-/// * `file_path` - Optional path to file to edit
-/// * `starting_line` - Optional line number to jump to (from file:123 syntax)
-/// * `session_path` - Optional path to existing session directory for crash recovery
-/// * `mode` - Special mode flags (help, version, source, append)
-#[derive(Debug)]
-struct ParsedArgs {
-    file_path: Option<PathBuf>,
-    starting_line: Option<usize>,
-    session_path: Option<PathBuf>,
-    mode: ArgMode,
-}
-
-/// Special argument modes that don't start the editor
-#[derive(Debug, PartialEq)]
-enum ArgMode {
-    Normal,     // Start editor normally
-    Help,       // Print help and exit
-    Version,    // Print version and exit
-    Source,     // Extract source and exit
-    AppendMode, // Memo mode (append-only)
-}
-
-/// Parses command line arguments into structured format
-///
-/// # Purpose
-/// Processes raw command line arguments and extracts:
-/// - File path with optional :line_number suffix
-/// - --session flag with path argument
-/// - -a/--append flag for memo mode
-/// - Special flags (--help, --version, --source)
-///
-/// # Argument Patterns Supported
-/// ```text
-/// lines
-/// lines file.txt
-/// lines file.txt:123
-/// lines --session <path>
-/// lines --session <path> file.txt
-/// lines file.txt --session <path>
-/// lines file.txt:123 --session <path>
-/// lines -a file.txt
-/// lines --help
-/// ```
-///
-/// # Arguments
-/// * `args` - Raw command line arguments (including program name at index 0)
-///
-/// # Returns
-/// * `Ok(ParsedArgs)` - Successfully parsed arguments
-/// * `Err(String)` - Parse error with user-friendly message
-///
-/// # Error Cases
-/// - `--session` flag without path argument
-/// - Unknown flags
-/// - Too many non-flag arguments
-fn parse_arguments(args: &[String]) -> Result<ParsedArgs, String> {
-    let mut file_path: Option<PathBuf> = None;
-    let mut starting_line: Option<usize> = None;
-    let mut session_path: Option<PathBuf> = None;
-    let mut mode = ArgMode::Normal;
-
-    // Skip program name (args[0])
-    let mut i = 1;
-    while i < args.len() {
-        let arg = &args[i];
-
-        // Check for flags
-        match arg.as_str() {
-            // Special mode flags
-            "--help" | "-h" => {
-                mode = ArgMode::Help;
-                i += 1;
-            }
-            "--version" | "-v" | "-V" => {
-                mode = ArgMode::Version;
-                i += 1;
-            }
-            "--source" | "--source_it" => {
-                mode = ArgMode::Source;
-                i += 1;
-            }
-            "-a" | "--append" => {
-                mode = ArgMode::AppendMode;
-                i += 1;
-            }
-            // Session flag with path argument
-            "--session" | "-s" => {
-                // Next argument should be the session path
-                if i + 1 >= args.len() {
-                    return Err("Error: --session flag requires a path argument".to_string());
-                }
-                i += 1;
-                session_path = Some(PathBuf::from(&args[i]));
-                i += 1;
-            }
-            // Unknown flag
-            arg_str if arg_str.starts_with("--") || arg_str.starts_with('-') => {
-                return Err(format!("Error: Unknown flag '{}'", arg_str));
-            }
-            // Non-flag argument (file path)
-            _ => {
-                if file_path.is_some() {
-                    return Err("Error: Multiple file paths specified".to_string());
-                }
-
-                // Parse "filename:line" format
-                let (file_path_str, line_num) = if let Some(colon_pos) = arg.rfind(':') {
-                    let file_part = &arg[..colon_pos];
-                    let line_part = &arg[colon_pos + 1..];
-
-                    match line_part.parse::<usize>() {
-                        Ok(line) if line > 0 => (file_part.to_string(), Some(line)),
-                        _ => (arg.to_string(), None), // Invalid line, treat as filename
-                    }
-                } else {
-                    (arg.to_string(), None)
-                };
-
-                file_path = Some(PathBuf::from(file_path_str));
-                starting_line = line_num;
-                i += 1;
-            }
-        }
-    }
-
-    Ok(ParsedArgs {
-        file_path,
-        starting_line,
-        session_path,
-        mode,
-    })
-}
-
-/// Main entry point - routes between memo mode and full editor mode
-///
-/// # Purpose
-/// Determines which mode to use based on current directory and arguments.
-///
-/// # Command Line Usage
-/// ```text
-/// lines                                    # Memo mode (if in home) or prompt
-/// lines file.txt                          # Full editor with file
-/// lines file.txt:123                      # Full editor, jump to line 123
-/// lines --session ./sessions/20250103/    # Full editor with session recovery
-/// lines file.txt --session <path>         # Full editor with file and session
-/// lines -a file.txt                       # Memo mode (append-only)
-/// lines --help                            # Print help
-/// lines --version                         # Print version
-/// lines --source                          # Extract source code
-/// ```
-///
-/// # Mode Selection Logic
-/// 1. If CWD is home directory -> memo mode available
-/// 2. Otherwise -> full editor mode (requires file argument)
-///
-/// # Session Recovery
-/// Use `--session <path>` to continue an interrupted editing session.
-/// The path can be relative or absolute:
-/// - Relative: `lines --session sessions/20250103_143022 file.txt`
-/// - Absolute: `lines --session /full/path/to/sessions/20250103_143022 file.txt`
-///
-/// # Exit Codes
-/// - 0: Success
-/// - 1: General error
-/// - 2: Invalid arguments
-fn main() -> Result<(), LinesError> {
-    let args: Vec<String> = std::env::args().collect();
-
-    // Parse command line arguments
-    let parsed = match parse_arguments(&args) {
-        Ok(parsed) => parsed,
-        Err(err_msg) => {
-            eprintln!("{}", err_msg);
-            eprintln!();
-            eprintln!("Usage: lines [OPTIONS] [FILE[:LINE]]");
-            eprintln!();
-            eprintln!("Options:");
-            eprintln!("  -h, --help              Print help information");
-            eprintln!("  -v, --version           Print version information");
-            eprintln!("  --source                Extract source code");
-            eprintln!("  -a, --append FILE       Memo mode (append-only)");
-            eprintln!("  -s, --session PATH      Use existing session directory");
-            eprintln!();
-            eprintln!("Examples:");
-            eprintln!("  lines notes.txt                           # Edit file");
-            eprintln!("  lines notes.txt:42                        # Edit file, jump to line 42");
-            eprintln!("  lines --session ./sessions/20250103/      # Recover session");
-            eprintln!("  lines notes.txt --session <path>          # Edit with session");
-            std::process::exit(2);
-        }
-    };
-
-    // Check if we're in home directory
-    let in_home = is_in_home_directory()?;
-
-    // Handle special modes that don't start the editor
-    match parsed.mode {
-        ArgMode::Help => {
-            print_help();
-            return Ok(());
-        }
-        ArgMode::Version => {
-            println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
-            return Ok(());
-        }
-        ArgMode::Source => {
-            match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
-                Ok(path) => println!("Source extracted to: {}", path.display()),
-                Err(e) => eprintln!("Failed to extract source: {}", e),
-            }
-            return Ok(());
-        }
-        ArgMode::AppendMode => {
-            // Memo mode (append-only) - requires file path
-            if let Some(file_path) = parsed.file_path {
-                println!(
-                    "Starting memo mode (append-only) with file: {}",
-                    file_path.display()
-                );
-                return memo_mode_mini_editor_loop(&file_path);
-            } else {
-                eprintln!("Error: --append flag requires a file path");
-                std::process::exit(2);
-            }
-        }
-        ArgMode::Normal => {
-            // Continue to normal editor mode logic below
-        }
-    }
-
-    // Normal editor mode - determine whether to use memo mode or full editor
-    match parsed.file_path {
-        None => {
-            // No file specified
-            if in_home {
-                // Memo mode: create today's file
-                println!("Starting memo mode...");
-                let original_file_path = get_default_filepath(None)?;
-                memo_mode_mini_editor_loop(&original_file_path)
-            } else {
-                // Full editor mode - prompt for filename in current directory
-                println!("No file specified. Creating new file in current directory.");
-                let filename = prompt_for_filename()?;
-                let current_dir = env::current_dir()?;
-                let original_file_path = current_dir.join(filename);
-
-                // Call full editor with session path if provided
-                lines_full_file_editor(Some(original_file_path), None, parsed.session_path)
-            }
-        }
-        Some(file_path) => {
-            // File path provided
-            let file_path_str = file_path.to_string_lossy();
-
-            // Check if this is a simple filename in home directory (memo mode)
-            if in_home
-                && !file_path_str.contains('/')
-                && !file_path_str.contains('\\')
-                && parsed.session_path.is_none()
-            // Only memo mode if no session specified
-            {
-                println!("Starting memo mode with custom file: {}", file_path_str);
-                let original_file_path = get_default_filepath(Some(&file_path_str))?;
-                memo_mode_mini_editor_loop(&original_file_path)
-            } else {
-                // Full editor mode with file
-                lines_full_file_editor(Some(file_path), parsed.starting_line, parsed.session_path)
-            }
-        }
-    }
-}
-
-*/
 
 /*
 Build Notes:
