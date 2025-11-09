@@ -1941,25 +1941,27 @@ where
 // ===============
 // stack_format_it
 // ===============
-
 /// Formats a byte as 2-digit uppercase hexadecimal with optional ANSI styling.
+/// **ZERO HEAP ALLOCATION**
 ///
 /// ## Project Context
 /// Used in hex editor display to show byte values with cursor highlighting.
 /// Formats bytes as "XX " (3 chars) or with ANSI escape codes for highlighting.
+/// Writes directly to provided stack buffer - NO heap allocation.
 ///
 /// ## Operation
-/// - Normal mode: Formats as "42 " (hex byte + space)
-/// - Highlight mode: Wraps with ANSI codes for cursor position
-/// - Uses stack buffer, no heap allocation for formatting
+/// - Normal mode: Writes "42 " to buffer (3 bytes)
+/// - Highlight mode: Writes ANSI codes + hex + reset to buffer
+/// - Pure stack-based: Uses only provided buffer
 ///
 /// ## Safety & Error Handling
-/// - No panic: Always returns valid formatted string
-/// - Fixed maximum size: 64 bytes for result (sufficient for ANSI codes)
-/// - Pre-validated: Byte values always valid for hex formatting
+/// - No panic: Returns None if buffer too small
+/// - No heap: Uses only caller-provided stack buffer
+/// - No allocations: Direct byte writes only
 ///
 /// ## Parameters
 /// - `byte`: The byte value to format (0x00-0xFF)
+/// - `buf`: Mutable stack buffer to write into (caller-provided)
 /// - `highlight`: If true, wraps with ANSI color codes
 /// - `bold`: ANSI bold code (typically "\x1b[1m")
 /// - `red`: ANSI red foreground code
@@ -1967,28 +1969,32 @@ where
 /// - `reset`: ANSI reset code (typically "\x1b[0m")
 ///
 /// ## Returns
-/// Formatted string: "XX " or "{codes}XX{reset} "
+/// - `Some(&str)`: Formatted string borrowing from buf
+/// - `None`: Buffer too small
 ///
 /// ## Example use:
 /// ```rust
+/// let mut buf = [0u8; 64];
+///
 /// // Normal byte
-/// let formatted = stack_format_hex(0x42, false, "", "", "", "");
-/// // Result: "42 "
+/// if let Some(hex) = stack_format_hex_zero(0x42, &mut buf, false, "", "", "", "") {
+///     print!("{}", hex); // "42 "
+/// }
 ///
 /// // Highlighted byte
-/// let formatted = stack_format_hex(0x42, true, BOLD, RED, BG_WHITE, RESET);
-/// // Result: "\x1b[1m\x1b[31m\x1b[47m42\x1b[0m "
+/// if let Some(hex) = stack_format_hex_zero(0x42, &mut buf, true, BOLD, RED, BG_WHITE, RESET) {
+///     print!("{}", hex); // "\x1b[1m\x1b[31m\x1b[47m42\x1b[0m "
+/// }
 /// ```
-pub fn stack_format_hex(
+pub fn stack_format_hex<'a>(
     byte: u8,
+    buf: &'a mut [u8],
     highlight: bool,
     bold: &str,
     red: &str,
     bg_white: &str,
     reset: &str,
-) -> String {
-    // Stack buffer for result (64 bytes sufficient for ANSI codes + hex)
-    let mut buf = [0u8; 64];
+) -> Option<&'a str> {
     let mut pos = 0;
 
     if highlight {
@@ -1996,21 +2002,20 @@ pub fn stack_format_hex(
         for code in &[bold, red, bg_white] {
             let code_bytes = code.as_bytes();
             if pos + code_bytes.len() > buf.len() {
-                // Fallback if codes too long (shouldn't happen with standard ANSI)
-                return format!("{:02X} ", byte);
+                return None; // Buffer too small
             }
             buf[pos..pos + code_bytes.len()].copy_from_slice(code_bytes);
             pos += code_bytes.len();
         }
     }
 
-    // Format byte as 2-digit hex
+    // Format byte as 2-digit hex (pure stack operation)
     let hex_chars = b"0123456789ABCDEF";
     let high = (byte >> 4) as usize;
     let low = (byte & 0x0F) as usize;
 
     if pos + 2 > buf.len() {
-        return format!("{:02X} ", byte);
+        return None; // Buffer too small
     }
 
     buf[pos] = hex_chars[high];
@@ -2021,7 +2026,7 @@ pub fn stack_format_hex(
         // Add reset code after hex
         let reset_bytes = reset.as_bytes();
         if pos + reset_bytes.len() > buf.len() {
-            return format!("{:02X} ", byte);
+            return None; // Buffer too small
         }
         buf[pos..pos + reset_bytes.len()].copy_from_slice(reset_bytes);
         pos += reset_bytes.len();
@@ -2029,98 +2034,122 @@ pub fn stack_format_hex(
 
     // Add trailing space
     if pos + 1 > buf.len() {
-        return format!("{:02X} ", byte);
+        return None; // Buffer too small
     }
     buf[pos] = b' ';
     pos += 1;
 
-    // Convert to string
-    match std::str::from_utf8(&buf[..pos]) {
-        Ok(s) => s.to_string(),
-        Err(_) => format!("{:02X} ", byte), // Fallback
-    }
+    // Return slice of buffer (guaranteed valid ASCII, thus valid UTF-8)
+    std::str::from_utf8(&buf[..pos]).ok()
 }
-
 /// Converts byte to raw string representation with escape sequences.
+/// **ZERO HEAP ALLOCATION**
 ///
 /// ## Project Context
 /// Used in hex editor to display bytes as readable escape sequences.
 /// Shows special characters (\n, \t) and non-printable bytes (\xHH) in a
-/// human-readable format for the ASCII/raw column display.
+/// human-readable format. Writes directly to provided stack buffer - NO heap.
 ///
 /// ## Operation
-/// - Printable ASCII (0x20-0x7E) → returns as single character
-/// - Special chars (newline, tab, etc.) → returns escape sequence
-/// - Non-printable bytes → returns hex escape \xHH
-/// - Uses stack buffer, minimal heap allocation
+/// - Printable ASCII (0x20-0x7E) → writes as single character
+/// - Special chars (newline, tab, etc.) → writes escape sequence
+/// - Non-printable bytes → writes hex escape \xHH
+/// - Pure stack-based: Uses only provided buffer
 ///
 /// ## Safety & Error Handling
-/// - No panic: All byte values handled
-/// - Bounded output: Maximum 4 characters (\xHH)
-/// - Pre-validated: All paths return valid UTF-8
+/// - No panic: Returns None if buffer too small
+/// - No heap: Uses only caller-provided stack buffer
+/// - Bounded output: Maximum 4 bytes (\xHH)
+/// - Pre-validated: All paths write valid UTF-8
 ///
 /// ## Parameters
 /// - `byte`: Single byte to convert (0x00-0xFF)
+/// - `buf`: Mutable stack buffer to write into (min 4 bytes)
 ///
 /// ## Returns
-/// String representation (1-4 characters)
+/// - `Some(&str)`: Formatted string borrowing from buf (1-4 chars)
+/// - `None`: Buffer too small (< 4 bytes)
 ///
 /// ## Examples
 /// ```rust
-/// stack_format_byte_escape(0x0A) // "\\n"
-/// stack_format_byte_escape(0x48) // "H"
-/// stack_format_byte_escape(0x00) // "\\x00"
-/// stack_format_byte_escape(0x09) // "\\t"
+/// let mut buf = [0u8; 4];
+///
+/// stack_format_byte_escape(0x0A, &mut buf) // Some("\\n")
+/// stack_format_byte_escape(0x48, &mut buf) // Some("H")
+/// stack_format_byte_escape(0x00, &mut buf) // Some("\\0")
+/// stack_format_byte_escape(0x09, &mut buf) // Some("\\t")
 /// ```
-pub fn stack_format_byte_escape(byte: u8) -> String {
-    // Stack buffer for result (max 4 bytes for \xHH)
-    let mut buf = [0u8; 4];
+pub fn stack_format_byte_escape<'a>(byte: u8, buf: &'a mut [u8]) -> Option<&'a str> {
     let len: usize;
 
     match byte {
         0x0A => {
             // Newline: \n
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b'n';
             len = 2;
         }
         0x09 => {
             // Tab: \t
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b't';
             len = 2;
         }
         0x0D => {
             // Carriage return: \r
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b'r';
             len = 2;
         }
         0x5C => {
             // Backslash: \\
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b'\\';
             len = 2;
         }
         0x22 => {
             // Quote: \"
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b'"';
             len = 2;
         }
         0x00 => {
             // Null: \0
+            if buf.len() < 2 {
+                return None;
+            }
             buf[0] = b'\\';
             buf[1] = b'0';
             len = 2;
         }
         0x20..=0x7E => {
-            // Printable ASCII (already handled special cases above)
+            // Printable ASCII
+            if buf.is_empty() {
+                return None;
+            }
             buf[0] = byte;
             len = 1;
         }
         _ => {
             // Non-printable: \xHH
+            if buf.len() < 4 {
+                return None;
+            }
             let hex_chars = b"0123456789ABCDEF";
             buf[0] = b'\\';
             buf[1] = b'x';
@@ -2130,60 +2159,58 @@ pub fn stack_format_byte_escape(byte: u8) -> String {
         }
     }
 
-    // Convert to string (guaranteed valid UTF-8)
-    // Safe unwrap: we only write ASCII bytes
-    std::str::from_utf8(&buf[..len])
-        .map(|s| s.to_string())
-        .unwrap_or_else(|_| String::from("?")) // Defensive fallback
+    // Return slice (guaranteed valid UTF-8 - we only write ASCII)
+    std::str::from_utf8(&buf[..len]).ok()
 }
-
 #[cfg(test)]
 mod hex_format_tests {
     use super::*;
 
     #[test]
-    fn test_hex_normal() {
-        let result = stack_format_hex(0x42, false, "", "", "", "");
-        assert_eq!(result, "42 ");
+    fn test_hex_zero_normal() {
+        let mut buf = [0u8; 64];
+        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
+        assert_eq!(result, Some("42 "));
     }
 
     #[test]
-    fn test_hex_highlighted() {
-        let result = stack_format_hex(0x42, true, "[B]", "[R]", "[W]", "[RST]");
-        assert_eq!(result, "[B][R][W]42[RST] ");
+    fn test_hex_zero_highlighted() {
+        let mut buf = [0u8; 64];
+        let result = stack_format_hex(0x42, &mut buf, true, "[B]", "[R]", "[W]", "[RST]");
+        assert_eq!(result, Some("[B][R][W]42[RST] "));
     }
 
     #[test]
-    fn test_hex_zero() {
-        let result = stack_format_hex(0x00, false, "", "", "", "");
-        assert_eq!(result, "00 ");
+    fn test_hex_zero_buffer_too_small() {
+        let mut buf = [0u8; 2]; // Too small
+        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
+        assert_eq!(result, None);
     }
 
     #[test]
-    fn test_hex_max() {
-        let result = stack_format_hex(0xFF, false, "", "", "", "");
-        assert_eq!(result, "FF ");
+    fn test_byte_escape_zero_printable() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(b'H', &mut buf), Some("H"));
     }
 
     #[test]
-    fn test_byte_escape_printable() {
-        assert_eq!(stack_format_byte_escape(b'H'), "H");
-        assert_eq!(stack_format_byte_escape(b' '), " ");
+    fn test_byte_escape_zero_special() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(0x0A, &mut buf), Some("\\n"));
+        assert_eq!(stack_format_byte_escape(0x09, &mut buf), Some("\\t"));
     }
 
     #[test]
-    fn test_byte_escape_special() {
-        assert_eq!(stack_format_byte_escape(0x0A), "\\n");
-        assert_eq!(stack_format_byte_escape(0x09), "\\t");
-        assert_eq!(stack_format_byte_escape(0x0D), "\\r");
-        assert_eq!(stack_format_byte_escape(0x00), "\\0");
+    fn test_byte_escape_zero_nonprintable() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(0xFF, &mut buf), Some("\\xFF"));
     }
 
     #[test]
-    fn test_byte_escape_nonprintable() {
-        assert_eq!(stack_format_byte_escape(0x01), "\\x01");
-        assert_eq!(stack_format_byte_escape(0xFF), "\\xFF");
-        assert_eq!(stack_format_byte_escape(0x7F), "\\x7F");
+    fn test_byte_escape_zero_buffer_too_small() {
+        let mut buf = [0u8; 1]; // Too small for \xHH
+        let result = stack_format_byte_escape(0xFF, &mut buf);
+        assert_eq!(result, None);
     }
 }
 
@@ -19302,15 +19329,23 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
             //     hex_line.push_str(&format!("{:02X} ", byte));
             // }
 
-            let formatted = stack_format_hex(
+            // Hex formatting
+            let mut hex_buf = [0u8; 64];
+
+            if let Some(formatted) = stack_format_hex(
                 byte,
+                &mut hex_buf,
                 i == cursor_col, // highlight flag
                 BOLD,
                 RED,
                 BG_WHITE,
                 RESET,
-            );
-            hex_line.push_str(&formatted);
+            ) {
+                hex_line.push_str(formatted);
+            } else {
+                // Fallback if buffer somehow fails
+                hex_line.push_str("?? ");
+            }
 
             // === UTF-8 LINE ===
             // Convert byte to displayable character
@@ -19718,10 +19753,12 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
         if i < bytes_read {
             let byte = byte_buffer[i];
 
+            let mut hex_buf = [0u8; 64];
+
             // TODO: explore stack based formatting...
             // === RAW LINE (with escape sequences) ===
             // let raw_repr = byte_to_raw_escape(byte);
-            let raw_repr = stack_format_byte_escape(byte);
+            let raw_repr = stack_format_byte_escape(byte, &mut hex_buf).unwrap_or("?");
 
             if i == cursor_col {
                 // raw_line.push_str(&format!(
@@ -19731,13 +19768,13 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
 
                 let formatted_string_1 = stack_format_it(
                     "{}{}{}{:<3}{}", // "{}{}{}{:<3}{}",
-                    &[&BOLD, &RED, &BG_WHITE, &raw_repr.to_string(), &RESET],
+                    &[&BOLD, &RED, &BG_WHITE, &raw_repr, &RESET],
                     "NNNNN",
                 );
                 raw_line.push_str(&formatted_string_1);
             } else {
                 // raw_line.push_str(&format!("{:<3}", raw_repr));
-                let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr.to_string()], "N");
+                let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr], "N");
                 raw_line.push_str(&formatted_string_2);
             }
 
@@ -21337,4 +21374,269 @@ pub fn lines_fullfileeditor_core(
 
 /*
 Build Notes:
+*/
+
+/*
+
+# Example of FF open_file() integration
+
+/// ```
+fn open_file(file_path: &PathBuf, lines_editor_session_path: &PathBuf) -> Result<()> {
+    /*
+    The user input format/sytax should be as regular/consistent as possible
+    given the edge case that Lines-Editor is the default if none is specified.
+    After selecting file by number:
+
+    entering name of editor: opens in new terminal
+
+    name of editor + -h or --headless: opens in the same terminal
+
+    name of editor + -vsplit, -hsplit: opens in a tmux split
+
+    Empty Enter: should open lines in a new terminal
+
+    only "-h" or "--headless" (maybe "lines -h"): should open lines in same terminal
+
+
+    */
+    // Read partner programs configuration (gracefully handles all errors)
+    let partner_programs = read_partner_programs_file();
+
+    // check if suffi
+
+    // Build the user prompt based on whether partner programs are available
+    let prompt = if partner_programs.is_empty() {
+        // Standard prompt when no partner programs are configured
+        format!(
+            "{}(Open file w/  Default: Enter | software 'name': vi --headless, gedit, firefox | tmux: nano -hsplit, hx -vsplit | .csv stats: vi -rc) {}",
+            YELLOW, RESET
+        )
+    } else {
+        // Enhanced prompt showing numbered partner program options
+        let mut numbered_options = String::new();
+        for (index, program_path) in partner_programs.iter().enumerate() {
+            if index > 0 {
+                numbered_options.push(' ');
+            }
+            numbered_options.push_str(&format!(
+                "{}. {}",
+                index + 1,
+                extract_program_display_name(program_path)
+            ));
+        }
+
+        format!(
+            "{}Open file w/  Default: Enter | software 'name': vi --headless, gedit, firefox | tmux: -hsplit | .csv: -rc | Partner #: {}): {}",
+            YELLOW, numbered_options, RESET
+        )
+    };
+
+    // Display the prompt and get user input
+    print!("{}", prompt);
+    io::stdout().flush().map_err(|e| {
+        eprintln!("Failed to flush stdout: {}", e);
+        FileFantasticError::Io(e)
+    })?;
+
+    let mut user_input = String::new();
+    io::stdin().read_line(&mut user_input).map_err(|e| {
+        eprintln!("Failed to read input: {}", e);
+        FileFantasticError::Io(e)
+    })?;
+    let user_input = user_input.trim();
+
+    // TODO
+    // ==========================================
+    // Headless Default Lines-Editor
+    // ==========================================
+    if user_input == "-h"
+        || user_input == "--headless"
+        || user_input == "lines --headless"
+        || user_input == "lines -h"
+    {
+        // =============================
+        // Lines-Editor in this terminal
+        // =============================
+        /*
+        pub fn lines_full_file_editor(
+            original_file_path: Option<PathBuf>,
+            starting_line: Option<usize>,
+            use_this_session: Option<PathBuf>,
+            state_persists: bool, // if you want to keep session files.
+        ) -> Result<()> {
+        */
+
+        lines_full_file_editor(
+            Some(file_path.clone()),
+            None,
+            Some(lines_editor_session_path.clone()),
+            true,
+        )?; // The ? will use From<LinesError> to convert
+        return Ok(());
+    }
+
+    // ==========================================
+    // === MVP: Tmux splits for lines editor ===
+    // ==========================================
+    // === MVP: Tmux splits for lines editor ===
+    if user_input == "-vsplit" || user_input == "vsplit" {
+        // Check if in tmux
+        if std::env::var("TMUX").is_err() {
+            println!("{}Error: -vsplit requires tmux{}", RED, RESET);
+            println!("Press Enter to continue...");
+            let mut buf = String::new();
+            io::stdin()
+                .read_line(&mut buf)
+                .map_err(|e| FileFantasticError::Io(e))?;
+            return open_file(file_path, lines_editor_session_path);
+        }
+
+        // Get the path to the current executable
+        let exe_path = std::env::current_exe().map_err(|e| FileFantasticError::Io(e))?;
+
+        // Build the command as a single string with full binary path
+        let editor_command = format!(
+            "{} {} --session {}",
+            exe_path.to_string_lossy(),
+            file_path.to_string_lossy(),
+            lines_editor_session_path.to_string_lossy()
+        );
+
+        // Create vertical split (tmux -v = vertical split = horizontal panes)
+        let output = std::process::Command::new("tmux")
+            .args(["split-window", "-v", &editor_command])
+            .output()
+            .map_err(|e| FileFantasticError::Io(e))?;
+
+        if !output.status.success() {
+            println!(
+                "{}Failed to create tmux split: {}{}",
+                RED,
+                String::from_utf8_lossy(&output.stderr),
+                RESET
+            );
+            println!("Press Enter to continue...");
+            let mut buf = String::new();
+            io::stdin()
+                .read_line(&mut buf)
+                .map_err(|e| FileFantasticError::Io(e))?;
+            return open_file(file_path, lines_editor_session_path);
+        }
+
+        return Ok(());
+    }
+
+    if user_input == "-hsplit" || user_input == "hsplit" {
+        // Check if in tmux
+        if std::env::var("TMUX").is_err() {
+            println!("{}Error: -hsplit requires tmux{}", RED, RESET);
+            println!("Press Enter to continue...");
+            let mut buf = String::new();
+            io::stdin()
+                .read_line(&mut buf)
+                .map_err(|e| FileFantasticError::Io(e))?;
+            return open_file(file_path, lines_editor_session_path);
+        }
+
+        // Get the path to the current executable
+        let exe_path = std::env::current_exe().map_err(|e| FileFantasticError::Io(e))?;
+
+        // Build the command as a single string with full binary path
+        let editor_command = format!(
+            "{} {} --session {}",
+            exe_path.to_string_lossy(),
+            file_path.to_string_lossy(),
+            lines_editor_session_path.to_string_lossy()
+        );
+
+        // Create horizontal split (tmux -h = horizontal split = vertical panes)
+        let output = std::process::Command::new("tmux")
+            .args(["split-window", "-h", &editor_command])
+            .output()
+            .map_err(|e| FileFantasticError::Io(e))?;
+
+        if !output.status.success() {
+            println!(
+                "{}Failed to create tmux split: {}{}",
+                RED,
+                String::from_utf8_lossy(&output.stderr),
+                RESET
+            );
+            println!("Press Enter to continue...");
+            let mut buf = String::new();
+            io::stdin()
+                .read_line(&mut buf)
+                .map_err(|e| FileFantasticError::Io(e))?;
+            return open_file(file_path, lines_editor_session_path);
+        }
+
+        return Ok(());
+    }
+
+    // === Handle "lines" keyword - open in new terminal ===
+    // === Handle "lines" keyword - open in new terminal ===
+    if user_input == "lines" || user_input.is_empty() {
+        let exe_path = std::env::current_exe().map_err(|e| FileFantasticError::Io(e))?;
+
+        // Launch in new terminal (platform-specific)
+        #[cfg(target_os = "macos")]
+        {
+            // macOS needs the command as a single string for Terminal.app
+            let lines_command = format!(
+                "{} {} --session {}; exit",
+                exe_path.to_string_lossy(),
+                file_path.to_string_lossy(),
+                lines_editor_session_path.to_string_lossy()
+            );
+
+            std::process::Command::new("open")
+                .args(["-a", "Terminal"])
+                .arg(&lines_command)
+                .spawn()
+                .map_err(|e| FileFantasticError::EditorLaunchFailed(format!("lines: {}", e)))?;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let terminal_commands = [
+                ("gnome-terminal", vec!["--"]),
+                ("ptyxis", vec!["--"]),
+                ("konsole", vec!["-e"]),
+                ("xfce4-terminal", vec!["-e"]),
+                ("terminator", vec!["-e"]),
+                ("tilix", vec!["-e"]),
+                ("kitty", vec!["-e"]),
+                ("alacritty", vec!["-e"]),
+                ("xterm", vec!["-e"]),
+            ];
+
+            let mut success = false;
+            for (terminal, args) in terminal_commands.iter() {
+                let mut cmd = std::process::Command::new(terminal);
+                cmd.args(args)
+                    .arg(&exe_path) // Separate arg: executable
+                    .arg(file_path) // Separate arg: file path
+                    .arg("--session") // Separate arg: flag
+                    .arg(lines_editor_session_path); // Separate arg: session path
+
+                if cmd.spawn().is_ok() {
+                    success = true;
+                    break;
+                }
+            }
+
+            if !success {
+                println!(
+                    "{}No terminal available. Press Enter to continue...{}",
+                    RED, RESET
+                );
+                let mut buf = String::new();
+                io::stdin()
+                    .read_line(&mut buf)
+                    .map_err(|e| FileFantasticError::Io(e))?;
+                return open_file(file_path, lines_editor_session_path);
+            }
+        }
+...
+
 */
