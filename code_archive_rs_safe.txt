@@ -28,6 +28,47 @@ to use:
                 eprintln!("e: {}", e);
 
 
+/// Converts byte to raw string representation with escape sequences
+///
+/// # Arguments
+/// * `byte` - Single byte to convert
+///
+/// # Returns
+/// String representation (1-4 characters):
+/// - Regular printable ASCII → single character
+/// - Special chars → escape sequence (\n, \t, etc.)
+/// - Non-printable → hex escape (\xHH)
+///
+/// # Examples
+/// ```
+/// byte_to_raw_escape(0x0A) // "\n"
+/// byte_to_raw_escape(0x48) // "H"
+/// byte_to_raw_escape(0x00) // "\x00"
+/// ```
+fn byte_to_raw_escape(byte: u8) -> String {
+    match byte {
+        0x0A => "\\n".to_string(),  // Newline
+        0x09 => "\\t".to_string(),  // Tab
+        0x0D => "\\r".to_string(),  // Carriage return
+        0x5C => "\\\\".to_string(), // Backslash
+        0x22 => "\\\"".to_string(), // Quote
+        0x00 => "\\0".to_string(),  // Null
+        0x20..=0x7E => {
+            // Printable ASCII (space through ~)
+            if byte == 0x5C || byte == 0x22 {
+                // Already handled above
+                format!("{}", byte as char)
+            } else {
+                format!("{}", byte as char)
+            }
+        }
+        _ => {
+            // Non-printable → hex escape
+            format!("\\x{:02X}", byte)
+        }
+    }
+}
+
 
 /// Creates a timestamp string with full year prefix for archive file naming
 ///

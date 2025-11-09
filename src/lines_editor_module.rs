@@ -1933,10 +1933,260 @@ where
 // ============================================================================
 
 // =========
+// =========
 // Utilities
 // =========
+// =========
 
-// experimental formatting... e.g. :<3
+// ===============
+// stack_format_it
+// ===============
+
+/// Formats a byte as 2-digit uppercase hexadecimal with optional ANSI styling.
+///
+/// ## Project Context
+/// Used in hex editor display to show byte values with cursor highlighting.
+/// Formats bytes as "XX " (3 chars) or with ANSI escape codes for highlighting.
+///
+/// ## Operation
+/// - Normal mode: Formats as "42 " (hex byte + space)
+/// - Highlight mode: Wraps with ANSI codes for cursor position
+/// - Uses stack buffer, no heap allocation for formatting
+///
+/// ## Safety & Error Handling
+/// - No panic: Always returns valid formatted string
+/// - Fixed maximum size: 64 bytes for result (sufficient for ANSI codes)
+/// - Pre-validated: Byte values always valid for hex formatting
+///
+/// ## Parameters
+/// - `byte`: The byte value to format (0x00-0xFF)
+/// - `highlight`: If true, wraps with ANSI color codes
+/// - `bold`: ANSI bold code (typically "\x1b[1m")
+/// - `red`: ANSI red foreground code
+/// - `bg_white`: ANSI white background code
+/// - `reset`: ANSI reset code (typically "\x1b[0m")
+///
+/// ## Returns
+/// Formatted string: "XX " or "{codes}XX{reset} "
+///
+/// ## Example use:
+/// ```rust
+/// // Normal byte
+/// let formatted = stack_format_hex(0x42, false, "", "", "", "");
+/// // Result: "42 "
+///
+/// // Highlighted byte
+/// let formatted = stack_format_hex(0x42, true, BOLD, RED, BG_WHITE, RESET);
+/// // Result: "\x1b[1m\x1b[31m\x1b[47m42\x1b[0m "
+/// ```
+pub fn stack_format_hex(
+    byte: u8,
+    highlight: bool,
+    bold: &str,
+    red: &str,
+    bg_white: &str,
+    reset: &str,
+) -> String {
+    // Stack buffer for result (64 bytes sufficient for ANSI codes + hex)
+    let mut buf = [0u8; 64];
+    let mut pos = 0;
+
+    if highlight {
+        // Add ANSI codes before hex
+        for code in &[bold, red, bg_white] {
+            let code_bytes = code.as_bytes();
+            if pos + code_bytes.len() > buf.len() {
+                // Fallback if codes too long (shouldn't happen with standard ANSI)
+                return format!("{:02X} ", byte);
+            }
+            buf[pos..pos + code_bytes.len()].copy_from_slice(code_bytes);
+            pos += code_bytes.len();
+        }
+    }
+
+    // Format byte as 2-digit hex
+    let hex_chars = b"0123456789ABCDEF";
+    let high = (byte >> 4) as usize;
+    let low = (byte & 0x0F) as usize;
+
+    if pos + 2 > buf.len() {
+        return format!("{:02X} ", byte);
+    }
+
+    buf[pos] = hex_chars[high];
+    buf[pos + 1] = hex_chars[low];
+    pos += 2;
+
+    if highlight {
+        // Add reset code after hex
+        let reset_bytes = reset.as_bytes();
+        if pos + reset_bytes.len() > buf.len() {
+            return format!("{:02X} ", byte);
+        }
+        buf[pos..pos + reset_bytes.len()].copy_from_slice(reset_bytes);
+        pos += reset_bytes.len();
+    }
+
+    // Add trailing space
+    if pos + 1 > buf.len() {
+        return format!("{:02X} ", byte);
+    }
+    buf[pos] = b' ';
+    pos += 1;
+
+    // Convert to string
+    match std::str::from_utf8(&buf[..pos]) {
+        Ok(s) => s.to_string(),
+        Err(_) => format!("{:02X} ", byte), // Fallback
+    }
+}
+
+/// Converts byte to raw string representation with escape sequences.
+///
+/// ## Project Context
+/// Used in hex editor to display bytes as readable escape sequences.
+/// Shows special characters (\n, \t) and non-printable bytes (\xHH) in a
+/// human-readable format for the ASCII/raw column display.
+///
+/// ## Operation
+/// - Printable ASCII (0x20-0x7E) → returns as single character
+/// - Special chars (newline, tab, etc.) → returns escape sequence
+/// - Non-printable bytes → returns hex escape \xHH
+/// - Uses stack buffer, minimal heap allocation
+///
+/// ## Safety & Error Handling
+/// - No panic: All byte values handled
+/// - Bounded output: Maximum 4 characters (\xHH)
+/// - Pre-validated: All paths return valid UTF-8
+///
+/// ## Parameters
+/// - `byte`: Single byte to convert (0x00-0xFF)
+///
+/// ## Returns
+/// String representation (1-4 characters)
+///
+/// ## Examples
+/// ```rust
+/// stack_format_byte_escape(0x0A) // "\\n"
+/// stack_format_byte_escape(0x48) // "H"
+/// stack_format_byte_escape(0x00) // "\\x00"
+/// stack_format_byte_escape(0x09) // "\\t"
+/// ```
+pub fn stack_format_byte_escape(byte: u8) -> String {
+    // Stack buffer for result (max 4 bytes for \xHH)
+    let mut buf = [0u8; 4];
+    let len: usize;
+
+    match byte {
+        0x0A => {
+            // Newline: \n
+            buf[0] = b'\\';
+            buf[1] = b'n';
+            len = 2;
+        }
+        0x09 => {
+            // Tab: \t
+            buf[0] = b'\\';
+            buf[1] = b't';
+            len = 2;
+        }
+        0x0D => {
+            // Carriage return: \r
+            buf[0] = b'\\';
+            buf[1] = b'r';
+            len = 2;
+        }
+        0x5C => {
+            // Backslash: \\
+            buf[0] = b'\\';
+            buf[1] = b'\\';
+            len = 2;
+        }
+        0x22 => {
+            // Quote: \"
+            buf[0] = b'\\';
+            buf[1] = b'"';
+            len = 2;
+        }
+        0x00 => {
+            // Null: \0
+            buf[0] = b'\\';
+            buf[1] = b'0';
+            len = 2;
+        }
+        0x20..=0x7E => {
+            // Printable ASCII (already handled special cases above)
+            buf[0] = byte;
+            len = 1;
+        }
+        _ => {
+            // Non-printable: \xHH
+            let hex_chars = b"0123456789ABCDEF";
+            buf[0] = b'\\';
+            buf[1] = b'x';
+            buf[2] = hex_chars[(byte >> 4) as usize];
+            buf[3] = hex_chars[(byte & 0x0F) as usize];
+            len = 4;
+        }
+    }
+
+    // Convert to string (guaranteed valid UTF-8)
+    // Safe unwrap: we only write ASCII bytes
+    std::str::from_utf8(&buf[..len])
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| String::from("?")) // Defensive fallback
+}
+
+#[cfg(test)]
+mod hex_format_tests {
+    use super::*;
+
+    #[test]
+    fn test_hex_normal() {
+        let result = stack_format_hex(0x42, false, "", "", "", "");
+        assert_eq!(result, "42 ");
+    }
+
+    #[test]
+    fn test_hex_highlighted() {
+        let result = stack_format_hex(0x42, true, "[B]", "[R]", "[W]", "[RST]");
+        assert_eq!(result, "[B][R][W]42[RST] ");
+    }
+
+    #[test]
+    fn test_hex_zero() {
+        let result = stack_format_hex(0x00, false, "", "", "", "");
+        assert_eq!(result, "00 ");
+    }
+
+    #[test]
+    fn test_hex_max() {
+        let result = stack_format_hex(0xFF, false, "", "", "", "");
+        assert_eq!(result, "FF ");
+    }
+
+    #[test]
+    fn test_byte_escape_printable() {
+        assert_eq!(stack_format_byte_escape(b'H'), "H");
+        assert_eq!(stack_format_byte_escape(b' '), " ");
+    }
+
+    #[test]
+    fn test_byte_escape_special() {
+        assert_eq!(stack_format_byte_escape(0x0A), "\\n");
+        assert_eq!(stack_format_byte_escape(0x09), "\\t");
+        assert_eq!(stack_format_byte_escape(0x0D), "\\r");
+        assert_eq!(stack_format_byte_escape(0x00), "\\0");
+    }
+
+    #[test]
+    fn test_byte_escape_nonprintable() {
+        assert_eq!(stack_format_byte_escape(0x01), "\\x01");
+        assert_eq!(stack_format_byte_escape(0xFF), "\\xFF");
+        assert_eq!(stack_format_byte_escape(0x7F), "\\x7F");
+    }
+}
+
 /// Formats a message with placeholders supporting alignment and width specifiers.
 ///
 /// ## Project Context
@@ -2252,6 +2502,9 @@ fn apply_format_spec(value: &str, spec: &FormatSpec) -> String {
         }
     }
 }
+// ======================
+// End of stack_format_it
+// ======================
 
 // ============================================================================
 // SAVE-AS-COPY OPERATION: Configuration Constants
@@ -5591,12 +5844,22 @@ impl EditorState {
 
                         let _ = self.set_info_bar_message("Byte written");
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         // Error already logged by write_n_log_hex_edit_in_place()
                         // Just show user-friendly message
                         let _ = self.set_info_bar_message("Edit failed");
+                        #[cfg(debug_assertions)]
                         log_error(
-                            &format!("Hex edit failed: {}", e),
+                            &stack_format_it(
+                                "Hex edit failed: {}",
+                                &[&_e.to_string()],
+                                "Hex edit failed",
+                            ),
+                            Some("handle_parse_hex_mode_input_and_commands"),
+                        );
+                        // safe
+                        log_error(
+                            "Hex edit failed",
                             Some("handle_parse_hex_mode_input_and_commands"),
                         );
                         // Continue editor loop - let user try again
@@ -5714,11 +5977,14 @@ impl EditorState {
                                 // Non-critical: Log error but don't fail the insertion
                                 #[cfg(debug_assertions)]
                                 log_error(
-                                    &format!("Cannot get changelog directory: {}", _e),
+                                    &stack_format_it(
+                                        "Cannot get changelog directory: {}",
+                                        &[&_e.to_string()],
+                                        "Cannot get changelog directory",
+                                    ),
                                     Some("insert_newline_at_cursor_chunked:changelog"),
                                 );
-
-                                #[cfg(not(debug_assertions))]
+                                // safe
                                 log_error(
                                     "Cannot get changelog directory",
                                     Some("insert_newline_at_cursor_chunked:changelog"),
@@ -5770,7 +6036,7 @@ impl EditorState {
                                             Some("insert_newline_at_cursor_chunked:changelog"),
                                         );
 
-                                        #[cfg(not(debug_assertions))]
+                                        // safe
                                         log_error(
                                             "Failed to log newline",
                                             Some("insert_newline_at_cursor_chunked:changelog"),
@@ -8077,9 +8343,10 @@ fn seek_to_line_number(file: &mut File, target_line: usize) -> io::Result<u64> {
                 // EOF before reaching target line
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "File only has {} lines, requested line {}",
-                        current_line, target_line
+                    stack_format_it(
+                        "seek_to_line_number File only has {} lines, requested line {}",
+                        &[&current_line.to_string(), &target_line.to_string()],
+                        "seek_to_line_number File only has N lines, requested line N",
                     ),
                 ));
             }
@@ -11947,7 +12214,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     #[cfg(not(debug_assertions))]
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
 
-                    // Prod Safe
+                    // Prod Safe (e.g. size)
                     let info_message = "Can't write,path exists?";
 
                     let _ = lines_editor_state.set_info_bar_message(&info_message);
@@ -13002,15 +13269,12 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     // =================================================
 
     if copy_iterations >= MAX_COPY_ITERATIONS {
-        #[cfg(debug_assertions)]
         log_error(
-            &format!("Copy iterations {} exceeded limit", copy_iterations),
-            Some("delete_current_line_noload:copy"),
-        );
-
-        #[cfg(not(debug_assertions))]
-        log_error(
-            "Copy iteration limit exceeded",
+            &stack_format_it(
+                "Copy iterations {} exceeded limit",
+                &[&copy_iterations.to_string()],
+                "Copy iterations _ exceeded limit",
+            ),
             Some("delete_current_line_noload:copy"),
         );
 
@@ -13812,14 +14076,14 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
     let file_size = file_metadata.len();
 
     if start >= file_size || end > file_size {
-        #[cfg(debug_assertions)]
         log_error(
-            &format!("Range {}-{} exceeds file size {}", start, end, file_size),
+            &stack_format_it(
+                "Range {}-{} exceeds file size {}",
+                &[&start.to_string(), &end.to_string(), &file_size.to_string()],
+                "Range exceeds file size",
+            ),
             Some("delete_position_range_noload"),
         );
-
-        #[cfg(not(debug_assertions))]
-        log_error("Range exceeds file", Some("delete_position_range_noload"));
 
         let _ = state.set_info_bar_message("invalid range");
         return Err(LinesError::Io(io::Error::new(
@@ -13848,14 +14112,14 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                 Ok(char_len) => end + (char_len as u64),
                 Err(_) => {
                     // Invalid UTF-8 start byte, treat as single byte
-                    #[cfg(debug_assertions)]
                     log_error(
-                        &format!("Invalid UTF-8 at position {}", end),
+                        &stack_format_it(
+                            "Invalid UTF-8 at position {}",
+                            &[&end.to_string()],
+                            "Invalid UTF-8 at position",
+                        ),
                         Some("delete_position_range_noload"),
                     );
-
-                    #[cfg(not(debug_assertions))]
-                    log_error("Invalid UTF-8 at end", Some("delete_position_range_noload"));
 
                     end + 1
                 }
@@ -19029,14 +19293,24 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
             // TODO: formatting?
             // === HEX LINE ===
             // Highlight if this is cursor position
-            if i == cursor_col {
-                hex_line.push_str(&format!(
-                    "{}{}{}{:02X}{} ",
-                    BOLD, RED, BG_WHITE, byte, RESET
-                ));
-            } else {
-                hex_line.push_str(&format!("{:02X} ", byte));
-            }
+            // if i == cursor_col {
+            //     hex_line.push_str(&format!(
+            //         "{}{}{}{:02X}{} ",
+            //         BOLD, RED, BG_WHITE, byte, RESET
+            //     ));
+            // } else {
+            //     hex_line.push_str(&format!("{:02X} ", byte));
+            // }
+
+            let formatted = stack_format_hex(
+                byte,
+                i == cursor_col, // highlight flag
+                BOLD,
+                RED,
+                BG_WHITE,
+                RESET,
+            );
+            hex_line.push_str(&formatted);
 
             // === UTF-8 LINE ===
             // Convert byte to displayable character
@@ -19064,7 +19338,13 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
     }
 
     // Combine into two-line output
-    let result = format!("{}\n{}\n", hex_line.trim_end(), utf8_line.trim_end());
+    // let result = format!("{}\n{}\n", hex_line.trim_end(), utf8_line.trim_end());
+
+    let result = stack_format_it(
+        "{}\n{}\n",
+        &[&hex_line.trim_end(), &utf8_line.trim_end()],
+        "_\n_\n",
+    );
 
     // TODO: stack formatting in this function
     Ok(result)
@@ -19440,7 +19720,8 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
 
             // TODO: explore stack based formatting...
             // === RAW LINE (with escape sequences) ===
-            let raw_repr = byte_to_raw_escape(byte);
+            // let raw_repr = byte_to_raw_escape(byte);
+            let raw_repr = stack_format_byte_escape(byte);
 
             if i == cursor_col {
                 // raw_line.push_str(&format!(
@@ -19500,47 +19781,6 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
     );
 
     Ok(result)
-}
-
-/// Converts byte to raw string representation with escape sequences
-///
-/// # Arguments
-/// * `byte` - Single byte to convert
-///
-/// # Returns
-/// String representation (1-4 characters):
-/// - Regular printable ASCII → single character
-/// - Special chars → escape sequence (\n, \t, etc.)
-/// - Non-printable → hex escape (\xHH)
-///
-/// # Examples
-/// ```
-/// byte_to_raw_escape(0x0A) // "\n"
-/// byte_to_raw_escape(0x48) // "H"
-/// byte_to_raw_escape(0x00) // "\x00"
-/// ```
-fn byte_to_raw_escape(byte: u8) -> String {
-    match byte {
-        0x0A => "\\n".to_string(),  // Newline
-        0x09 => "\\t".to_string(),  // Tab
-        0x0D => "\\r".to_string(),  // Carriage return
-        0x5C => "\\\\".to_string(), // Backslash
-        0x22 => "\\\"".to_string(), // Quote
-        0x00 => "\\0".to_string(),  // Null
-        0x20..=0x7E => {
-            // Printable ASCII (space through ~)
-            if byte == 0x5C || byte == 0x22 {
-                // Already handled above
-                format!("{}", byte as char)
-            } else {
-                format!("{}", byte as char)
-            }
-        }
-        _ => {
-            // Non-printable → hex escape
-            format!("\\x{:02X}", byte)
-        }
-    }
 }
 
 /// Formats info bar for raw string mode
