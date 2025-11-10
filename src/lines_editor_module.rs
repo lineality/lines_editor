@@ -7581,8 +7581,8 @@ impl EditorState {
     pub fn write_line_number(
         &mut self,
         row_idx: usize,
-        line_num: usize,
-        starting_row: usize,
+        fileline_number_for_display: usize, // fileline_number_for_display
+        starting_row: usize,                // line_count_at_top_of_window
     ) -> io::Result<usize> {
         // Validate row index (zero based)
         if row_idx > MAX_ZERO_INDEX_TUI_ROWS {
@@ -7593,8 +7593,11 @@ impl EditorState {
         }
 
         // Check if we need padding
-        let needs_padding =
-            row_needs_extra_padding_bool(starting_row, line_num, self.effective_rows);
+        let needs_padding = row_needs_extra_padding_bool(
+            starting_row,                // starting_row
+            fileline_number_for_display, // fileline_number_for_display
+            self.effective_rows,         // effective_rows
+        );
 
         // Convert number to bytes directly into buffer
         let mut write_pos = 0;
@@ -7606,7 +7609,7 @@ impl EditorState {
         }
 
         // Write digits directly
-        let mut temp_num = line_num;
+        let mut temp_num = fileline_number_for_display;
         let mut digit_stack = [0u8; 7]; // Max 7 digits (999,999)
         let mut digit_count = 0;
 
@@ -8486,7 +8489,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     let mut line_buffer = [0u8; limits::LINE_READ_BYTES];
 
     let mut current_display_row = 0usize;
-    let mut current_line_number = state.line_count_at_top_of_window;
+    let mut current_file_line_number = state.line_count_at_top_of_window; // STARTS here, NOT always here
     let mut lines_processed = 0usize;
     let mut file_byte_position = state.file_position_of_topline_start;
 
@@ -8525,7 +8528,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
             if lines_processed > 0 {
                 // We processed at least one line before hitting EOF
                 // The last valid line is one before current position
-                let last_valid_file_line = current_line_number.saturating_sub(1);
+                let last_valid_file_line = current_file_line_number.saturating_sub(1);
                 let last_valid_display_row = current_display_row.saturating_sub(1);
 
                 state.eof_fileline_tuirow_tuple = Some((
@@ -8536,8 +8539,8 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
                 // No lines processed - positioned at or past EOF from start
                 // This happens with empty files or seeking past end
                 state.eof_fileline_tuirow_tuple = Some((
-                    current_line_number, // Current file line position (0-indexed)
-                    current_display_row, // Current display row (0-indexed)
+                    current_file_line_number, // Current file line position (0-indexed)
+                    current_display_row,      // Current display row (0-indexed)
                 ));
             }
 
@@ -8545,11 +8548,11 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
         }
 
         // Write line number to display buffer
-        let line_number_display = current_line_number + 1; // Convert 0-indexed to 1-indexed
+        let fileline_number_for_display = current_file_line_number + 1; // Convert 0-indexed to 1-indexed
 
         let line_num_bytes_written = state.write_line_number(
             current_display_row,               // row_idx: usize,
-            line_number_display,               // line_num: usize,
+            fileline_number_for_display,       // line_num: usize,
             state.line_count_at_top_of_window, // starting_row: usize,
         )?;
 
@@ -8593,7 +8596,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
 
         // Advance to next line
         current_display_row += 1;
-        current_line_number += 1;
+        current_file_line_number += 1;
         lines_processed += 1;
 
         // Update file position for next line
@@ -10866,6 +10869,23 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // - If EOF visible and cursor at bottom: no scrolling occurs
             // - If EOF not visible: normal movement and scrolling
 
+            /*
+            # Window-Map System: TUI-Window to File-Bytes-Window
+
+            Lines uses an on-the-fly window-mapping system to sync/build a correlation map between each character on a non-line-wrapping line-by-line display of file lines and each TUI-character's first file-byte.
+
+            ### There are a few pieces of information that anchor this system:
+
+            (Note:  character-spaces were characters and were bytes in ASCII times, but with UTF-8 (which Rust focuses support on, many others 'character encodings also exist) one character may be one or two spaces wide, and may have 1 to 4 bytes. There are many, many, advantages to using ascii for software. There are many, many, costs to having irregular character-byte size and display spaces.
+
+            1. File-line-number at top TUI tui_display_row (both zero-index)
+            2. TUI's tui_display_row (zero index)
+            3. Horizontal offset.
+            4. Number of TUI horizontal character-spaces (window size)
+            5. Number of TUI vertical character-spaces (window size)
+            6. width of line-number display, or how many character-spaces plus padding the line number takes up in the TUI, e.g. ' 99 ' takes up four single-width characters (not needed for simple functionality)
+            */
+
             // =========================
             // position state inspection
             // =========================
@@ -10940,9 +10960,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.row += cursor_moves;
 
                     let line_num_width = calculate_line_number_width(
-                        lines_editor_state.line_count_at_top_of_window,
-                        lines_editor_state.cursor.row,
-                        lines_editor_state.effective_rows,
+                        lines_editor_state.line_count_at_top_of_window, // starting_row
+                        lines_editor_state.cursor.row,                  // tui_row
+                        lines_editor_state.effective_rows,              // effective_rows
                     );
 
                     // if col is in the number-zone to the left of the text
@@ -10964,6 +10984,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         break;
                     }
 
+                    // Scroll Down
+                    /*
+                    line_count_at_top_of_window is the core of scroll down
+                    and scroll up:
+                    To scroll down one line we increment (+1) line_count_at_top_of_window
+                    so that when the window (re)builds, it does so one line below
+                    the past window-scroll frame.
+                     */
                     lines_editor_state.line_count_at_top_of_window += remaining_moves;
                     remaining_moves = 0;
                     needs_rebuild = true;
@@ -11006,6 +11034,24 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
         Command::MoveUp(count) => {
             // Vim-like behavior: move cursor up, scroll window if at top edge
+
+            /*
+            # Window-Map System: TUI-Window to File-Bytes-Window
+
+            Lines uses an on-the-fly window-mapping system to sync/build a correlation map between each character on a non-line-wrapping line-by-line display of file lines and each TUI-character's first file-byte.
+
+            ### There are a few pieces of information that anchor this system:
+
+            (Note:  character-spaces were characters and were bytes in ASCII times, but with UTF-8 (which Rust focuses support on, many others 'character encodings also exist) one character may be one or two spaces wide, and may have 1 to 4 bytes. There are many, many, advantages to using ascii for software. There are many, many, costs to having irregular character-byte size and display spaces.
+
+            1. File-line-number at top TUI tui_display_row (both zero-index)
+            2. TUI's tui_display_row (zero index)
+            3. Horizontal offset.
+            4. Number of TUI horizontal character-spaces (window size)
+            5. Number of TUI vertical character-spaces (window size)
+            6. width of line-number display, or how many character-spaces plus padding the line number takes up in the TUI, e.g. ' 99 ' takes up four single-width characters (not needed for simple functionality)
+
+            */
 
             /*
             note for backup: position available...
@@ -14780,12 +14826,15 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
 /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
 fn calculate_line_number_width(
     starting_row: usize,
-    line_number: usize,
+    tui_row: usize,
     effective_rows: usize,
 ) -> usize {
     // if line_number == 0 {
     //     return 2; // Edge case: treat as single digit + pad
     // }
+    //
+
+    let line_number = starting_row + tui_row;
 
     /*
     a system to calculate even-witdth
@@ -14908,8 +14957,8 @@ fn calculate_line_number_width(
 /// - Line 5, 20 rows: returns 3 (might see line 24, use 2 digits + space)
 /// - Line 95, 20 rows: returns 4 (might see line 114, use 3 digits + space)
 fn row_needs_extra_padding_bool(
-    starting_row: usize,
-    line_number: usize,
+    line_count_at_top_of_window: usize, // line_count_at_top_of_window
+    line_number: usize,                 // fileline_number_for_display
     effective_rows: usize,
 ) -> bool {
     /*
@@ -14922,12 +14971,14 @@ fn row_needs_extra_padding_bool(
     if in rollover_size - tui_size
     then add pad +1 before row...
      */
+
     let bool_output;
 
     if line_number < 10 {
+        // hard set default for 0-9
         bool_output = true;
     } else if line_number < 100 {
-        if starting_row > (100 - effective_rows - 1) {
+        if line_count_at_top_of_window > (100 - effective_rows - 1) {
             if line_number > (100 - effective_rows - 1) {
                 bool_output = true;
             } else {
@@ -14937,35 +14988,80 @@ fn row_needs_extra_padding_bool(
             bool_output = false;
         }
     } else if line_number < 1_000 {
-        if line_number > (1_000 - effective_rows) {
-            bool_output = true;
+        if line_count_at_top_of_window > (1_000 - effective_rows - 1) {
+            if line_number > (1_000 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
+            }
         } else {
             bool_output = false;
         }
+        // if line_number > (1_000 - effective_rows - 1) {
+        //     bool_output = true;
+        // } else {
+        //     bool_output = false;
+        // }
     } else if line_number < 10_000 {
-        if line_number > (10_000 - effective_rows) {
-            bool_output = true;
+        if line_count_at_top_of_window > (10_000 - effective_rows - 1) {
+            if line_number > (10_000 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
+            }
         } else {
             bool_output = false;
         }
+        // if line_number > (10_000 - effective_rows) {
+        //     bool_output = true;
+        // } else {
+        //     bool_output = false;
+        // }
     } else if line_number < 100_000 {
-        if line_number > (100_000 - effective_rows) {
-            bool_output = true;
+        if line_count_at_top_of_window > (100_000 - effective_rows - 1) {
+            if line_number > (100_000 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
+            }
         } else {
             bool_output = false;
         }
+        // if line_number > (100_000 - effective_rows) {
+        //     bool_output = true;
+        // } else {
+        //     bool_output = false;
+        // }
     } else if line_number < 1_000_000 {
-        if line_number > (1_000_000 - effective_rows) {
-            bool_output = true;
+        if line_count_at_top_of_window > (1_000_000 - effective_rows - 1) {
+            if line_number > (1_000_000 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
+            }
         } else {
             bool_output = false;
         }
+        // if line_number > (1_000_000 - effective_rows) {
+        //     bool_output = true;
+        // } else {
+        //     bool_output = false;
+        // }
     } else if line_number < 10_000_000 {
-        if line_number > (10_000_000 - effective_rows) {
-            bool_output = true;
+        if line_count_at_top_of_window > (10_000_000 - effective_rows - 1) {
+            if line_number > (10_000_000 - effective_rows - 1) {
+                bool_output = true;
+            } else {
+                bool_output = false;
+            }
         } else {
             bool_output = false;
         }
+        // if line_number > (10_000_000 - effective_rows) {
+        //     bool_output = true;
+        // } else {
+        //     bool_output = false;
+        // }
     } else {
         bool_output = false; // Cap at 6 digits (999,999 lines max) TODO
     }
@@ -21108,6 +21204,9 @@ pub fn lines_fullfileeditor_core(
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
             } else {
+                // TODO add check to scroll up if not top of TUI
+                if lines_editor_state.cursor.row == 0 {}
+
                 print!("moving up: line_num_width {line_num_width}");
                 // Not at Top? If so... Bump it up!
                 // Move up one line
