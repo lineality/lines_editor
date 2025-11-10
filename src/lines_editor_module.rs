@@ -10621,18 +10621,25 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // =============================
                 // If at top of TUI but NOT top of doc
                 // move up to end of line
-                #[cfg(debug_assertions)]
-                println!(
-                    "lines_editor_state.cursor.tui_col - line_num_width -> {}",
-                    lines_editor_state.cursor.tui_col - line_num_width
-                );
-                if (lines_editor_state.cursor.tui_row == 0)
-                    && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
-                    && !(lines_editor_state.line_count_at_top_of_window == 0)
+                if let Some(_) = lines_editor_state // guard against overflow substraction
+                    .cursor
+                    .tui_col
+                    .checked_sub(line_num_width)
                 {
-                    // move up, move to end of line.
-                    _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
-                    _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "lines_editor_state.cursor.tui_col - line_num_width -> {}",
+                        lines_editor_state.cursor.tui_col - line_num_width
+                    );
+
+                    if (lines_editor_state.cursor.tui_row == 0)
+                        && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
+                        && !(lines_editor_state.line_count_at_top_of_window == 0)
+                    {
+                        // move up, move to end of line.
+                        _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
+                        _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
+                    }
                 }
 
                 // =========================
@@ -21229,9 +21236,8 @@ pub fn lines_fullfileeditor_core(
         if lines_editor_state.cursor.tui_col < line_num_width {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
             if lines_editor_state.cursor.tui_row == 0 {
-                lines_editor_state.cursor.tui_col = line_num_width + 1;
-                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
-                    line_num_width + 1;
+                lines_editor_state.cursor.tui_col = line_num_width;
+                lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
