@@ -10605,12 +10605,34 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
-                    if lines_editor_state.cursor.tui_row <= 0 {
-                        _ = execute_command(lines_editor_state, Command::GotoLineStart)?;
-                    }
-
+                    // Note: this is rarely if ever entered.
                     // and don't try to go left again-again!
                     return Ok(true);
+                }
+
+                let line_num_width = calculate_line_number_width(
+                    lines_editor_state.line_count_at_top_of_window,
+                    lines_editor_state.line_count_at_top_of_window,
+                    lines_editor_state.effective_rows,
+                );
+
+                // =============================
+                // Move Left to Above End of Row
+                // =============================
+                // If at top of TUI but NOT top of doc
+                // move up to end of line
+                #[cfg(debug_assertions)]
+                println!(
+                    "lines_editor_state.cursor.tui_col - line_num_width -> {}",
+                    lines_editor_state.cursor.tui_col - line_num_width
+                );
+                if (lines_editor_state.cursor.tui_row == 0)
+                    && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
+                    && !(lines_editor_state.line_count_at_top_of_window == 0)
+                {
+                    // move up, move to end of line.
+                    _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
+                    _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
                 }
 
                 // =========================
