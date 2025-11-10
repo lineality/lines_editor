@@ -1230,6 +1230,8 @@ const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
 // for commands such as "n"
 const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 
+const MAX_DISPLAY_BUFFER_BYTES: usize = 182;
+
 // for iterating chunks of text to be inserted into file
 /// Two-Purpose Buffer (alternate plan is )
 /// A. processes command-input that does not go to file
@@ -4146,11 +4148,11 @@ pub struct EditorState {
     // === DISPLAY BUFFERS ===
     /// Pre-allocated buffers for each display row (45 rows × 80 chars)
     /// Each buffer holds one terminal row including line number and text
-    pub utf8_txt_display_buffers: [[u8; 182]; 45],
+    pub utf8_txt_display_buffers: [[u8; MAX_DISPLAY_BUFFER_BYTES]; MAX_TUI_ROWS],
 
     /// Bytes used in each display buffer
     /// Since lines can be shorter than 80 chars, we track usage
-    pub display_utf8txt_buffer_lengths: [usize; 45],
+    pub display_utf8txt_buffer_lengths: [usize; MAX_TUI_ROWS],
 
     /// Hex mode cursor (byte position in file)
     /// Only used when mode == EditorMode::HexMode
@@ -4227,8 +4229,8 @@ impl EditorState {
             in_row_abs_horizontal_0_index_cursor_position: 2, // set to 0:0 real text postion after number
 
             // Display buffers - initialized to zero
-            utf8_txt_display_buffers: [[0u8; 182]; 45],
-            display_utf8txt_buffer_lengths: [0usize; 45],
+            utf8_txt_display_buffers: [[0u8; MAX_DISPLAY_BUFFER_BYTES]; MAX_TUI_ROWS],
+            display_utf8txt_buffer_lengths: [0usize; MAX_TUI_ROWS],
             hex_cursor: HexCursor::new(),
             eof_fileline_tuirow_tuple: None, // Time is like a banana, it had no end...
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
@@ -4732,24 +4734,25 @@ impl EditorState {
             col >= self.effective_cols,
             "Failed Test: pub fn get_row_col_file_position: assert!(col >= self.valid_cols..."
         );
-        // Defensive: Check bounds
-        #[cfg(debug_assertions)]
-        if row >= self.effective_rows {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("Row {} exceeds valid rows {}", row, self.effective_rows),
-            ));
-        }
-        #[cfg(debug_assertions)]
-        if col >= self.effective_cols {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "Column {} exceeds valid columns {}",
-                    col, self.effective_cols
-                ),
-            ));
-        }
+        // TODO maybe remove because these are normal cases
+        // // Defensive: Check bounds
+        // #[cfg(debug_assertions)]
+        // if row >= self.effective_rows {
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidInput,
+        //         format!("Row {} exceeds valid rows {}", row, self.effective_rows),
+        //     ));
+        // }
+        // #[cfg(debug_assertions)]
+        // if col >= self.effective_cols {
+        //     return Err(io::Error::new(
+        //         io::ErrorKind::InvalidInput,
+        //         format!(
+        //             "Column {} exceeds valid columns {}",
+        //             col, self.effective_cols
+        //         ),
+        //     ));
+        // }
         // ==============
         // Catch & Handle
         // ==============
@@ -7568,8 +7571,8 @@ impl EditorState {
     /// Defensive programming: explicitly zeros all buffers
     pub fn clear_utf8_displaybuffers(&mut self) {
         // Defensive: Clear each buffer completely
-        for row_idx in 0..45 {
-            for col_idx in 0..80 {
+        for row_idx in 0..MAX_TUI_ROWS {
+            for col_idx in 0..DEFAULT_COLS {
                 self.utf8_txt_display_buffers[row_idx][col_idx] = 0;
             }
             self.display_utf8txt_buffer_lengths[row_idx] = 0;
@@ -8508,7 +8511,10 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
         // Assertion: We should not exceed our display buffer count
         // assert if has been, not if might become, larger than max
         #[cfg(debug_assertions)]
-        debug_assert!(current_display_row <= 45, "Display row exceeds maximum");
+        debug_assert!(
+            current_display_row <= MAX_TUI_ROWS,
+            "Display row exceeds maximum"
+        );
 
         iteration_count += 1;
 
@@ -8526,7 +8532,8 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
 
         // Check for end of file
         if line_length == 0 && !found_newline {
-            // EOF detected - record position for cursor movement boundaries
+            // EOL detected - record position for cursor movement boundaries
+            // eo'f' is a typo here?
 
             if lines_processed > 0 {
                 // We processed at least one line before hitting EOF
@@ -8571,6 +8578,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
             state.tui_window_horizontal_utf8txt_line_char_offset,
             remaining_cols,
             file_byte_position,
+            found_newline,
         )?;
 
         // Update total buffer length for this row
@@ -8586,6 +8594,7 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
         // For last line "world" with no newline: start=X, end=X+4
         let line_end_byte = if line_length > 0 {
             // Line has content - end is last content byte
+            // line_length = bytes read (NOT including newline)
             line_start_byte + (line_length as u64) - 1
         } else {
             // Empty line (just newline) - start == end signals empty
@@ -9745,10 +9754,15 @@ fn process_line_with_offset(
     horizontal_offset: usize,
     max_cols: usize,
     file_line_start: u64,
+    found_newline: bool,
 ) -> Result<usize> {
+    /*
+    Note: The right scrolling and cursor display
+    must allow for one ~empty cursor location after the last character (on/before the newline)
+    so that the user can enter characters at the end of the line or add a newline.
+    One pathway may be to show newline as a UTF-8 character such as ▚ or ␊
+     */
     let current_line_number = state.cursor.tui_row;
-
-    const MAX_DISPLAY_BUFFER_BYTES: usize = 182;
 
     // ═══════════════════════════════════════════════════════════════════════
     // DEFENSIVE CHECK 1: Validate row index
@@ -9869,7 +9883,17 @@ fn process_line_with_offset(
     let display_col_limit = col_start + max_cols;
 
     while byte_index < line_bytes.len()
-        && display_col < display_col_limit - 1 // Reserve 1-2 cols for double-width
+
+        // can add EOL but last char clipped off: "INSERT 4:2 long_lines.txt @345"
+        // && display_col < display_col_limit - 1 // Reserve 1-2 cols for double-width
+
+        /*
+        Can see last character...but EOL cursor is now not a position in file @n/a
+        3 7890123456789012345678901234567890123456789012345678901234567890123456789B█
+        NORMAL 3:130 long_lines.txt @n/a
+        */
+        && display_col < display_col_limit // TEST
+
         && write_iterations < limits::HORIZONTAL_SCROLL_CHARS
     {
         write_iterations += 1;
@@ -10012,7 +10036,10 @@ fn process_line_with_offset(
             state.set_file_position(row, display_col, Some(file_pos))?;
 
             bytes_written += char_len;
+
+            // TODO, which is correct? kanji long line testing?
             display_col += 1 // display_width; // Visual advance 1 TUI char column
+        // display_col += display_width; // Advance display_col by VISUAL WIDTH, not by '1'
         } else {
             #[cfg(debug_assertions)]
             eprintln!(
@@ -10095,6 +10122,45 @@ fn process_line_with_offset(
         ));
     }
 
+    // TEST
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEWLINE DISPLAY: Show newline as visible character
+    // ═══════════════════════════════════════════════════════════════════════
+    // Add this NEW section here, after the write loop ends
+
+    // Check if this line had a newline (from build_windowmap_nowrap's found_newline)
+    // You'll need to pass this as a parameter to process_line_with_offset
+    // if found_newline && display_col < display_col_limit {
+    if found_newline && byte_index >= line_bytes.len() && display_col < display_col_limit {
+        // Choose your newline display character
+        let newline_char = '␤'; // '¶'; // or '↵' or '␤' or whatever you prefer
+        let newline_bytes = newline_char.to_string();
+        let newline_byte_len = newline_bytes.len();
+
+        let write_start = col_start + bytes_written;
+        let write_end = write_start + newline_byte_len;
+
+        if write_end <= MAX_DISPLAY_BUFFER_BYTES {
+            // Write the newline character to display
+            for (i, byte) in newline_bytes.as_bytes().iter().enumerate() {
+                state.utf8_txt_display_buffers[row][write_start + i] = *byte;
+            }
+
+            // Map this display position to the NEWLINE byte in file
+            let newline_file_pos = FilePosition {
+                byte_offset_linear_file_absolute_position: file_line_start + byte_index as u64,
+                line_number: current_line_number,
+                byte_in_line: byte_index,
+            };
+
+            state.set_file_position(row, display_col, Some(newline_file_pos))?;
+
+            bytes_written += newline_byte_len;
+            display_col += 1; // Newline character occupies 1 column
+            byte_index += 1; // The actual newline byte in file
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // END-OF-LINE MAPPING: Map position after last visible character
     // ═══════════════════════════════════════════════════════════════════════
@@ -10102,6 +10168,13 @@ fn process_line_with_offset(
     // The byte_index now points to the next byte after the last displayed character.
 
     let eol_display_col = display_col; // Column right after last char
+
+    // TODO showing newline?
+    // // Write visible newline character (e.g., ␊ or ▚)
+    // let newline_char = "␊".as_bytes(); // or whatever your chosen glyph is
+    // state.utf8_txt_display_buffers[row][eol_display_col] = b'·'.as_bytes();
+    // state.utf8_txt_display_buffers[row][eol_display_col] = b'`'; // or b'$' or b'|'
+    // // note: this displays not at the newline but before it
 
     if eol_display_col < display_col_limit {
         let eol_file_pos = FilePosition {
@@ -10807,27 +10880,54 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     remaining_moves -= 1;
                     needs_rebuild = true;
                     continue;
+                // } else if is_next_newline {
+                //     // ===========================================
+                //     // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
+                //     // ===========================================
+                //     // let is_next_newline = lines_editor_state.is_next_byte_newline()?;
+
+                //     // // Move to start of current line
+                //     // execute_command(lines_editor_state, Command::GotoLineStart)?;
+
+                //     // // Move down one line
+                //     // execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+                //     // There is Room For One More Move-Right
+                //     lines_editor_state.next_move_right_is_past_newline = true;
+
+                //     lines_editor_state.cursor.tui_col += 1;
+                //     remaining_moves -= 1;
+                //     needs_rebuild = true;
+                //     // continue;
+                // }
                 } else if is_next_newline {
-                    // ===========================================
-                    // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
-                    // ===========================================
-                    // let is_next_newline = lines_editor_state.is_next_byte_newline()?;
+                    // Next character is newline - need to position cursor on it
 
-                    // // Move to start of current line
-                    // execute_command(lines_editor_state, Command::GotoLineStart)?;
+                    let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-                    // // Move down one line
-                    // execute_command(lines_editor_state, Command::MoveDown(1))?;
+                    // Check if cursor is at right edge (no room for newline character)
+                    if lines_editor_state.cursor.tui_col >= right_edge {
+                        // Need to scroll right to make room for newline display
+                        if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+                            < limits::CURSOR_MOVEMENT_STEPS
+                        {
+                            lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += 1;
+                            needs_rebuild = true;
+                            // Don't move cursor yet - let rebuild happen first
+                        } else {
+                            // Hit maximum horizontal scroll - can't show newline
+                            break;
+                        }
+                    } else {
+                        // Room in window - just move cursor to newline position
+                        lines_editor_state.next_move_right_is_past_newline = true;
+                        lines_editor_state.cursor.tui_col += 1;
+                        needs_rebuild = true;
+                    }
 
-                    // There is Room For One More Move-Right
-                    lines_editor_state.next_move_right_is_past_newline = true;
-
-                    lines_editor_state.cursor.tui_col += 1;
                     remaining_moves -= 1;
-                    needs_rebuild = true;
-                    // continue;
+                    // Don't continue - let rebuild happen
                 }
-
                 // Calculate space available before right edge
                 // Reserve 1 column to prevent display overflow
                 let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
@@ -19409,9 +19509,9 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
 
     // Pre-allocate display buffers
     // 26 bytes × 3 chars per byte ("48 ") = 78 chars + safety margin
-    let mut hex_line = String::with_capacity(80);
+    let mut hex_line = String::with_capacity(DEFAULT_COLS);
     // 26 bytes × 3 chars per UTF-8 display ("H  ") = 78 chars + safety margin
-    let mut utf8_line = String::with_capacity(80);
+    let mut utf8_line = String::with_capacity(DEFAULT_COLS);
 
     // Pre-allocate byte buffer for file reading
     let mut byte_buffer = [0u8; BYTES_TO_DISPLAY];
@@ -19861,7 +19961,7 @@ fn render_raw_row(state: &EditorState) -> Result<String> {
     const RESET: &str = "\x1b[0m";
 
     let mut raw_line = String::with_capacity(120); // Escapes can be 2-4 chars
-    let mut interpreted_line = String::with_capacity(80);
+    let mut interpreted_line = String::with_capacity(DEFAULT_COLS);
     let mut byte_buffer = [0u8; BYTES_TO_DISPLAY];
 
     // Get file path from state
