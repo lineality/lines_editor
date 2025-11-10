@@ -9742,7 +9742,7 @@ fn process_line_with_offset(
 ) -> Result<usize> {
     let current_line_number = state.cursor.row;
 
-    const MAX_DISPLAY_BUFFER_BYTES: usize = 240;
+    const MAX_DISPLAY_BUFFER_BYTES: usize = 182;
 
     // ═══════════════════════════════════════════════════════════════════════
     // DEFENSIVE CHECK 1: Validate row index
