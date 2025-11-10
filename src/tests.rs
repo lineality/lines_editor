@@ -2016,7 +2016,10 @@ mod hexedit_tests {
             windowmap_line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
             security_mode: false,
 
-            cursor: WindowPosition { row: 0, col: 0 },
+            cursor: WindowPosition {
+                tui_row: 0,
+                tui_col: 0,
+            },
             next_move_right_is_past_newline: false,
             selection_start: None,
             selection_rowline_start: 0,

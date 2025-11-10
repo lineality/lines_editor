@@ -3864,9 +3864,9 @@ pub struct FilePosition {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowPosition {
     /// Row in terminal (0-indexed, 0-95 max)
-    pub row: usize,
+    pub tui_row: usize,
     /// Column in terminal (0-indexed, 0-319 max)
-    pub col: usize,
+    pub tui_col: usize,
 }
 
 /// Current editor mode
@@ -4197,7 +4197,10 @@ impl EditorState {
             windowmap_line_byte_start_end_position_pairs: [None; MAX_TUI_ROWS],
             security_mode: false, // default setting, purpose: to force-reset manually clear overwrite buffers
 
-            cursor: WindowPosition { row: 0, col: 0 },
+            cursor: WindowPosition {
+                tui_row: 0,
+                tui_col: 0,
+            },
 
             // window_start: FilePosition {
             //     // for Wrap mode, if that happens
@@ -4873,11 +4876,11 @@ impl EditorState {
         // ═══════════════════════════════════════════════════════════════════════
         // Instead of panicking on out-of-bounds, return Ok(false).
         // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
-        if self.cursor.row >= self.windowmap_line_byte_start_end_position_pairs.len() {
+        if self.cursor.tui_row >= self.windowmap_line_byte_start_end_position_pairs.len() {
             #[cfg(debug_assertions)]
             eprintln!(
                 "is_next_byte_newline: cursor row {} >= line count {} (returning false - not at newline)",
-                self.cursor.row,
+                self.cursor.tui_row,
                 self.windowmap_line_byte_start_end_position_pairs.len()
             );
 
@@ -4891,7 +4894,7 @@ impl EditorState {
         // If cursor doesn't map to a valid file position, safely return false.
         // This handles columns beyond line length without crashing.
         let cursor_byte_result =
-            self.get_row_col_file_position(self.cursor.row, self.cursor.col)?;
+            self.get_row_col_file_position(self.cursor.tui_row, self.cursor.tui_col)?;
 
         let cursor_byte_start = match cursor_byte_result {
             Some(pos) => pos.byte_offset_linear_file_absolute_position,
@@ -4899,7 +4902,7 @@ impl EditorState {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "is_next_byte_newline: cursor ({}, {}) has no valid file position mapping (returning false - not at newline)",
-                    self.cursor.row, self.cursor.col
+                    self.cursor.tui_row, self.cursor.tui_col
                 );
 
                 // Not an error - cursor is just beyond valid positions
@@ -4952,14 +4955,14 @@ impl EditorState {
         // return false (defense-in-depth: additional validation layer).
         let line_byte_range = match self
             .windowmap_line_byte_start_end_position_pairs
-            .get(self.cursor.row)
+            .get(self.cursor.tui_row)
         {
             Some(range) => range,
             None => {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "is_next_byte_newline: line byte range missing for row {} (returning false - not at newline)",
-                    self.cursor.row
+                    self.cursor.tui_row
                 );
 
                 // Not an error - handle missing range gracefully
@@ -4977,7 +4980,7 @@ impl EditorState {
                 #[cfg(debug_assertions)]
                 eprintln!(
                     "is_next_byte_newline: line byte range is None (uninitialized) for row {} (returning false - not at newline)",
-                    self.cursor.row
+                    self.cursor.tui_row
                 );
 
                 // Not an error - uninitialized state handled gracefully
@@ -7246,12 +7249,12 @@ impl EditorState {
                 "b" => Command::MoveWordBack(count),
 
                 // toggle
-                "/" => Command::ToggleCommentOneLine(self.cursor.row), // zero index
-                "///" => Command::ToggleDocstringOneLine(self.cursor.row), // zero index
+                "/" => Command::ToggleCommentOneLine(self.cursor.tui_row), // zero index
+                "///" => Command::ToggleDocstringOneLine(self.cursor.tui_row), // zero index
 
                 // indent
-                "[" => Command::UnindentOneLine(self.cursor.row), // zero index
-                "]" => Command::IndentOneLine(self.cursor.row),   // zero index
+                "[" => Command::UnindentOneLine(self.cursor.tui_row), // zero index
+                "]" => Command::IndentOneLine(self.cursor.tui_row),   // zero index
 
                 // TUI Size
                 "tall+" => Command::TallPlus,
@@ -7290,7 +7293,7 @@ impl EditorState {
                 // toggle RANGE
                 "/" => Command::ToggleBasicCommentlinesRange,
                 "//" | "/block" | "/b" => {
-                    Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.row)
+                    Command::ToggleBlockcomments(self.selection_rowline_start, self.cursor.tui_row)
                 }
                 "///" => Command::ToggleRustDocstringRange, // zero index
 
@@ -7466,7 +7469,7 @@ impl EditorState {
     // /// # Returns
     // /// * Column position where text starts (after line number)
     // pub fn get_text_start_column(&self) -> usize {
-    //     let line_number = self.line_count_at_top_of_window + self.cursor.row;
+    //     let line_number = self.line_count_at_top_of_window + self.cursor.tui_row;
     //     calculate_line_number_width(line_number + 1, self.effective_rows) // +1 for 1-indexed display
     // }
 
@@ -9743,7 +9746,7 @@ fn process_line_with_offset(
     max_cols: usize,
     file_line_start: u64,
 ) -> Result<usize> {
-    let current_line_number = state.cursor.row;
+    let current_line_number = state.cursor.tui_row;
 
     const MAX_DISPLAY_BUFFER_BYTES: usize = 182;
 
@@ -10602,7 +10605,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
-                    if lines_editor_state.cursor.row <= 0 {
+                    if lines_editor_state.cursor.tui_row <= 0 {
                         _ = execute_command(lines_editor_state, Command::GotoLineStart)?;
                     }
 
@@ -10614,14 +10617,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // position state inspection
                 // =========================
                 #[cfg(debug_assertions)]
-                let this_row = lines_editor_state.cursor.row;
+                let this_row = lines_editor_state.cursor.tui_row;
                 #[cfg(debug_assertions)]
-                let this_col = lines_editor_state.cursor.col;
+                let this_col = lines_editor_state.cursor.tui_col;
 
                 #[cfg(debug_assertions)]
                 {
                     println!(
-                        "MoveLeft lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                        "MoveLeft lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                         this_row, this_col,
                     );
                     println!(
@@ -10637,8 +10640,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                     );
                     println!(
-                        "\nMoveLeft lines_editor_state.cursor.row -> {:?}",
-                        lines_editor_state.cursor.row
+                        "\nMoveLeft lines_editor_state.cursor.tui_row -> {:?}",
+                        lines_editor_state.cursor.tui_row
                     );
                     println!(
                         "\nMoveLeft windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -10655,10 +10658,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // =============
                 // Window Scroll
                 // =============
-                if lines_editor_state.cursor.col > 0 {
+                if lines_editor_state.cursor.tui_col > 0 {
                     // Cursor can move left within visible window
-                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.col);
-                    lines_editor_state.cursor.col -= cursor_moves;
+                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.tui_col);
+                    lines_editor_state.cursor.tui_col -= cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
                     // Cursor at left edge, scroll window left
@@ -10720,13 +10723,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position += count;
 
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "MoveRight lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "MoveRight lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -10742,8 +10745,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nMoveRight lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nMoveRight lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nMoveRight windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -10790,7 +10793,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // There is Room For One More Move-Right
                     lines_editor_state.next_move_right_is_past_newline = true;
 
-                    lines_editor_state.cursor.col += 1;
+                    lines_editor_state.cursor.tui_col += 1;
                     remaining_moves -= 1;
                     needs_rebuild = true;
                     // continue;
@@ -10800,18 +10803,18 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // Reserve 1 column to prevent display overflow
                 let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-                if lines_editor_state.cursor.col < (right_edge) {
+                if lines_editor_state.cursor.tui_col < (right_edge) {
                     // Cursor can move right within visible window
-                    let space_available = right_edge - lines_editor_state.cursor.col;
+                    let space_available = right_edge - lines_editor_state.cursor.tui_col;
                     let cursor_moves = remaining_moves.min(space_available);
 
-                    lines_editor_state.cursor.col += cursor_moves;
+                    lines_editor_state.cursor.tui_col += cursor_moves;
 
                     // Inspection in debug build only
                     #[cfg(debug_assertions)]
                     println!(
                         "Inspection cursor_moves-> {:?}, col:{:?}",
-                        &cursor_moves, lines_editor_state.cursor.col
+                        &cursor_moves, lines_editor_state.cursor.tui_col
                     );
 
                     remaining_moves -= cursor_moves;
@@ -10890,14 +10893,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
 
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "MoveDown lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "MoveDown lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -10913,8 +10916,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nMoveDown lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nMoveDown lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nMoveDown windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -10933,23 +10936,23 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // Calculate space available before bottom edge
                 let bottom_edge = lines_editor_state.effective_rows.saturating_sub(1);
 
-                if lines_editor_state.cursor.row < bottom_edge {
+                if lines_editor_state.cursor.tui_row < bottom_edge {
                     // Cursor can move down within visible window
                     // Check if EOF limits movement
                     let space_available = if let Some((_eof_line, eof_row)) =
                         lines_editor_state.eof_fileline_tuirow_tuple
                     {
-                        if lines_editor_state.cursor.row < eof_row {
+                        if lines_editor_state.cursor.tui_row < eof_row {
                             // Can move toward EOF
-                            (eof_row - lines_editor_state.cursor.row)
-                                .min(bottom_edge - lines_editor_state.cursor.row)
+                            (eof_row - lines_editor_state.cursor.tui_row)
+                                .min(bottom_edge - lines_editor_state.cursor.tui_row)
                         } else {
                             // At or past EOF, cannot move
                             0
                         }
                     } else {
                         // No EOF visible, normal movement
-                        bottom_edge - lines_editor_state.cursor.row
+                        bottom_edge - lines_editor_state.cursor.tui_row
                     };
 
                     if space_available == 0 {
@@ -10957,18 +10960,18 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     }
 
                     let cursor_moves = remaining_moves.min(space_available);
-                    lines_editor_state.cursor.row += cursor_moves;
+                    lines_editor_state.cursor.tui_row += cursor_moves;
 
                     let line_num_width = calculate_line_number_width(
                         lines_editor_state.line_count_at_top_of_window, // starting_row
-                        lines_editor_state.cursor.row,                  // tui_row
+                        lines_editor_state.cursor.tui_row,              // tui_row
                         lines_editor_state.effective_rows,              // effective_rows
                     );
 
                     // if col is in the number-zone to the left of the text
                     // bump it over
-                    if lines_editor_state.cursor.col < line_num_width {
-                        lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                    if lines_editor_state.cursor.tui_col < line_num_width {
+                        lines_editor_state.cursor.tui_col = line_num_width; // Skip over line number displayfull_lines_editor
                         lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
                             line_num_width;
                         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -11018,9 +11021,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         // file_line_of_eof = file line number where EOF occurs
                         // eof_tui_display_row = display row showing EOF
 
-                        if lines_editor_state.cursor.row > eof_tui_display_row {
+                        if lines_editor_state.cursor.tui_row > eof_tui_display_row {
                             // Cursor past EOF, clamp to EOF position
-                            lines_editor_state.cursor.row = eof_tui_display_row;
+                            lines_editor_state.cursor.tui_row = eof_tui_display_row;
                         }
                     }
                     None => {
@@ -11062,7 +11065,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // // ========================================================================
 
             // let current_file_pos = match lines_editor_state
-            //     .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
+            //     .get_row_col_file_position(lines_editor_state.cursor.tui_row, lines_editor_state.cursor.tui_col)
             // {
             //     Ok(Some(pos)) => pos,
             //     Ok(None) => {
@@ -11085,14 +11088,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
 
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "MoveUp lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "MoveUp lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -11108,8 +11111,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nMoveUp lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nMoveUp lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nMoveUp windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -11125,10 +11128,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                if lines_editor_state.cursor.row > 0 {
+                if lines_editor_state.cursor.tui_row > 0 {
                     // Cursor can move up within visible window
-                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.row);
-                    lines_editor_state.cursor.row -= cursor_moves;
+                    let cursor_moves = remaining_moves.min(lines_editor_state.cursor.tui_row);
+                    lines_editor_state.cursor.tui_row -= cursor_moves;
                     remaining_moves -= cursor_moves;
                 } else if lines_editor_state.line_count_at_top_of_window > 0 {
                     // Cursor at top edge, scroll window up
@@ -11159,13 +11162,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             let line_num_width = calculate_line_number_width(
                 lines_editor_state.line_count_at_top_of_window,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
                 lines_editor_state.effective_rows,
             );
 
             // if position.. is <
             if lines_editor_state.in_row_abs_horizontal_0_index_cursor_position <= line_num_width {
-                lines_editor_state.cursor.col = line_num_width;
+                lines_editor_state.cursor.tui_col = line_num_width;
                 lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
             }
@@ -11245,8 +11248,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Get byte at current cursor position
                     let current_byte = match lines_editor_state.get_row_col_file_position(
-                        lines_editor_state.cursor.row,
-                        lines_editor_state.cursor.col,
+                        lines_editor_state.cursor.tui_row,
+                        lines_editor_state.cursor.tui_col,
                     ) {
                         Ok(Some(pos)) => {
                             let mut byte_buf = [0u8; 1];
@@ -11306,8 +11309,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     iteration += 1;
                     // Get current cursor position in file
                     let current_pos = match lines_editor_state.get_row_col_file_position(
-                        lines_editor_state.cursor.row,
-                        lines_editor_state.cursor.col,
+                        lines_editor_state.cursor.tui_row,
+                        lines_editor_state.cursor.tui_col,
                     ) {
                         Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
                         Ok(None) => break, // Invalid position, stop here
@@ -11391,8 +11394,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Get current cursor position in file
                     let current_pos = match lines_editor_state.get_row_col_file_position(
-                        lines_editor_state.cursor.row,
-                        lines_editor_state.cursor.col,
+                        lines_editor_state.cursor.tui_row,
+                        lines_editor_state.cursor.tui_col,
                     ) {
                         Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
                         Ok(None) => break, // Invalid position, stop here
@@ -11467,19 +11470,19 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // reset to first real position each new go-to-linw
             let line_num_width = calculate_line_number_width(
                 lines_editor_state.line_count_at_top_of_window,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
                 lines_editor_state.effective_rows,
             );
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
 
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "GotoLine lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "GotoLine lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -11495,8 +11498,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nGotoLine lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nGotoLine lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nGotoLine windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -11509,8 +11512,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 Ok(byte_pos) => {
                     lines_editor_state.line_count_at_top_of_window = target_line;
                     lines_editor_state.file_position_of_topline_start = byte_pos;
-                    lines_editor_state.cursor.row = 0;
-                    lines_editor_state.cursor.col = 0;
+                    lines_editor_state.cursor.tui_row = 0;
+                    lines_editor_state.cursor.tui_col = 0;
 
                     // Position cursor AFTER line number (same as bootstrap)
                     // number of digits in line number + 1 is first character
@@ -11519,7 +11522,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         line_number,
                         lines_editor_state.effective_rows,
                     );
-                    lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                    lines_editor_state.cursor.tui_col = line_num_width; // Skip over line number displayfull_lines_editor
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
                         line_num_width;
                     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -11552,19 +11555,19 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // reset to first real position each new GotoFileStart
             let line_num_width = calculate_line_number_width(
                 lines_editor_state.line_count_at_top_of_window,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
                 lines_editor_state.effective_rows,
             );
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
 
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "GotoFileStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "GotoFileStart lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -11580,8 +11583,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nGotoFileStart lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nGotoFileStart lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nGotoFileStart windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -11594,8 +11597,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 Ok(byte_pos) => {
                     lines_editor_state.line_count_at_top_of_window = target_line;
                     lines_editor_state.file_position_of_topline_start = byte_pos;
-                    lines_editor_state.cursor.row = 0;
-                    lines_editor_state.cursor.col = 3; // Skip over line number displayfull_lines_editor + padding
+                    lines_editor_state.cursor.tui_row = 0;
+                    lines_editor_state.cursor.tui_col = 3; // Skip over line number displayfull_lines_editor + padding
 
                     // Rebuild window to show the new position
                     build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
@@ -11633,10 +11636,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         Command::GotoLineStart => {
             let line_num_width = calculate_line_number_width(
                 lines_editor_state.line_count_at_top_of_window,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
                 lines_editor_state.effective_rows,
             );
-            lines_editor_state.cursor.col = line_num_width;
+            lines_editor_state.cursor.tui_col = line_num_width;
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
@@ -11649,17 +11652,17 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // position state inspection
             // =========================
             // reset to first real position each new GotoLineStart
-            // let line_num_width = calculate_line_number_width(lines_editor_state.cursor.row);
+            // let line_num_width = calculate_line_number_width(lines_editor_state.cursor.tui_row);
 
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.row;
+            let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.col;
+            let this_col = lines_editor_state.cursor.tui_col;
 
             #[cfg(debug_assertions)]
             {
                 println!(
-                    "GotoLineStart lines_editor_state.cursor.row, .col-> {:?},{:?}",
+                    "GotoLineStart lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
                 );
                 println!(
@@ -11675,8 +11678,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
                 );
                 println!(
-                    "\nGotoLineStart lines_editor_state.cursor.row -> {:?}",
-                    lines_editor_state.cursor.row
+                    "\nGotoLineStart lines_editor_state.cursor.tui_row -> {:?}",
+                    lines_editor_state.cursor.tui_row
                 );
                 println!(
                     "\nGotoLineStart windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -11875,8 +11878,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Set cursor position to file_position_of_vis_select_start
             // Get current cursor position in FILE
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.row,
-                lines_editor_state.cursor.col,
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
             ) {
                 // Set/Reset BOTH start and end to same position initially
                 lines_editor_state.file_position_of_vis_select_start =
@@ -11890,14 +11893,14 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             lines_editor_state.mode = EditorMode::VisualSelectMode;
             // Set selection start at current cursor position
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.row,
-                lines_editor_state.cursor.col,
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
             ) {
                 lines_editor_state.selection_start = Some(file_pos);
             }
 
             // set row of cursor start
-            lines_editor_state.selection_rowline_start = lines_editor_state.cursor.row;
+            lines_editor_state.selection_rowline_start = lines_editor_state.cursor.tui_row;
             Ok(true)
         }
 
@@ -11917,8 +11920,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             // Convert current window position to file byte offset
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.row,
-                lines_editor_state.cursor.col,
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
             ) {
                 // Start hex cursor at same file position
                 lines_editor_state
@@ -11942,8 +11945,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             // Convert current window position to file byte offset
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.row,
-                lines_editor_state.cursor.col,
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
             ) {
                 // Start hex cursor at same file position
                 lines_editor_state
@@ -12025,7 +12028,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             let _ = unindent_range(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
             )?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12062,7 +12065,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             let _ = indent_range(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
             )?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12099,7 +12102,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             let _ = toggle_range_rust_docstring(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
             )?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12136,7 +12139,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             let _ = toggle_range_basic_comments(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
-                lines_editor_state.cursor.row,
+                lines_editor_state.cursor.tui_row,
             )?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12396,9 +12399,10 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // STEP 1: Get file position from cursor (defensive)
     // ========================================================================
 
-    let current_file_pos = match lines_editor_state
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-    {
+    let current_file_pos = match lines_editor_state.get_row_col_file_position(
+        lines_editor_state.cursor.tui_row,
+        lines_editor_state.cursor.tui_col,
+    ) {
         Ok(Some(pos)) => pos,
         Ok(None) => {
             let _ = lines_editor_state.set_info_bar_message("gl cursor pos. unavailable");
@@ -12459,15 +12463,15 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // =========================
     let line_num_width = calculate_line_number_width(
         lines_editor_state.line_count_at_top_of_window,
-        lines_editor_state.cursor.row,
+        lines_editor_state.cursor.tui_row,
         lines_editor_state.effective_rows,
     );
     // reset for each new fn goto_line_end
     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_length + line_num_width;
-    let this_row = lines_editor_state.cursor.row;
-    let this_col = lines_editor_state.cursor.col;
+    let this_row = lines_editor_state.cursor.tui_row;
+    let this_col = lines_editor_state.cursor.tui_col;
     println!(
-        "fn goto_line_end lines_editor_state.cursor.row, .col-> {:?},{:?}",
+        "fn goto_line_end lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
         this_row, this_col,
     );
     println!(
@@ -12483,8 +12487,8 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
     );
     println!(
-        "\nfn goto_line_end lines_editor_state.cursor.row -> {:?}",
-        lines_editor_state.cursor.row
+        "\nfn goto_line_end lines_editor_state.cursor.tui_row -> {:?}",
+        lines_editor_state.cursor.tui_row
     );
     println!(
         "\nfn goto_line_end windowmap_line_byte_start_end_position_pairs -> {:?}",
@@ -12527,13 +12531,13 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
             .tui_window_horizontal_utf8txt_line_char_offset
             .saturating_add(overflow);
 
-        lines_editor_state.cursor.col = right_edge;
+        lines_editor_state.cursor.tui_col = right_edge;
         // println!("right_edge {right_edge}, display_col_for_line_end {display_col_for_line_end}");
         needs_rebuild = true;
     } else {
         // Line fits within terminal
         // TODO: why is this odd?
-        lines_editor_state.cursor.col = display_col_for_line_end;
+        lines_editor_state.cursor.tui_col = display_col_for_line_end;
     }
 
     // ========================================================================
@@ -12576,7 +12580,10 @@ fn backspace_style_delete_noload(
 ) -> io::Result<()> {
     // Step 1: Get current file position
     let file_pos = lines_editor_state
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
+        .get_row_col_file_position(
+            lines_editor_state.cursor.tui_row,
+            lines_editor_state.cursor.tui_col,
+        )?
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -12773,11 +12780,11 @@ fn backspace_style_delete_noload(
     lines_editor_state.is_modified = true;
 
     // Step 7: Move cursor back one position
-    if lines_editor_state.cursor.col > 0 {
-        lines_editor_state.cursor.col -= 1;
-    } else if lines_editor_state.cursor.row > 0 {
+    if lines_editor_state.cursor.tui_col > 0 {
+        lines_editor_state.cursor.tui_col -= 1;
+    } else if lines_editor_state.cursor.tui_row > 0 {
         // Deleted at line start - move to end of previous line
-        lines_editor_state.cursor.row -= 1;
+        lines_editor_state.cursor.tui_row -= 1;
         // Will be repositioned correctly after window rebuild
     }
 
@@ -13239,7 +13246,7 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Result<()> {
     // Step 1: Get current line's file position
     let row_col_file_pos = state
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)?
+        .get_row_col_file_position(state.cursor.tui_row, state.cursor.tui_col)?
         .ok_or_else(|| LinesError::InvalidInput("Cursor not on valid position".into()))?;
 
     // Step 2: Find line boundaries
@@ -13400,7 +13407,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
             // Skip to Step 5
             state.is_modified = true;
 
-            state.cursor.col = 0;
+            state.cursor.tui_col = 0;
             let _ = state.set_info_bar_message("undo disabled");
             return Ok(());
         }
@@ -13431,7 +13438,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
                 // Skip to Step 5
                 state.is_modified = true;
 
-                state.cursor.col = 0;
+                state.cursor.tui_col = 0;
                 return Ok(());
             }
         };
@@ -13780,7 +13787,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 
     // Step 6: Cursor stays at current row
     // After rebuild, this row will show the next line
-    state.cursor.col = 0; // Move to start of (new) line
+    state.cursor.tui_col = 0; // Move to start of (new) line
 
     Ok(())
 }
@@ -14342,7 +14349,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
             // Skip to Step 5
             state.is_modified = true;
 
-            state.cursor.col = 0;
+            state.cursor.tui_col = 0;
             let _ = state.set_info_bar_message("err:nO uNdo");
             return Ok(());
         }
@@ -14373,7 +14380,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
                 // Skip to Step 5
                 state.is_modified = true;
 
-                state.cursor.col = 0;
+                state.cursor.tui_col = 0;
                 return Ok(());
             }
         };
@@ -14970,7 +14977,7 @@ fn row_needs_extra_padding_bool(
     &
     if in rollover_size - tui_size
     then add pad +1 before row...
-     */
+    */
 
     let bool_output;
 
@@ -15101,9 +15108,10 @@ fn insert_newline_at_cursor_chunked(
     file_path: &Path,
 ) -> io::Result<()> {
     // Step 1: Get file position at/of/where  cursor (with graceful error handling)
-    let file_pos = match lines_editor_state
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-    {
+    let file_pos = match lines_editor_state.get_row_col_file_position(
+        lines_editor_state.cursor.tui_row,
+        lines_editor_state.cursor.tui_col,
+    ) {
         Ok(Some(pos)) => pos,
         Ok(None) => {
             eprintln!("Warning: Cannot insert - cursor not on valid file position");
@@ -15221,18 +15229,18 @@ fn insert_newline_at_cursor_chunked(
     lines_editor_state.is_modified = true;
 
     // Step 10: Update cursor - move to start of new line
-    lines_editor_state.cursor.row += 1;
+    lines_editor_state.cursor.tui_row += 1;
 
     // Calculate where the text starts after the line number
     let new_line_number =
-        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row;
+        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.tui_row;
     let line_num_width = calculate_line_number_width(
         lines_editor_state.line_count_at_top_of_window,
         new_line_number + 1,
         lines_editor_state.effective_rows,
     ); // +1 for 1-indexed display
 
-    lines_editor_state.cursor.col = line_num_width; // Position cursor after line number
+    lines_editor_state.cursor.tui_col = line_num_width; // Position cursor after line number
     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
     // ============================================
@@ -15708,7 +15716,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // This is the insertion point for the first chunk
     // Subsequent chunks insert at: start_position + bytes_already_written
     let start_byte_position = match state
-        .get_row_col_file_position(state.cursor.row, state.cursor.col)
+        .get_row_col_file_position(state.cursor.tui_row, state.cursor.tui_col)
     {
         Ok(Some(pos)) => pos.byte_offset_linear_file_absolute_position,
         Ok(None) => {
@@ -15731,7 +15739,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
             );
             // safe
             log_error(
-                "match state.get_row_col_file_position(state.cursor.row, state.cursor.col) Error getting cursor position",
+                "match state.get_row_col_file_position(state.cursor.tui_row, state.cursor.tui_col) Error getting cursor position",
                 Some("insert_file_at_cursor"),
             );
             return Err(LinesError::Io(e));
@@ -16684,9 +16692,10 @@ pub fn insert_text_chunk_at_cursor_position(
     // Phase 1: Get Cursor Position
     // ============================================
 
-    let file_pos = match lines_editor_state
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-    {
+    let file_pos = match lines_editor_state.get_row_col_file_position(
+        lines_editor_state.cursor.tui_row,
+        lines_editor_state.cursor.tui_col,
+    ) {
         Ok(Some(pos)) => pos,
         Ok(None) => {
             // Cursor not on valid position - log and return without crashing
@@ -16832,13 +16841,13 @@ pub fn insert_text_chunk_at_cursor_position(
             // Skip to Phase 5 (cursor update) - insertion succeeded, logging is optional
             // Continue with cursor update and return
             let char_count = text_str.chars().count();
-            lines_editor_state.cursor.col += char_count;
+            lines_editor_state.cursor.tui_col += char_count;
 
             let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
-            if lines_editor_state.cursor.col > right_edge {
-                let overflow = lines_editor_state.cursor.col - right_edge;
+            if lines_editor_state.cursor.tui_col > right_edge {
+                let overflow = lines_editor_state.cursor.tui_col - right_edge;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
-                lines_editor_state.cursor.col = right_edge;
+                lines_editor_state.cursor.tui_col = right_edge;
                 build_windowmap_nowrap(lines_editor_state, file_path)?;
             }
 
@@ -17100,22 +17109,22 @@ pub fn insert_text_chunk_at_cursor_position(
 
     // Update cursor position
     let char_count = text_str.chars().count();
-    lines_editor_state.cursor.col += char_count;
+    lines_editor_state.cursor.tui_col += char_count;
 
     // ==========================================
     // Check if cursor exceeded right edge
     // ==========================================
     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
-    if lines_editor_state.cursor.col > right_edge {
+    if lines_editor_state.cursor.tui_col > right_edge {
         // Calculate how far past edge we went
-        let overflow = lines_editor_state.cursor.col - right_edge;
+        let overflow = lines_editor_state.cursor.tui_col - right_edge;
 
         // Scroll window right to accommodate
         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
 
         // Move cursor back to right edge
-        lines_editor_state.cursor.col = right_edge;
+        lines_editor_state.cursor.tui_col = right_edge;
 
         // Rebuild window to show new viewport
         build_windowmap_nowrap(lines_editor_state, file_path)?;
@@ -19075,11 +19084,11 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
     // Get current line and column
     // Line is 1-indexed for display (humans count from 1)
     let line_display =
-        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row + 1;
+        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.tui_row + 1;
 
     // Get line number to calculate line number display width
     let line_num =
-        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.row + 1;
+        lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.tui_row + 1;
     let line_num_width = calculate_line_number_width(
         lines_editor_state.line_count_at_top_of_window,
         line_num,
@@ -19088,7 +19097,7 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
 
     // Add horizontal offset to get character position in line
     // Subtract line number width from displayed column
-    let true_char_position = lines_editor_state.cursor.col
+    let true_char_position = lines_editor_state.cursor.tui_col
         + lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
 
     // zero-based vs. 1 based
@@ -19115,9 +19124,10 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
 
     // Step 1: Get current line's file position
     // In case of exception, say 'n/a'
-    let file_position_string = match lines_editor_state
-        .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)
-    {
+    let file_position_string = match lines_editor_state.get_row_col_file_position(
+        lines_editor_state.cursor.tui_row,
+        lines_editor_state.cursor.tui_col,
+    ) {
         Ok(Some(row_col_file_pos)) => row_col_file_pos
             .byte_offset_linear_file_absolute_position
             .to_string(),
@@ -19126,7 +19136,7 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
 
     // let row_col_file_pos = lines_editor_state
     //     .window_map
-    //     .get_row_col_file_position(lines_editor_state.cursor.row, lines_editor_state.cursor.col)?
+    //     .get_row_col_file_position(lines_editor_state.cursor.tui_row, lines_editor_state.cursor.tui_col)?
     //     .ok_or_else(|| {
     //         io::Error::new(
     //             io::ErrorKind::InvalidInput,
@@ -20314,7 +20324,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
             }
         } else {
             // Show cursor on empty rows if cursor is here
-            if row == state.cursor.row {
+            if row == state.cursor.tui_row {
                 println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
             } else {
                 println!();
@@ -20377,8 +20387,8 @@ fn render_utf8txt_row_with_cursor(
     let mut result = String::with_capacity(row_content.len() + 100);
 
     // Defensive: prevent cursor beyond line length
-    let cursor_col = state.cursor.col.min(chars.len());
-    let cursor_on_this_row = row_index == state.cursor.row;
+    let cursor_col = state.cursor.tui_col.min(chars.len());
+    let cursor_on_this_row = row_index == state.cursor.tui_row;
 
     // Process each character in the row
     for col in 0..chars.len() {
@@ -21092,8 +21102,8 @@ pub fn lines_fullfileeditor_core(
     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
     // Bootstrap initial cursor position, start of file, after "l "
-    lines_editor_state.cursor.row = 0;
-    lines_editor_state.cursor.col = 3; // Bootstrap Bumb: start after padded line nunber (zero-index 3)
+    lines_editor_state.cursor.tui_row = 0;
+    lines_editor_state.cursor.tui_col = 3; // Bootstrap Bumb: start after padded line nunber (zero-index 3)
 
     // IF cli argument to goto/start-at line:
     // e.g. lines many_lines_v1.txt:500
@@ -21111,7 +21121,7 @@ pub fn lines_fullfileeditor_core(
                     lines_editor_state.effective_rows,
                 );
                 // println!("{line_num_width}{target_line}");
-                lines_editor_state.cursor.col = line_num_width; // Skip over line number display
+                lines_editor_state.cursor.tui_col = line_num_width; // Skip over line number display
                 lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
 
@@ -21191,13 +21201,13 @@ pub fn lines_fullfileeditor_core(
         // // find line text width
         let line_num_width = calculate_line_number_width(
             lines_editor_state.line_count_at_top_of_window,
-            lines_editor_state.cursor.row,
+            lines_editor_state.cursor.tui_row,
             lines_editor_state.effective_rows,
         );
-        if lines_editor_state.cursor.col < line_num_width {
+        if lines_editor_state.cursor.tui_col < line_num_width {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
-            if lines_editor_state.cursor.row == 0 {
-                lines_editor_state.cursor.col = line_num_width + 1;
+            if lines_editor_state.cursor.tui_row == 0 {
+                lines_editor_state.cursor.tui_col = line_num_width + 1;
                 lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
                     line_num_width + 1;
                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -21205,7 +21215,7 @@ pub fn lines_fullfileeditor_core(
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
             } else {
                 // TODO add check to scroll up if not top of TUI
-                if lines_editor_state.cursor.row == 0 {}
+                if lines_editor_state.cursor.tui_row == 0 {}
 
                 print!("moving up: line_num_width {line_num_width}");
                 // Not at Top? If so... Bump it up!
@@ -21217,9 +21227,9 @@ pub fn lines_fullfileeditor_core(
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
 
-                if lines_editor_state.cursor.row == 0 {
+                if lines_editor_state.cursor.tui_row == 0 {
                     print!("pingping\n\n\n");
-                    lines_editor_state.cursor.col = line_num_width + 1;
+                    lines_editor_state.cursor.tui_col = line_num_width + 1;
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
                         line_num_width + 1;
                     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
@@ -21229,14 +21239,14 @@ pub fn lines_fullfileeditor_core(
 
                     // let line_num_width = calculate_line_number_width(
                     //     lines_editor_state.line_count_at_top_of_window,
-                    //     lines_editor_state.cursor.row,
+                    //     lines_editor_state.cursor.tui_row,
                     //     lines_editor_state.effective_rows,
                     // );
 
                     // // if col is in the number-zone to the left of the text
                     // // bump it over
-                    // if lines_editor_state.cursor.col < line_num_width {
-                    //     lines_editor_state.cursor.col = line_num_width; // Skip over line number displayfull_lines_editor
+                    // if lines_editor_state.cursor.tui_col < line_num_width {
+                    //     lines_editor_state.cursor.tui_col = line_num_width; // Skip over line number displayfull_lines_editor
                     //     build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
                     // }
                 }
@@ -21310,8 +21320,8 @@ pub fn lines_fullfileeditor_core(
             // Set cursor position to file_position_of_vis_select_end
             // After movement, update END position to new cursor location
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.row,
-                lines_editor_state.cursor.col,
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
             ) {
                 lines_editor_state.file_position_of_vis_select_end =
                     file_pos.byte_offset_linear_file_absolute_position;
