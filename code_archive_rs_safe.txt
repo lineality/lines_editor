@@ -1927,34 +1927,479 @@ fn stack_format_it1(template: &str, inserts: &[&str], fallback: &str) -> String 
         //     }
         // }
 
-                // let line_num_width = calculate_line_number_width(
-                //     lines_editor_state.line_count_at_top_of_window,
-                //     lines_editor_state.line_count_at_top_of_window,
-                //     lines_editor_state.effective_rows,
-                // );
 
-                // // =============================
-                // // Move Left to Above End of Row
-                // // =============================
-                // // If at top of TUI but NOT top of doc
-                // // move up to end of line
-                // if let Some(_) = lines_editor_state // guard against overflow substraction
-                //     .cursor
-                //     .tui_col
-                //     .checked_sub(line_num_width)
-                // {
-                //     #[cfg(debug_assertions)]
-                //     println!(
-                //         "lines_editor_state.cursor.tui_col - line_num_width -> {}",
-                //         lines_editor_state.cursor.tui_col - line_num_width
-                //     );
 
-                //     if (lines_editor_state.cursor.tui_row == 0)
-                //         && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
-                //         && !(lines_editor_state.line_count_at_top_of_window == 0)
-                //     {
-                //         // move up, move to end of line.
-                //         _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
-                //         _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
-                //     }
-                // }
+// // #[cfg(debug_assertions)]
+// /// Determines the byte length of a UTF-8 character at a specific file position
+// ///
+// /// # Purpose (Project Context)
+// /// Text editors must handle international text correctly. When detecting if
+// /// the cursor is at a line end (for line-wrapping in cursor movement),
+// /// we must know the COMPLETE character's byte span, not just its starting byte.
+// ///
+// /// For ASCII 'a' (1 byte), the character ends where it starts.
+// /// For Chinese '世' (3 bytes: E4 B8 96), the character spans 3 bytes,
+// /// so "next byte after character" is 3 bytes forward, not 1.
+// ///
+// /// This function enables correct line-end detection for all UTF-8 text.
+// ///
+// /// # Strategy
+// /// 1. Opens file (stateless operation)
+// /// 2. Seeks to target byte position
+// /// 3. Reads first byte to examine UTF-8 pattern
+// /// 4. Returns character length based on first-byte pattern
+// /// 5. Closes file automatically (RAII)
+// ///
+// /// # UTF-8 First-Byte Patterns
+// /// ```text
+// /// Byte Range   Pattern      Character Length
+// /// 0x00..=0x7F  0xxxxxxx     1 byte  (ASCII)
+// /// 0xC0..=0xDF  110xxxxx     2 bytes
+// /// 0xE0..=0xEF  1110xxxx     3 bytes
+// /// 0xF0..=0xF7  11110xxx     4 bytes
+// /// 0x80..=0xBF  10xxxxxx     Invalid (continuation byte, not first byte)
+// /// 0xF8..=0xFF  11111xxx     Invalid (UTF-8 doesn't use these)
+// /// ```
+// ///
+// /// # Arguments
+// /// * `file_path` - Absolute path to file being analyzed
+// /// * `byte_position` - Absolute byte offset in file where character starts
+// ///
+// /// # Returns
+// /// * `Ok(1)` - Single-byte character (ASCII) OR invalid UTF-8 treated as 1 byte
+// /// * `Ok(2)` - Two-byte UTF-8 character
+// /// * `Ok(3)` - Three-byte UTF-8 character
+// /// * `Ok(4)` - Four-byte UTF-8 character
+// /// * `Err(LinesError::Io)` - Unrecoverable file I/O error (hardware failure)
+// ///
+// /// # Defensive Programming - Graceful Degradation
+// /// Invalid UTF-8 sequences are treated as single bytes instead of crashing.
+// /// This allows the editor to handle:
+// /// - Corrupted files (bit flips, partial writes)
+// /// - Binary data mixed with text
+// /// - Files with encoding errors
+// /// - Malicious or malformed input
+// ///
+// /// The editor continues operating; users can see and edit raw bytes.
+// ///
+// /// # Error Handling Philosophy
+// /// - File not found → Returns `Err` (propagates to caller for logging)
+// /// - Cannot open file → Returns `Err` (permission/hardware issue)
+// /// - EOF at position → Returns `Ok(1)` (treat as single byte, defensive)
+// /// - Invalid UTF-8 → Returns `Ok(1)` (treat as single byte, defensive)
+// /// - Read I/O error → Returns `Err` (hardware failure)
+// ///
+// /// # Memory Allocation
+// /// Zero heap allocation in critical path:
+// /// - File handle on stack (dropped automatically)
+// /// - Single-byte buffer `[u8; 1]` on stack
+// /// - No string allocation
+// /// - Error messages use string literals in production
+// ///
+// /// # Examples
+// /// ```ignore
+// /// // ASCII character 'a' (0x61)
+// /// let len = get_utf8_char_byte_length_at_position(path, 10)?;
+// /// assert_eq!(len, 1);
+// ///
+// /// // Chinese character '世' (0xE4 0xB8 0x96)
+// /// let len = get_utf8_char_byte_length_at_position(path, 20)?;
+// /// assert_eq!(len, 3);
+// ///
+// /// // Invalid byte (0x80 continuation byte at start)
+// /// let len = get_utf8_char_byte_length_at_position(path, 30)?;
+// /// assert_eq!(len, 1); // Defensive: treat as single byte
+// /// ```
+// fn get_utf8_char_byte_length_at_position(file_path: &Path, byte_position: u64) -> Result<usize> {
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // DEFENSIVE CHECK 1: Validate file path is absolute
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // Assertion: All file paths in this project must be absolute for security
+//     // and clarity. Relative paths create ambiguity and security risks.
+//     debug_assert!(
+//         file_path.is_absolute(),
+//         "File path must be absolute for UTF-8 character analysis"
+//     );
+
+//     if !file_path.is_absolute() {
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "get_utf8_char_byte_length_at_position: non-absolute path rejected: {:?}",
+//             file_path
+//         );
+
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             "File path must be absolute",
+//         )));
+//     }
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // DEFENSIVE CHECK 2: Validate file exists before attempting to read
+//     // ═══════════════════════════════════════════════════════════════════════
+//     if !file_path.exists() {
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "get_utf8_char_byte_length_at_position: file does not exist: {:?}",
+//             file_path
+//         );
+
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             "File not found",
+//         )));
+//     }
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // FILE OPERATION: Open file for reading (stateless operation)
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // RAII: File handle automatically closed when function exits
+//     let mut file = match File::open(file_path) {
+//         Ok(f) => f,
+//         Err(e) => {
+//             #[cfg(debug_assertions)]
+//             eprintln!(
+//                 "get_utf8_char_byte_length_at_position: failed to open file {:?}: {}",
+//                 file_path, e
+//             );
+
+//             // Propagate error - file access failure is unrecoverable here
+//             return Err(LinesError::Io(e));
+//         }
+//     };
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // FILE OPERATION: Seek to target byte position
+//     // ═══════════════════════════════════════════════════════════════════════
+//     if let Err(e) = file.seek(SeekFrom::Start(byte_position)) {
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "get_utf8_char_byte_length_at_position: seek failed to position {}: {}",
+//             byte_position, e
+//         );
+
+//         // Propagate error - seek failure indicates corrupted file or hardware issue
+//         return Err(LinesError::Io(e));
+//     }
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // STACK ALLOCATION: Single-byte buffer for reading UTF-8 first byte
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // No heap allocation: fixed-size stack buffer
+//     let mut first_byte_buffer = [0u8; 1];
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // FILE OPERATION: Read first byte of character
+//     // ═══════════════════════════════════════════════════════════════════════
+//     let bytes_read = match file.read(&mut first_byte_buffer) {
+//         Ok(n) => n,
+//         Err(e) => {
+//             #[cfg(debug_assertions)]
+//             eprintln!(
+//                 "get_utf8_char_byte_length_at_position: read failed at position {}: {}",
+//                 byte_position, e
+//             );
+
+//             // Propagate error - read failure indicates hardware/permission issue
+//             return Err(LinesError::Io(e));
+//         }
+//     };
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // DEFENSIVE CHECK 3: Handle EOF (cursor positioned at or past end of file)
+//     // ═══════════════════════════════════════════════════════════════════════
+//     if bytes_read == 0 {
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "get_utf8_char_byte_length_at_position: EOF at position {} (treating as 1 byte)",
+//             byte_position
+//         );
+
+//         // Defensive: Treat EOF as single byte
+//         // This allows cursor movement logic to handle end-of-file gracefully
+//         return Ok(1);
+//     }
+
+//     // ═══════════════════════════════════════════════════════════════════════
+//     // UTF-8 ANALYSIS: Determine character length from first-byte pattern
+//     // ═══════════════════════════════════════════════════════════════════════
+//     let first_byte = first_byte_buffer[0];
+
+//     // Assertion: We should have read exactly 1 byte if not EOF
+//     debug_assert_eq!(bytes_read, 1, "Expected to read exactly 1 byte");
+
+//     let char_length = if first_byte <= 0x7F {
+//         // Pattern: 0xxxxxxx → 1-byte character (ASCII)
+//         1
+//     } else if first_byte >= 0xC0 && first_byte <= 0xDF {
+//         // Pattern: 110xxxxx → 2-byte character
+//         2
+//     } else if first_byte >= 0xE0 && first_byte <= 0xEF {
+//         // Pattern: 1110xxxx → 3-byte character
+//         3
+//     } else if first_byte >= 0xF0 && first_byte <= 0xF7 {
+//         // Pattern: 11110xxx → 4-byte character
+//         4
+//     } else {
+//         // Invalid UTF-8 first byte:
+//         // - 0x80..=0xBF (continuation byte, not valid as first byte)
+//         // - 0xF8..=0xFF (invalid UTF-8 range)
+//         //
+//         // Defensive: Treat as single byte, allow editor to continue
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "get_utf8_char_byte_length_at_position: invalid UTF-8 first byte 0x{:02X} at position {} (treating as 1 byte)",
+//             first_byte, byte_position
+//         );
+
+//         1 // Defensive fallback
+//     };
+
+//     // Assertion: Character length must be 1-4 (UTF-8 standard)
+//     debug_assert!(
+//         char_length >= 1 && char_length <= 4,
+//         "UTF-8 character length must be 1-4 bytes, got {}",
+//         char_length
+//     );
+
+//     Ok(char_length)
+// }
+
+    // #[cfg(debug_assertions)]
+    // /// Determines if the next byte in the file is a newline character (line-end detection)
+    // ///
+    // /// # Purpose (Project Context)
+    // /// This function supports text editor cursor movement in the MoveRight command.
+    // /// When the cursor reaches the end of a line, the next byte is a newline character,
+    // /// which signals that MoveRight should wrap to the next line instead of continuing right.
+    // ///
+    // /// # Multi-byte UTF-8 Support (PRIMARY FIX)
+    // /// The critical insight: "next byte after cursor" depends on character size.
+    // ///
+    // /// For ASCII 'a' (1 byte):
+    // /// ```text
+    // /// Position: [10='a', 11='\n']
+    // /// Cursor at 'a': cursor_byte=10, char_length=1, char_end=10
+    // /// Next byte after 'a' is at position 11 (the newline)
+    // /// ```
+    // ///
+    // /// For Chinese '世' (3 bytes: E4 B8 96):
+    // /// ```text
+    // /// Position: [10=E4, 11=B8, 12=96, 13='\n']
+    // /// Cursor at '世': cursor_byte=10, char_length=3, char_end=12
+    // /// Next byte after '世' is at position 13 (the newline)
+    // /// ```
+    // ///
+    // /// **Previous Bug:** Compared `cursor_byte` (10) to `line_end_byte` (12) → FALSE ❌
+    // /// **Fixed Logic:** Compare `cursor_char_end_byte` (12) to `line_end_byte` (12) → TRUE ✓
+    // ///
+    // /// # Scope - Graceful Out-of-Bounds Handling
+    // /// **This function exists specifically to handle out-of-bounds conditions safely.**
+    // /// Instead of crashing when the cursor is at invalid positions, it returns safe
+    // /// default values that allow the application to continue operating:
+    // ///
+    // /// - No read-copy file path → Returns `Ok(false)` (cannot analyze, not at newline)
+    // /// - Cursor row beyond file line count → Returns `Ok(false)` (treat as not at newline)
+    // /// - Cursor column beyond line length → Returns `Ok(false)` (treat as not at newline)
+    // /// - Line byte range not initialized → Returns `Ok(false)` (treat as not at newline)
+    // /// - Cursor position unmapped in window → Returns `Ok(false)` (treat as not at newline)
+    // /// - UTF-8 character read fails → Returns `Ok(false)` (cannot determine, not at newline)
+    // ///
+    // /// The philosophy: **When in doubt about boundaries, assume we're NOT at a newline.**
+    // /// This prevents cursor movement commands from incorrectly wrapping lines, which is
+    // /// safer than crashing the application.
+    // ///
+    // /// This function is stateless and read-only; it never modifies editor state.
+    // ///
+    // /// # Returns
+    // /// * `Ok(true)` - Cursor is definitively at line-end; next file byte is the newline
+    // /// * `Ok(false)` - Cursor is NOT at line-end, OR position is out-of-bounds/invalid
+    // /// * `Err(LinesError::StateError)` - Only for truly unrecoverable internal corruption
+    // ///
+    // /// Note: Out-of-bounds conditions return `Ok(false)`, not errors. This allows the
+    // /// application to continue safely without crashing on boundary conditions.
+    // ///
+    // /// # Algorithm
+    // /// 1. Validate cursor row is within window bounds
+    // /// 2. Get cursor's byte position in file from window map
+    // /// 3. **Read UTF-8 character at cursor to get byte length**
+    // /// 4. **Calculate last byte of cursor's character**
+    // /// 5. Get line's end byte position from window map
+    // /// 6. **Compare character-end to line-end** (not character-start)
+    // /// 7. Return true if they match (next byte is newline)
+    // ///
+    // /// # Examples
+    // /// ```ignore
+    // /// // ASCII at line end
+    // /// // File: "ab\n" where line_end_byte=11 (byte before newline)
+    // /// // Cursor on 'b' at byte 11
+    // /// let result = state.is_next_byte_newline()?;
+    // /// assert_eq!(result, true); // Next byte (12) is newline
+    // ///
+    // /// // Multi-byte UTF-8 at line end
+    // /// // File: "a世\n" where 世 is bytes 11-13, line_end_byte=13
+    // /// // Cursor on '世' starting at byte 11
+    // /// let result = state.is_next_byte_newline()?;
+    // /// assert_eq!(result, true); // Character ends at 13, next byte (14) is newline
+    // ///
+    // /// // Not at line end
+    // /// // File: "abc\n"
+    // /// // Cursor on 'a'
+    // /// let result = state.is_next_byte_newline()?;
+    // /// assert_eq!(result, false); // Not at end of line
+    // /// ```
+    // pub fn is_next_byte_newline(&self) -> Result<bool> {
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // DEFENSIVE CHECK 0: Verify read-copy file path exists
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     let read_copy_path = match &self.read_copy_path {
+    //         Some(path) => path,
+    //         None => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!(
+    //                 "is_next_byte_newline: no read-copy file path available (returning false - not at newline)"
+    //             );
+
+    //             // Not an error - just means we cannot analyze the file
+    //             return Ok(false);
+    //         }
+    //     };
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // DEFENSIVE CHECK 1: Row bounds validation
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // Instead of panicking on out-of-bounds, return Ok(false).
+    //     // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
+    //     if self.cursor.tui_row >= self.windowmap_line_byte_start_end_position_pairs.len() {
+    //         #[cfg(debug_assertions)]
+    //         eprintln!(
+    //             "is_next_byte_newline: cursor row {} >= line count {} (returning false - not at newline)",
+    //             self.cursor.tui_row,
+    //             self.windowmap_line_byte_start_end_position_pairs.len()
+    //         );
+
+    //         // Not an error - this is expected handling of out-of-bounds
+    //         return Ok(false);
+    //     }
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // DEFENSIVE CHECK 2: Cursor position mapping validation
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // If cursor doesn't map to a valid file position, safely return false.
+    //     // This handles columns beyond line length without crashing.
+    //     let cursor_byte_result =
+    //         self.get_row_col_file_position(self.cursor.tui_row, self.cursor.tui_col)?;
+
+    //     let cursor_byte_start = match cursor_byte_result {
+    //         Some(pos) => pos.byte_offset_linear_file_absolute_position,
+    //         None => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!(
+    //                 "is_next_byte_newline: cursor ({}, {}) has no valid file position mapping (returning false - not at newline)",
+    //                 self.cursor.tui_row, self.cursor.tui_col
+    //             );
+
+    //             // Not an error - cursor is just beyond valid positions
+    //             return Ok(false);
+    //         }
+    //     };
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // UTF-8 ANALYSIS: Determine byte length of character at cursor
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // This is for multi-byte character support.
+    //     // We must find where the character ends, not only where it starts.
+    //     let char_byte_length = match get_utf8_char_byte_length_at_position(
+    //         read_copy_path,
+    //         cursor_byte_start,
+    //     ) {
+    //         Ok(len) => len,
+
+    //         Err(_e) => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!(
+    //                 "is_next_byte_newline: failed to read UTF-8 character at byte {}: {} (returning false - not at newline)",
+    //                 cursor_byte_start, _e
+    //             );
+
+    //             // Defensive: If we can't read the character, assume not at line end
+    //             // This allows cursor movement to continue safely
+    //             return Ok(false);
+    //         }
+    //     };
+
+    //     // Assertion: UTF-8 character length must be 1-4 bytes
+    //     debug_assert!(
+    //         char_byte_length >= 1 && char_byte_length <= 4,
+    //         "UTF-8 character length must be 1-4, got {}",
+    //         char_byte_length
+    //     );
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // CALCULATE: Last byte position of current character
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // For 1-byte char at position 10: start=10, end=10
+    //     // For 3-byte char at position 10: start=10, end=12
+    //     let cursor_char_end_byte = cursor_byte_start + (char_byte_length as u64) - 1;
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // DEFENSIVE CHECK 3: Line byte range access
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // Use .get() for safe indexing. If somehow the row is still invalid,
+    //     // return false (defense-in-depth: additional validation layer).
+    //     let line_byte_range = match self
+    //         .windowmap_line_byte_start_end_position_pairs
+    //         .get(self.cursor.tui_row)
+    //     {
+    //         Some(range) => range,
+    //         None => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!(
+    //                 "is_next_byte_newline: line byte range missing for row {} (returning false - not at newline)",
+    //                 self.cursor.tui_row
+    //             );
+
+    //             // Not an error - handle missing range gracefully
+    //             return Ok(false);
+    //         }
+    //     };
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // DEFENSIVE CHECK 4: Line byte range initialization
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // The line_byte_range is an Option; if None, return false safely.
+    //     let (_start, end) = match line_byte_range {
+    //         Some(range) => *range,
+    //         None => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!(
+    //                 "is_next_byte_newline: line byte range is None (uninitialized) for row {} (returning false - not at newline)",
+    //                 self.cursor.tui_row
+    //             );
+
+    //             // Not an error - uninitialized state handled gracefully
+    //             return Ok(false);
+    //         }
+    //     };
+
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // LOGIC: Determine if at line end (UTF-8-AWARE)
+    //     // ═══════════════════════════════════════════════════════════════════════
+    //     // If the LAST BYTE of the cursor's character equals the line's end byte,
+    //     // then the next byte in the file is the newline character.
+    //     //
+    //     // Example with multi-byte character:
+    //     //   Line: "ab世\n"
+    //     //   Bytes: [10='a', 11='b', 12-14='世', 15='\n']
+    //     //   line_end_byte = 14 (last content byte before newline)
+    //     //
+    //     //   When cursor is on '世':
+    //     //     cursor_byte_start = 12
+    //     //     char_byte_length = 3
+    //     //     cursor_char_end_byte = 12 + 3 - 1 = 14
+    //     //     cursor_char_end_byte (14) == line_end_byte (14) → TRUE
+    //     //     Next byte (15) IS the newline → return Ok(true)
+    //     //
+    //     // This is the only condition where we return Ok(true).
+    //     Ok(cursor_char_end_byte == end)
+    // }

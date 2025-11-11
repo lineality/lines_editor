@@ -206,224 +206,6 @@ This code is under construction! Some code below may not be correct.
 Any code that violates the roles and policies is wrong or placeholder-code.
 
 
-# Build plan A
-
-
-Basic features to be use-able, with a design such that planned scope can be modularly added (without a need to go back and re-design & rebuild everything).
-
-0. Forever testing and cleanup:
-- works on:
--- linux,
--- android-termux,
--- BSD-MacOS,
--- windows,
--- redox,
--- etc.
-
-- Find and remove un-used code
-
-- Comment and document functionality
-
-- Error handling: 'Fail and try again' aka 'catch it, log it, and move on.'
-Don't crash, just move on (optional, terminal print message
--- (info-bar message)) Are there any places where an error/exception will cause a crash rather than 'catch it, log it, and move on.'
-
-- 'Get (what is) needed, when (it is) needed.) Is anything being loaded into memory/state that does not need to be?
-
-- tests: Is there anything that can and should be tested but is not?
-
-- asserts: Is there anything that can and should be asserted but is not?
-
-- reduce redundant libraries: Are there redundant library imports?
-
-- find arbitrarily elaborate solutions -> make more maintainable
-
-- balancing modular 'simplicity' and efficiency
-
-- Other NASA Power-of-10-rules areas to try or test for?
-
-
-1. open a read-copy file: call lines from cli with a file-path
-[Done]- use function input path from argument handled by wrapper
-[Done]- make timestamped session directory in exe relative abs path directory lines_data/tmp/sessions/{timestamp}/
-[Done]- save read-copy of file
-
-[Done]main() is a wrapper that handles arguments, e.g. get path from argument and feed it in, later help menu, etc.
-
-[Done]lines_editor_module(option(path)) is the main lines application-wrapper, called by main (or called by another application into which the lines editor is added as a module)
-
-[Done]lines_data/tmp/sessions/{timestamp}/{timestamp}_{filename}
-
-
-2. save paths in state: [Done]
-[Done]- original file path
-[done] - readcopy file path
-[done] - added timestamps (made timestamp crate) (from ff)
-[done] - added abs exe parent-relative paths (From ff)
-
-
-3. modular command handling:
-[done]- modes ( look at ff mode/command-modules )
-[done]- --help (super mvp)
-?done? - any new command modules added
-- add source-it
-[done]- single character commands
-[done]- add multiple-letter commands in Normal/visual mode: wq/~Esc, arrows, etc.
-
-4. Cursor system: "Plus Enter" cursor system.
-[done] 1. Add cursor etc. (from POC)
-- int+letter, move N spaces (in POC, but backwards from vim, use vim int+letter)
-[Done]2. **Add scroll down** - Increment line number, rebuild window
-[Done]3. **Add scroll up** - Decrement line number, rebuild window
-[Done]4. **Test** - Verify line numbers track correctly
-[Done]5. scroll right (see unwrapped long lines)
-[Done]6. scroll back to left
-- bump boostrap starting cursor position to +3 positions ahead on the line (not 0,0) TODO
-
-Note: for Move-Cursor & Select Characters:
-- advanced move and go-to are not needed for select to work
-- there may NOT be any need for fancy move and any select
-
-5. Moving Cursor: step-move and Go-To/go to
-[Done]- hjkl
-[Done]- int+hjkl
-- w,e,b, normal mode move
-- ge (go to file end)
-- gg (go to file start)
-- g{line number}, absolute or relative
-
-(maybe future, maybe out of scope)
-- gh (go to the beginning of the line)
-- gl (go to the end of the line)
-- gw (go to word...super cool if out of scope, see Helix)
-
-6. select (even if select doesn't do anything now) ( visual mode, works in POC)
-- Select Next
-- Select to delete
-- Select to copy paste
-- hjkl
-- int+hjkl
-- w,e,b, normal mode move
-- v or y, c or p
-
-7. Delete
-- figure out a coherent plan for defaults and options
-- mvp d delete... a char?
-maybe:
-MVP:[Done]
-[Done]- make backspace_style_delete_noload()
-[Done]- make delete_current_line_noload()
-
-[Done]- normal mode: 'd' is deletes current line
-[Done]- visual mode: 'd' acts like backspace (deletes character before cursor)
-[Done]- insert mode: '-d' is also backspace-style
-After MVP: When selection is available:
-- visual mode: 'd' deletes selection
-
-Note: TUI refreshes after delete action (just like inserting)
-Note: there is no planned support for 'legacy delete' (deleting forward characters)
-Note: no whole-file loading.
-
-
-[] file & multi-file replace-all...
-
-
-8. insert:
-[Done]- start of insert mode:
-[Done]- user types into input buffer,
-[Done]- add input buffer bytes to file at mapped cursor location: changes made to file
-[Done] - reload window from newly changed file
-maybe add another item into state:
-( maybe step to store in state last number of cursor spaces in input buffer
-- move cursor to end of new addition,
-- back to start of insert mode
-[Done] Empty insert is newline add \n
-[Done] - commands in visual -n -v -s -w -wq
-
-
-9. Saving File
-[Done] s/w command to save changes to original file
-[Done]- first makes a backup of the original file in same parent /archive/{timestamp}_{filename} (or, thought of differently, moves the original file as is and re-names it)
-[Done]- replaces the old file with the new one (copies the read-copy to the original location
-[Done] - '-wq' in insert mode
-- double check that this is not loading the whole file
-
-
-[Done] - 'wq' in Normal/Visual mode
-- 'sa' save as (important!)
-
-
-10. help/instructions system
-[done] - super MVP version
-- effectively all possible commands should be A. in the header or, B. in the info-bar, C. in a help-menu
-
-11. Restore/Integrate/Fix Legacy 'Memo-Mode & Append functionality'
-Very practical, very useful.
-- legacy mode does whole-file loading: must do by chunks
-- For MVP, calling Lines with path argument in home directory launches the ultra-minimal legacy Memo-Mode which is simple and stable (that does not need to launch full-lines with state etc.)
-- add 'a' append mode, which is like memo-mode
-- jump to end of file
-- show last part of last lines of text (last 5-10 lines, or whatever fits in top 5 lines of TUI
-- whatever user types, append as a new line
-- cli argument -a --append to open file into append mode
-
-
-12. new file name prompt
-[Done]- calling lines not in home directory should...first ask for file name?
-
-
-13. new paths
-[Almost Done] - calling lines with a path that does not yet exit, make those dirs and or file and launch full-lines
-- Why is it making/saving an archive directory in the new directory???
-- oh...archiving... new new file? ok... but check this... save-archives... maybe.
-
-
-14. comment/uncomment (simple?)
-- up to ~24 space
-- is there comment-tag + space?
-- yes? no?, flip it
-
-
-15. File-insert and Extract-to-File
-- export row/line (slice) of one file to a new file
-- insert file-bytes into a file (rather than input-buffer, e.g. instead of big cut and paste)
-- export selection to a file
-- "screen shot" print TUI to file instead of terminal
-
-16. integrate into ff (...It's File Fantastic...)
-
-19. Byte/Hex
-simple byte mode?
-raw...? simple view change?
-wrap...lower priority
-
-17. Tester-Bot
-- Try to make an automated testing thing-bot, that runs through what a person would input and checks the status (read-copy-file state, original file state, archived file state) at each step or otherwise routinely.
-- Automate actions that are routine.
-- Automate actions that are potentially error-prone, such as repeated edits, large files, large inputs, etc.
-
-18. maybe out of scope: undo & changelogs
-- MVP maybe to save a change-log, but not have undo-feature... for mvp
-- z or u
-- idea: save reverse operations to files that can be run back.
-
-19. simple view bytes
-How difficult would it be to do a direct hex-byte version with no character handling?
-
-
-20. alternating hex & character lines
-
-
-21: Wrap
-- maybe wrap is out of scope for now...
-
-22: raw...maybe out of scope
-
-23: backend-api for another wrapper or front-end.
-
-
-
-
 ...
 
 ## In Scope:
@@ -4116,7 +3898,7 @@ pub struct EditorState {
 
     /// Flag signaling that next move right
     /// should bump down to next line down.
-    pub next_move_right_is_past_newline: bool,
+    // pub next_move_right_is_past_newline: bool,
 
     /// Visual mode selection start (if in visual mode)
     pub selection_start: Option<FilePosition>, // end is 'current' one
@@ -4211,7 +3993,7 @@ impl EditorState {
             //     byte_in_line: 0,
             // },
             //
-            next_move_right_is_past_newline: false,
+            // next_move_right_is_past_newline: false,
             selection_start: None,
             selection_rowline_start: 0,
             is_modified: false,
@@ -4775,242 +4557,128 @@ impl EditorState {
     // LINE END DETECTION (UTF-8-Aware Cursor Movement Support)
     // ============================================================================
 
-    /// Determines if the next byte in the file is a newline character (line-end detection)
+    /// Determines if the cursor is currently positioned on a newline character
     ///
     /// # Purpose (Project Context)
     /// This function supports text editor cursor movement in the MoveRight command.
-    /// When the cursor reaches the end of a line, the next byte is a newline character,
-    /// which signals that MoveRight should wrap to the next line instead of continuing right.
-    ///
-    /// # Multi-byte UTF-8 Support (PRIMARY FIX)
-    /// The critical insight: "next byte after cursor" depends on character size.
-    ///
-    /// For ASCII 'a' (1 byte):
-    /// ```text
-    /// Position: [10='a', 11='\n']
-    /// Cursor at 'a': cursor_byte=10, char_length=1, char_end=10
-    /// Next byte after 'a' is at position 11 (the newline)
-    /// ```
-    ///
-    /// For Chinese '世' (3 bytes: E4 B8 96):
-    /// ```text
-    /// Position: [10=E4, 11=B8, 12=96, 13='\n']
-    /// Cursor at '世': cursor_byte=10, char_length=3, char_end=12
-    /// Next byte after '世' is at position 13 (the newline)
-    /// ```
-    ///
-    /// **Previous Bug:** Compared `cursor_byte` (10) to `line_end_byte` (12) → FALSE ❌
-    /// **Fixed Logic:** Compare `cursor_char_end_byte` (12) to `line_end_byte` (12) → TRUE ✓
+    /// When the cursor is already on a newline character (displayed as ␤), the next
+    /// MoveRight should jump to the next line start, not scroll further right.
     ///
     /// # Scope - Graceful Out-of-Bounds Handling
-    /// **This function exists specifically to handle out-of-bounds conditions safely.**
+    /// This function exists specifically to handle out-of-bounds conditions safely.
     /// Instead of crashing when the cursor is at invalid positions, it returns safe
-    /// default values that allow the application to continue operating:
+    /// default values:
     ///
-    /// - No read-copy file path → Returns `Ok(false)` (cannot analyze, not at newline)
-    /// - Cursor row beyond file line count → Returns `Ok(false)` (treat as not at newline)
-    /// - Cursor column beyond line length → Returns `Ok(false)` (treat as not at newline)
-    /// - Line byte range not initialized → Returns `Ok(false)` (treat as not at newline)
-    /// - Cursor position unmapped in window → Returns `Ok(false)` (treat as not at newline)
-    /// - UTF-8 character read fails → Returns `Ok(false)` (cannot determine, not at newline)
+    /// - No read-copy file path → Returns `Ok(false)` (cannot analyze)
+    /// - Cursor position unmapped → Returns `Ok(false)` (not on newline)
+    /// - File read fails → Returns `Ok(false)` (cannot determine)
+    /// - EOF position → Returns `Ok(false)` (no byte to check)
     ///
-    /// The philosophy: **When in doubt about boundaries, assume we're NOT at a newline.**
-    /// This prevents cursor movement commands from incorrectly wrapping lines, which is
-    /// safer than crashing the application.
+    /// The philosophy: **When in doubt, assume NOT on a newline.**
     ///
     /// This function is stateless and read-only; it never modifies editor state.
     ///
     /// # Returns
-    /// * `Ok(true)` - Cursor is definitively at line-end; next file byte is the newline
-    /// * `Ok(false)` - Cursor is NOT at line-end, OR position is out-of-bounds/invalid
-    /// * `Err(LinesError::StateError)` - Only for truly unrecoverable internal corruption
-    ///
-    /// Note: Out-of-bounds conditions return `Ok(false)`, not errors. This allows the
-    /// application to continue safely without crashing on boundary conditions.
-    ///
-    /// # Algorithm
-    /// 1. Validate cursor row is within window bounds
-    /// 2. Get cursor's byte position in file from window map
-    /// 3. **Read UTF-8 character at cursor to get byte length**
-    /// 4. **Calculate last byte of cursor's character**
-    /// 5. Get line's end byte position from window map
-    /// 6. **Compare character-end to line-end** (not character-start)
-    /// 7. Return true if they match (next byte is newline)
+    /// * `Ok(true)` - Cursor is definitively on a newline byte
+    /// * `Ok(false)` - Cursor is NOT on newline, OR position is invalid
+    /// * `Err(LinesError)` - Only for truly unrecoverable errors
     ///
     /// # Examples
     /// ```ignore
-    /// // ASCII at line end
-    /// // File: "ab\n" where line_end_byte=11 (byte before newline)
-    /// // Cursor on 'b' at byte 11
-    /// let result = state.is_next_byte_newline()?;
-    /// assert_eq!(result, true); // Next byte (12) is newline
+    /// // Cursor on visible newline character ␤
+    /// let result = state.is_current_cursor_on_newline()?;
+    /// assert_eq!(result, true);
     ///
-    /// // Multi-byte UTF-8 at line end
-    /// // File: "a世\n" where 世 is bytes 11-13, line_end_byte=13
-    /// // Cursor on '世' starting at byte 11
-    /// let result = state.is_next_byte_newline()?;
-    /// assert_eq!(result, true); // Character ends at 13, next byte (14) is newline
-    ///
-    /// // Not at line end
-    /// // File: "abc\n"
-    /// // Cursor on 'a'
-    /// let result = state.is_next_byte_newline()?;
-    /// assert_eq!(result, false); // Not at end of line
+    /// // Cursor on regular text 'a'
+    /// let result = state.is_current_cursor_on_newline()?;
+    /// assert_eq!(result, false);
     /// ```
-    pub fn is_next_byte_newline(&self) -> Result<bool> {
+    pub fn is_current_cursor_on_newline(&self) -> Result<bool> {
         // ═══════════════════════════════════════════════════════════════════════
-        // DEFENSIVE CHECK 0: Verify read-copy file path exists
+        // DEFENSIVE CHECK 1: Verify read-copy file path exists
         // ═══════════════════════════════════════════════════════════════════════
         let read_copy_path = match &self.read_copy_path {
             Some(path) => path,
             None => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "is_next_byte_newline: no read-copy file path available (returning false - not at newline)"
+                    "is_current_cursor_on_newline: no read-copy file path available (returning false)"
                 );
-
-                // Not an error - just means we cannot analyze the file
                 return Ok(false);
             }
         };
 
         // ═══════════════════════════════════════════════════════════════════════
-        // DEFENSIVE CHECK 1: Row bounds validation
+        // DEFENSIVE CHECK 2: Get cursor's current file position
         // ═══════════════════════════════════════════════════════════════════════
-        // Instead of panicking on out-of-bounds, return Ok(false).
-        // This is the PRIMARY PURPOSE of this function: handle boundaries gracefully.
-        if self.cursor.tui_row >= self.windowmap_line_byte_start_end_position_pairs.len() {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "is_next_byte_newline: cursor row {} >= line count {} (returning false - not at newline)",
-                self.cursor.tui_row,
-                self.windowmap_line_byte_start_end_position_pairs.len()
-            );
-
-            // Not an error - this is expected handling of out-of-bounds
-            return Ok(false);
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // DEFENSIVE CHECK 2: Cursor position mapping validation
-        // ═══════════════════════════════════════════════════════════════════════
-        // If cursor doesn't map to a valid file position, safely return false.
-        // This handles columns beyond line length without crashing.
-        let cursor_byte_result =
-            self.get_row_col_file_position(self.cursor.tui_row, self.cursor.tui_col)?;
-
-        let cursor_byte_start = match cursor_byte_result {
-            Some(pos) => pos.byte_offset_linear_file_absolute_position,
+        let cursor_file_pos = match self
+            .get_row_col_file_position(self.cursor.tui_row, self.cursor.tui_col)?
+        {
+            Some(pos) => pos,
             None => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "is_next_byte_newline: cursor ({}, {}) has no valid file position mapping (returning false - not at newline)",
+                    "is_current_cursor_on_newline: cursor ({}, {}) has no valid file position mapping (returning false)",
                     self.cursor.tui_row, self.cursor.tui_col
                 );
-
-                // Not an error - cursor is just beyond valid positions
                 return Ok(false);
             }
         };
 
         // ═══════════════════════════════════════════════════════════════════════
-        // UTF-8 ANALYSIS: Determine byte length of character at cursor
+        // FILE READ: Read single byte at cursor position
         // ═══════════════════════════════════════════════════════════════════════
-        // This is the KEY FIX for multi-byte character support.
-        // We must find where the COMPLETE character ends, not where it starts.
-        let char_byte_length = match get_utf8_char_byte_length_at_position(
-            read_copy_path,
-            cursor_byte_start,
-        ) {
-            Ok(len) => len,
-
+        let mut file = match File::open(read_copy_path) {
+            Ok(f) => f,
             Err(_e) => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "is_next_byte_newline: failed to read UTF-8 character at byte {}: {} (returning false - not at newline)",
-                    cursor_byte_start, _e
+                    "is_current_cursor_on_newline: failed to open file: {} (returning false)",
+                    _e
                 );
-
-                // Defensive: If we can't read the character, assume not at line end
-                // This allows cursor movement to continue safely
                 return Ok(false);
             }
         };
 
-        // Assertion: UTF-8 character length must be 1-4 bytes
-        debug_assert!(
-            char_byte_length >= 1 && char_byte_length <= 4,
-            "UTF-8 character length must be 1-4, got {}",
-            char_byte_length
-        );
+        // Seek to cursor's byte position
+        if let Err(_e) = file.seek(SeekFrom::Start(
+            cursor_file_pos.byte_offset_linear_file_absolute_position,
+        )) {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "is_current_cursor_on_newline: failed to seek to byte {}: {} (returning false)",
+                cursor_file_pos.byte_offset_linear_file_absolute_position, _e
+            );
+            return Ok(false);
+        }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // CALCULATE: Last byte position of current character
-        // ═══════════════════════════════════════════════════════════════════════
-        // For 1-byte char at position 10: start=10, end=10
-        // For 3-byte char at position 10: start=10, end=12
-        let cursor_char_end_byte = cursor_byte_start + (char_byte_length as u64) - 1;
+        // Read exactly 1 byte
+        let mut byte = [0u8; 1];
+        match file.read_exact(&mut byte) {
+            Ok(_) => {
+                // Successfully read byte - check if it's newline
+                let is_newline = byte[0] == b'\n';
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // DEFENSIVE CHECK 3: Line byte range access
-        // ═══════════════════════════════════════════════════════════════════════
-        // Use .get() for safe indexing. If somehow the row is still invalid,
-        // return false (defense-in-depth: additional validation layer).
-        let line_byte_range = match self
-            .windowmap_line_byte_start_end_position_pairs
-            .get(self.cursor.tui_row)
-        {
-            Some(range) => range,
-            None => {
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "is_next_byte_newline: line byte range missing for row {} (returning false - not at newline)",
-                    self.cursor.tui_row
+                    "is_current_cursor_on_newline: byte at {} is 0x{:02X} ({})",
+                    cursor_file_pos.byte_offset_linear_file_absolute_position,
+                    byte[0],
+                    if is_newline { "NEWLINE" } else { "not newline" }
                 );
 
-                // Not an error - handle missing range gracefully
-                return Ok(false);
+                Ok(is_newline)
             }
-        };
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // DEFENSIVE CHECK 4: Line byte range initialization
-        // ═══════════════════════════════════════════════════════════════════════
-        // The line_byte_range is an Option; if None, return false safely.
-        let (_start, end) = match line_byte_range {
-            Some(range) => *range,
-            None => {
+            Err(_e) => {
+                // Read failed - likely EOF or invalid position
                 #[cfg(debug_assertions)]
                 eprintln!(
-                    "is_next_byte_newline: line byte range is None (uninitialized) for row {} (returning false - not at newline)",
-                    self.cursor.tui_row
+                    "is_current_cursor_on_newline: failed to read byte at {}: {} (returning false)",
+                    cursor_file_pos.byte_offset_linear_file_absolute_position, _e
                 );
-
-                // Not an error - uninitialized state handled gracefully
-                return Ok(false);
+                Ok(false)
             }
-        };
-
-        // ═══════════════════════════════════════════════════════════════════════
-        // LOGIC: Determine if at line end (UTF-8-AWARE)
-        // ═══════════════════════════════════════════════════════════════════════
-        // If the LAST BYTE of the cursor's character equals the line's end byte,
-        // then the next byte in the file is the newline character.
-        //
-        // Example with multi-byte character:
-        //   Line: "ab世\n"
-        //   Bytes: [10='a', 11='b', 12-14='世', 15='\n']
-        //   line_end_byte = 14 (last content byte before newline)
-        //
-        //   When cursor is on '世':
-        //     cursor_byte_start = 12
-        //     char_byte_length = 3
-        //     cursor_char_end_byte = 12 + 3 - 1 = 14
-        //     cursor_char_end_byte (14) == line_end_byte (14) → TRUE
-        //     Next byte (15) IS the newline → return Ok(true)
-        //
-        // This is the only condition where we return Ok(true).
-        Ok(cursor_char_end_byte == end)
+        }
     }
 
     /// Handles Pasty mode - clipboard management and file insertion interface
@@ -6752,29 +6420,36 @@ impl EditorState {
         //  Check for Commands First
         //  ////////////////////////
 
-        // Check for exit insert mode commands
-        if trimmed == "-n" || trimmed == "\x1b" {
-            // \x1b is Esc key
-            // Exit insert mode
+        // // Check for exit insert mode commands
+        // if trimmed == "-n" || trimmed == "\x1b" {
+        //     // \x1b is Esc key
+        //     // Exit insert mode
+        //     keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
+
+        //     // Now we can mutably borrow state
+        //     build_windowmap_nowrap(self, &read_copy)?;
+        // } else if trimmed == "-v" {
+        //     keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
+
+        //     // Now we can mutably borrow state
+        //     build_windowmap_nowrap(self, &read_copy)?;
+        // } else if trimmed == "-s" || trimmed == "-w" {
+        //     // Exit insert mode
+        //     keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
+        // } else if trimmed == "-wq" {
+        //     // Exit insert mode
+        //     keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
+        // } else if trimmed == "-q" {
+        //     // Exit insert mode
+        //     keep_editor_loop_running = execute_command(self, Command::Quit)?;
+
+        // TODO: safer?
+        // // Only escape key to leave insert mode
+        // possible to turn off all ascii keys
+        if trimmed == "\x1b" {
             keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
-
-            // Now we can mutably borrow state
-            build_windowmap_nowrap(self, &read_copy)?;
-        } else if trimmed == "-v" {
-            keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
-
-            // Now we can mutably borrow state
-            build_windowmap_nowrap(self, &read_copy)?;
-        } else if trimmed == "-s" || trimmed == "-w" {
-            // Exit insert mode
-            keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
-        } else if trimmed == "-wq" {
-            // Exit insert mode
-            keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
-        } else if trimmed == "-q" {
-            // Exit insert mode
-            keep_editor_loop_running = execute_command(self, Command::Quit)?;
         } else if trimmed == "\x1b[3~" {
+            // This is delete-key
             // Do nothing if delete key entered...
             keep_editor_loop_running = execute_command(self, Command::DeleteBackspace)?;
         } else if text_input_str == "\n" || text_input_str == "\r\n" {
@@ -10678,11 +10353,47 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
-                    println!("\n\nHEREHERE\n\n");
+                    // maybe edge case / glitch
+                    // cursor out of frame?
+                    execute_command(lines_editor_state, Command::GotoLineStart)?;
 
                     // Note: this is rarely if ever entered.
-                    // and don't try to go left again-again!
+                    // Reset.
+                    // Don't try to go left again-again!
                     return Ok(true);
+                }
+
+                let line_num_width = calculate_line_number_width(
+                    lines_editor_state.line_count_at_top_of_window,
+                    lines_editor_state.line_count_at_top_of_window,
+                    lines_editor_state.effective_rows,
+                );
+
+                // =============================
+                // Move Left to Above End of Row
+                // =============================
+                // If at top of TUI but NOT top of doc
+                // move up to end of line
+                if let Some(_) = lines_editor_state // guard against overflow substraction
+                    .cursor
+                    .tui_col
+                    .checked_sub(line_num_width)
+                {
+                    #[cfg(debug_assertions)]
+                    println!(
+                        "lines_editor_state.cursor.tui_col - line_num_width -> {}",
+                        lines_editor_state.cursor.tui_col - line_num_width
+                    );
+
+                    if (lines_editor_state.cursor.tui_row == 0)
+                        && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
+                        && !(lines_editor_state.line_count_at_top_of_window == 0)
+                    {
+                        // move up, move to end of line.
+                        _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
+                        _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
+                    }
+                    build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
                 }
 
                 // =========================
@@ -10719,10 +10430,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         "\nMoveLeft windowmap_line_byte_start_end_position_pairs -> {:?}",
                         lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                     );
-                    println!(
-                        "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
-                        lines_editor_state.is_next_byte_newline()
-                    );
+                    // println!(
+                    //     "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
+                    //     lines_editor_state.is_next_byte_newline()
+                    // );
                 }
 
                 iterations += 1;
@@ -10787,13 +10498,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Defensive: Limit iterations
             let mut iterations = 0;
 
-            // =========================
-            // position state inspection
-            // =========================
-
             // update for each MoveRight
             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position += count;
 
+            // =========================
+            // position state inspection
+            // =========================
             #[cfg(debug_assertions)]
             let this_row = lines_editor_state.cursor.tui_row;
             #[cfg(debug_assertions)]
@@ -10824,23 +10534,23 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     "\nMoveRight windowmap_line_byte_start_end_position_pairs -> {:?}",
                     lines_editor_state.windowmap_line_byte_start_end_position_pairs,
                 );
-                println!(
-                    "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
-                    lines_editor_state.is_next_byte_newline()
-                );
+                // println!(
+                //     "\nMoveRight lines_editor_state.is_next_byte_newline() -> {:?}",
+                //     lines_editor_state.is_next_byte_newline()
+                // );
             }
 
             while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
                 iterations += 1;
 
-                let is_next_newline = lines_editor_state.is_next_byte_newline()?;
                 // ===============================================
                 // First Check if Next Move Right should Jump Down
-                // ================================================
-                if lines_editor_state.next_move_right_is_past_newline {
-                    // reset
-                    lines_editor_state.next_move_right_is_past_newline = false;
+                // ===============================================
 
+                let cursor_is_on_newline = lines_editor_state.is_current_cursor_on_newline()?;
+
+                // check if you are currently on a newline
+                if cursor_is_on_newline {
                     // === Jump Down ===
                     // Move to start of current line
                     execute_command(lines_editor_state, Command::GotoLineStart)?;
@@ -10850,55 +10560,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     remaining_moves -= 1;
                     needs_rebuild = true;
                     continue;
-                // } else if is_next_newline {
-                //     // ===========================================
-                //     // IF NEWLINE AHEAD: SWITCH TO LINE NAVIGATION
-                //     // ===========================================
-                //     // let is_next_newline = lines_editor_state.is_next_byte_newline()?;
-
-                //     // // Move to start of current line
-                //     // execute_command(lines_editor_state, Command::GotoLineStart)?;
-
-                //     // // Move down one line
-                //     // execute_command(lines_editor_state, Command::MoveDown(1))?;
-
-                //     // There is Room For One More Move-Right
-                //     lines_editor_state.next_move_right_is_past_newline = true;
-
-                //     lines_editor_state.cursor.tui_col += 1;
-                //     remaining_moves -= 1;
-                //     needs_rebuild = true;
-                //     // continue;
-                // }
-                } else if is_next_newline {
-                    // Next character is newline - need to position cursor on it
-
-                    let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
-
-                    // Check if cursor is at right edge (no room for newline character)
-                    if lines_editor_state.cursor.tui_col >= right_edge {
-                        // Need to scroll right to make room for newline display
-                        if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-                            < limits::CURSOR_MOVEMENT_STEPS
-                        {
-                            lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += 1;
-                            needs_rebuild = true;
-                            // Don't move cursor yet - let rebuild happen first
-                        } else {
-                            // Hit maximum horizontal scroll - can't show newline
-                            break;
-                        }
-                    } else {
-                        // Room in window - just move cursor to newline position
-                        lines_editor_state.next_move_right_is_past_newline = true;
-                        lines_editor_state.cursor.tui_col += 1;
-                        needs_rebuild = true;
-                    }
-
-                    remaining_moves -= 1;
-                    // Don't continue - let rebuild happen
                 }
-                // Calculate space available before right edge
+
+                // At edge of TUI?
+                // Calculate space available before right TUI edge
                 // Reserve 1 column to prevent display overflow
                 let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
 
@@ -19127,8 +18792,9 @@ pub fn print_help() {
     println!("                    Creates dated files in ~/Documents/lines_editor/");
     println!("    Full Editor:    Run from any other directory");
     println!("DELETE: d");
-    println!("    Normal Mode: 'd' delete a line");
-    println!("    Visual Mode  'd'/ Insert Mode '-d': Backspace-Style Delete");
+    println!("    Normal Mode: 'd' delete a whole file-line (not just TUI display)");
+    println!("    Insert Mode: delete-key for Backspace-Style Delete");
+    println!("    Visual Mode  'd' delete a selection inclusive / single char backspace style;");
     println!("NAVIGATION:");
     println!("    hjkl            Move cursor");
     println!("    5j, 10l         Move with repeat count");
@@ -19666,241 +19332,6 @@ pub fn render_tui_raw(state: &EditorState) -> Result<()> {
 // ============================================================================
 // UTF-8 CHARACTER ANALYSIS (Helper for Multi-byte Character Handling)
 // ============================================================================
-
-/// Determines the byte length of a UTF-8 character at a specific file position
-///
-/// # Purpose (Project Context)
-/// Text editors must handle international text correctly. When detecting if
-/// the cursor is at a line end (for line-wrapping in cursor movement),
-/// we must know the COMPLETE character's byte span, not just its starting byte.
-///
-/// For ASCII 'a' (1 byte), the character ends where it starts.
-/// For Chinese '世' (3 bytes: E4 B8 96), the character spans 3 bytes,
-/// so "next byte after character" is 3 bytes forward, not 1.
-///
-/// This function enables correct line-end detection for all UTF-8 text.
-///
-/// # Strategy
-/// 1. Opens file (stateless operation)
-/// 2. Seeks to target byte position
-/// 3. Reads first byte to examine UTF-8 pattern
-/// 4. Returns character length based on first-byte pattern
-/// 5. Closes file automatically (RAII)
-///
-/// # UTF-8 First-Byte Patterns
-/// ```text
-/// Byte Range   Pattern      Character Length
-/// 0x00..=0x7F  0xxxxxxx     1 byte  (ASCII)
-/// 0xC0..=0xDF  110xxxxx     2 bytes
-/// 0xE0..=0xEF  1110xxxx     3 bytes
-/// 0xF0..=0xF7  11110xxx     4 bytes
-/// 0x80..=0xBF  10xxxxxx     Invalid (continuation byte, not first byte)
-/// 0xF8..=0xFF  11111xxx     Invalid (UTF-8 doesn't use these)
-/// ```
-///
-/// # Arguments
-/// * `file_path` - Absolute path to file being analyzed
-/// * `byte_position` - Absolute byte offset in file where character starts
-///
-/// # Returns
-/// * `Ok(1)` - Single-byte character (ASCII) OR invalid UTF-8 treated as 1 byte
-/// * `Ok(2)` - Two-byte UTF-8 character
-/// * `Ok(3)` - Three-byte UTF-8 character
-/// * `Ok(4)` - Four-byte UTF-8 character
-/// * `Err(LinesError::Io)` - Unrecoverable file I/O error (hardware failure)
-///
-/// # Defensive Programming - Graceful Degradation
-/// Invalid UTF-8 sequences are treated as single bytes instead of crashing.
-/// This allows the editor to handle:
-/// - Corrupted files (bit flips, partial writes)
-/// - Binary data mixed with text
-/// - Files with encoding errors
-/// - Malicious or malformed input
-///
-/// The editor continues operating; users can see and edit raw bytes.
-///
-/// # Error Handling Philosophy
-/// - File not found → Returns `Err` (propagates to caller for logging)
-/// - Cannot open file → Returns `Err` (permission/hardware issue)
-/// - EOF at position → Returns `Ok(1)` (treat as single byte, defensive)
-/// - Invalid UTF-8 → Returns `Ok(1)` (treat as single byte, defensive)
-/// - Read I/O error → Returns `Err` (hardware failure)
-///
-/// # Memory Allocation
-/// Zero heap allocation in critical path:
-/// - File handle on stack (dropped automatically)
-/// - Single-byte buffer `[u8; 1]` on stack
-/// - No string allocation
-/// - Error messages use string literals in production
-///
-/// # Examples
-/// ```ignore
-/// // ASCII character 'a' (0x61)
-/// let len = get_utf8_char_byte_length_at_position(path, 10)?;
-/// assert_eq!(len, 1);
-///
-/// // Chinese character '世' (0xE4 0xB8 0x96)
-/// let len = get_utf8_char_byte_length_at_position(path, 20)?;
-/// assert_eq!(len, 3);
-///
-/// // Invalid byte (0x80 continuation byte at start)
-/// let len = get_utf8_char_byte_length_at_position(path, 30)?;
-/// assert_eq!(len, 1); // Defensive: treat as single byte
-/// ```
-fn get_utf8_char_byte_length_at_position(file_path: &Path, byte_position: u64) -> Result<usize> {
-    // ═══════════════════════════════════════════════════════════════════════
-    // DEFENSIVE CHECK 1: Validate file path is absolute
-    // ═══════════════════════════════════════════════════════════════════════
-    // Assertion: All file paths in this project must be absolute for security
-    // and clarity. Relative paths create ambiguity and security risks.
-    debug_assert!(
-        file_path.is_absolute(),
-        "File path must be absolute for UTF-8 character analysis"
-    );
-
-    if !file_path.is_absolute() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "get_utf8_char_byte_length_at_position: non-absolute path rejected: {:?}",
-            file_path
-        );
-
-        return Err(LinesError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "File path must be absolute",
-        )));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // DEFENSIVE CHECK 2: Validate file exists before attempting to read
-    // ═══════════════════════════════════════════════════════════════════════
-    if !file_path.exists() {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "get_utf8_char_byte_length_at_position: file does not exist: {:?}",
-            file_path
-        );
-
-        return Err(LinesError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            "File not found",
-        )));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // FILE OPERATION: Open file for reading (stateless operation)
-    // ═══════════════════════════════════════════════════════════════════════
-    // RAII: File handle automatically closed when function exits
-    let mut file = match File::open(file_path) {
-        Ok(f) => f,
-        Err(e) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "get_utf8_char_byte_length_at_position: failed to open file {:?}: {}",
-                file_path, e
-            );
-
-            // Propagate error - file access failure is unrecoverable here
-            return Err(LinesError::Io(e));
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // FILE OPERATION: Seek to target byte position
-    // ═══════════════════════════════════════════════════════════════════════
-    if let Err(e) = file.seek(SeekFrom::Start(byte_position)) {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "get_utf8_char_byte_length_at_position: seek failed to position {}: {}",
-            byte_position, e
-        );
-
-        // Propagate error - seek failure indicates corrupted file or hardware issue
-        return Err(LinesError::Io(e));
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STACK ALLOCATION: Single-byte buffer for reading UTF-8 first byte
-    // ═══════════════════════════════════════════════════════════════════════
-    // No heap allocation: fixed-size stack buffer
-    let mut first_byte_buffer = [0u8; 1];
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // FILE OPERATION: Read first byte of character
-    // ═══════════════════════════════════════════════════════════════════════
-    let bytes_read = match file.read(&mut first_byte_buffer) {
-        Ok(n) => n,
-        Err(e) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "get_utf8_char_byte_length_at_position: read failed at position {}: {}",
-                byte_position, e
-            );
-
-            // Propagate error - read failure indicates hardware/permission issue
-            return Err(LinesError::Io(e));
-        }
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // DEFENSIVE CHECK 3: Handle EOF (cursor positioned at or past end of file)
-    // ═══════════════════════════════════════════════════════════════════════
-    if bytes_read == 0 {
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "get_utf8_char_byte_length_at_position: EOF at position {} (treating as 1 byte)",
-            byte_position
-        );
-
-        // Defensive: Treat EOF as single byte
-        // This allows cursor movement logic to handle end-of-file gracefully
-        return Ok(1);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // UTF-8 ANALYSIS: Determine character length from first-byte pattern
-    // ═══════════════════════════════════════════════════════════════════════
-    let first_byte = first_byte_buffer[0];
-
-    // Assertion: We should have read exactly 1 byte if not EOF
-    debug_assert_eq!(bytes_read, 1, "Expected to read exactly 1 byte");
-
-    let char_length = if first_byte <= 0x7F {
-        // Pattern: 0xxxxxxx → 1-byte character (ASCII)
-        1
-    } else if first_byte >= 0xC0 && first_byte <= 0xDF {
-        // Pattern: 110xxxxx → 2-byte character
-        2
-    } else if first_byte >= 0xE0 && first_byte <= 0xEF {
-        // Pattern: 1110xxxx → 3-byte character
-        3
-    } else if first_byte >= 0xF0 && first_byte <= 0xF7 {
-        // Pattern: 11110xxx → 4-byte character
-        4
-    } else {
-        // Invalid UTF-8 first byte:
-        // - 0x80..=0xBF (continuation byte, not valid as first byte)
-        // - 0xF8..=0xFF (invalid UTF-8 range)
-        //
-        // Defensive: Treat as single byte, allow editor to continue
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "get_utf8_char_byte_length_at_position: invalid UTF-8 first byte 0x{:02X} at position {} (treating as 1 byte)",
-            first_byte, byte_position
-        );
-
-        1 // Defensive fallback
-    };
-
-    // Assertion: Character length must be 1-4 (UTF-8 standard)
-    debug_assert!(
-        char_length >= 1 && char_length <= 4,
-        "UTF-8 character length must be 1-4 bytes, got {}",
-        char_length
-    );
-
-    Ok(char_length)
-}
 
 /// Renders one row of raw string data with interpreted view
 ///
@@ -21283,6 +20714,8 @@ pub fn lines_fullfileeditor_core(
         // ================
         // Bump on Main St.
         // ================
+        // This is (also) for move-left handling.
+        //
         // To keep the cursor on the text:
         // If on the top (zero index 0-line 0-row) bump to end of line number
         // If not row zero, move to end of previous line.
@@ -21296,10 +20729,9 @@ pub fn lines_fullfileeditor_core(
             lines_editor_state.effective_rows,
         );
 
-        // Check if cursor is in line number area AND no horizontal offset
+        // Check if cursor is in line number area (not in file-window) AND no horizontal offset
         if lines_editor_state.cursor.tui_col < line_num_width
             && lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0
-        // ← ADD THIS CHECK
         {
             // on line 0? (top) is cursor off the reservation? If so... Bump it Right!
             if lines_editor_state.cursor.tui_row == 0 {
