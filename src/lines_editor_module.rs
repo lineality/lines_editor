@@ -10678,41 +10678,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
+                    println!("\n\nHEREHERE\n\n");
+
                     // Note: this is rarely if ever entered.
                     // and don't try to go left again-again!
                     return Ok(true);
-                }
-
-                let line_num_width = calculate_line_number_width(
-                    lines_editor_state.line_count_at_top_of_window,
-                    lines_editor_state.line_count_at_top_of_window,
-                    lines_editor_state.effective_rows,
-                );
-
-                // =============================
-                // Move Left to Above End of Row
-                // =============================
-                // If at top of TUI but NOT top of doc
-                // move up to end of line
-                if let Some(_) = lines_editor_state // guard against overflow substraction
-                    .cursor
-                    .tui_col
-                    .checked_sub(line_num_width)
-                {
-                    #[cfg(debug_assertions)]
-                    println!(
-                        "lines_editor_state.cursor.tui_col - line_num_width -> {}",
-                        lines_editor_state.cursor.tui_col - line_num_width
-                    );
-
-                    if (lines_editor_state.cursor.tui_row == 0)
-                        && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
-                        && !(lines_editor_state.line_count_at_top_of_window == 0)
-                    {
-                        // move up, move to end of line.
-                        _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
-                        _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
-                    }
                 }
 
                 // =========================
@@ -21310,31 +21280,28 @@ pub fn lines_fullfileeditor_core(
     while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
-        // ====
-        // Bump
-        // ====
-        /*
-        To keep the cursor on the text:
-        If on the top (zero index 0-line 0-row) bump to end of line number
-        If not row zero, move to end of previous line.
+        // ================
+        // Bump on Main St.
+        // ================
+        // To keep the cursor on the text:
+        // If on the top (zero index 0-line 0-row) bump to end of line number
+        // If not row zero, move to end of previous line.
+        //
+        // ONLY trigger this if no horizontal scroll offset exists
+        // (otherwise we're in the middle of a long line, not at line start)
 
-        There may be periodic edge cases and bugs such as:
-        - cursor goes to space in the number-zone (How ?)
-
-        Question: width vs. +1
-        Where should cursor.col = line_num_width + 1;
-        vs.
-        cursor.col = line_num_width;?
-
-        */
-        // // find line text width
         let line_num_width = calculate_line_number_width(
             lines_editor_state.line_count_at_top_of_window,
             lines_editor_state.cursor.tui_row,
             lines_editor_state.effective_rows,
         );
-        if lines_editor_state.cursor.tui_col < line_num_width {
-            // on line 0? (top) is cursor off the reservation? If so... Bump it Left!
+
+        // Check if cursor is in line number area AND no horizontal offset
+        if lines_editor_state.cursor.tui_col < line_num_width
+            && lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0
+        // ← ADD THIS CHECK
+        {
+            // on line 0? (top) is cursor off the reservation? If so... Bump it Right!
             if lines_editor_state.cursor.tui_row == 0 {
                 lines_editor_state.cursor.tui_col = line_num_width;
                 lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_num_width;
@@ -21342,45 +21309,27 @@ pub fn lines_fullfileeditor_core(
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
             } else {
-                // TODO add check to scroll up if not top of TUI
-                if lines_editor_state.cursor.tui_row == 0 {}
-
-                print!("moving up: line_num_width {line_num_width}");
-                // Not at Top? If so... Bump it up!
-                // Move up one line
+                // Not at Top? Bump up to previous line end
                 execute_command(&mut lines_editor_state, Command::MoveUp(1))?;
-
-                // Move to end of that line
                 execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
 
                 build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
 
+                // Handle case where moving up puts us at TUI row 0
                 if lines_editor_state.cursor.tui_row == 0 {
-                    print!("pingping\n\n\n");
-                    lines_editor_state.cursor.tui_col = line_num_width + 1;
-                    lines_editor_state.in_row_abs_horizontal_0_index_cursor_position =
-                        line_num_width + 1;
-                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
-                    execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
-                    build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
-                    execute_command(&mut lines_editor_state, Command::GotoLineEnd)?;
+                    let line_num_width = calculate_line_number_width(
+                        lines_editor_state.line_count_at_top_of_window,
+                        lines_editor_state.cursor.tui_row,
+                        lines_editor_state.effective_rows,
+                    );
 
-                    // let line_num_width = calculate_line_number_width(
-                    //     lines_editor_state.line_count_at_top_of_window,
-                    //     lines_editor_state.cursor.tui_row,
-                    //     lines_editor_state.effective_rows,
-                    // );
-
-                    // // if col is in the number-zone to the left of the text
-                    // // bump it over
-                    // if lines_editor_state.cursor.tui_col < line_num_width {
-                    //     lines_editor_state.cursor.tui_col = line_num_width; // Skip over line number displayfull_lines_editor
-                    //     build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
-                    // }
+                    // Ensure cursor is at least past line numbers
+                    if lines_editor_state.cursor.tui_col < line_num_width {
+                        lines_editor_state.cursor.tui_col = line_num_width;
+                    }
                 }
 
-                // _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy); // rebuild
-                let _ = lines_editor_state.set_info_bar_message("start of line"); // massage
+                let _ = lines_editor_state.set_info_bar_message("start of line");
             }
         }
 
