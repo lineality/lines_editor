@@ -12,11 +12,13 @@ use lines_editor_module::{
 mod buttons_reversible_edit_changelog_module;
 mod toggle_comment_indent_module;
 
-// "Source-It" allows build source code transparency: --source
+// To make a smaller binary, you can remove source-it.
+/// "Source-It" allows build source code transparency: --source
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
 
-// Source-It: Developer explicitly lists files to embed w/
+// To make a smaller binary, you can remove source-it.
+/// Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new("Cargo.toml", include_str!("../Cargo.toml")),
     SourcedFile::new("src/main.rs", include_str!("main.rs")),
@@ -73,7 +75,7 @@ enum ArgMode {
     Normal,     // Start editor normally
     Help,       // Print help and exit
     Version,    // Print version and exit
-    Source,     // Extract source and exit
+    Source,     // Extract source and exit, // To make a smaller binary, you can remove source-it.
     AppendMode, // Memo mode (append-only)
 }
 
@@ -132,10 +134,13 @@ fn parse_arguments(args: &[String]) -> Result<ParsedArgs, String> {
                 mode = ArgMode::Version;
                 i += 1;
             }
+
+            // To make a smaller binary, you can remove source-it.
             "--source" | "--source_it" => {
                 mode = ArgMode::Source;
                 i += 1;
             }
+
             "-a" | "--append" => {
                 mode = ArgMode::AppendMode;
                 i += 1;
@@ -266,6 +271,7 @@ fn main() -> Result<(), LinesError> {
             return Ok(());
         }
         ArgMode::Source => {
+            // To make a smaller binary, you can remove source-it.
             match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
                 Ok(path) => println!("Source extracted to: {}", path.display()),
                 Err(e) => eprintln!("Failed to extract source: {}", e),

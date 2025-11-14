@@ -976,10 +976,11 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::toggle_comment_indent_module::{
-    ToggleCommentError, ToggleIndentError, indent_line, indent_range,
-    toggle_basic_singleline_comment, toggle_block_comment, toggle_range_basic_comments,
-    toggle_range_rust_docstring, toggle_rust_docstring_singleline_comment, unindent_line,
-    unindent_range,
+    ToggleCommentError, ToggleIndentError, indent_line_bytewise, indent_range_bytewise,
+    toggle_basic_singleline_comment_bytewise, toggle_block_comment_bytewise,
+    toggle_range_basic_comments_bytewise, toggle_range_rust_docstring_bytewise,
+    toggle_rust_docstring_singleline_comment_bytewise, unindent_line_bytewise,
+    unindent_range_bytewise,
 };
 
 use super::buttons_reversible_edit_changelog_module::{
@@ -1356,9 +1357,6 @@ impl From<ToggleCommentError> for LinesError {
                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
             }
             ToggleCommentError::PathError => LinesError::StateError(err.to_string()),
-            ToggleCommentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
-            ToggleCommentError::InconsistentBlockMarkers => LinesError::StateError(err.to_string()),
-            ToggleCommentError::RangeTooLarge { .. } => LinesError::InvalidInput(err.to_string()),
         }
     }
 }
@@ -1373,7 +1371,6 @@ impl From<ToggleIndentError> for LinesError {
                 LinesError::Io(io::Error::new(io::ErrorKind::Other, err.to_string()))
             }
             ToggleIndentError::PathError => LinesError::StateError(err.to_string()),
-            ToggleIndentError::LineTooLong { .. } => LinesError::InvalidInput(err.to_string()),
         }
     }
 }
@@ -6944,8 +6941,8 @@ impl EditorState {
                 "v" => Command::EnterVisualMode,
                 "raw" | "r" => Command::EnterRawMode,
                 // Multi-character commands
-                "wq" => Command::SaveAndQuit,
-                "s" => Command::SaveFileStandard,
+                "wq" | "ws" => Command::SaveAndQuit,
+                "s" | "ww" => Command::SaveFileStandard,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
@@ -6985,9 +6982,9 @@ impl EditorState {
                 "i" => Command::EnterInsertMode,
                 "q" => Command::Quit,
                 "c" | "y" => Command::Copyank,
-                "s" => Command::SaveFileStandard,
+                "s" | "ww" => Command::SaveFileStandard,
                 "n" | "\x1b" => Command::EnterNormalMode,
-                "wq" => Command::SaveAndQuit,
+                "wq" | "ws" => Command::SaveAndQuit,
                 // "d" => Command::DeleteBackspace, // minimal, works
                 "d" => Command::DeleteRange,
                 "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
@@ -11587,6 +11584,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::Insert;
+            let _ = lines_editor_state.set_info_bar_message("Esc > exit, delete > backspace");
             Ok(true)
         }
 
@@ -11599,6 +11597,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Else, Nothing to Do
             Ok(true)
         }
+
         Command::TallMinus => {
             // Check for handle here: must not be < MIN
             if (lines_editor_state.effective_rows - 1) >= MIN_TUI_ROWS {
@@ -11609,6 +11608,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::WidePlus => {
             // Check for handle here: must not be > MAX
             if (lines_editor_state.effective_cols + 1) <= MAX_TUI_COLS {
@@ -11617,6 +11617,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
             Ok(true)
         }
+
         Command::WideMinus => {
             // Check for handle here: must not be < MIN
             if (lines_editor_state.effective_cols - 1) >= MIN_TUI_COLS {
@@ -11632,6 +11633,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::Normal;
+            let _ = lines_editor_state.set_info_bar_message("");
             Ok(true)
         }
 
@@ -11655,6 +11657,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::VisualSelectMode;
+            let _ = lines_editor_state.set_info_bar_message("");
+
             // Set selection start at current cursor position
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
                 lines_editor_state.cursor.tui_row,
@@ -11728,7 +11732,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
         Command::ToggleCommentOneLine(line_number_0number) => {
             // println!("line_number {line_number}");
-            toggle_basic_singleline_comment(
+            toggle_basic_singleline_comment_bytewise(
                 &edit_file_path.display().to_string(),
                 line_number_0number,
             )?;
@@ -11736,7 +11740,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
         Command::ToggleDocstringOneLine(line_number_0number) => {
-            toggle_rust_docstring_singleline_comment(
+            toggle_rust_docstring_singleline_comment_bytewise(
                 &edit_file_path.display().to_string(),
                 line_number_0number,
             )?;
@@ -11751,7 +11755,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 println!("end_row_0number {end_row_0number}");
             }
 
-            toggle_block_comment(
+            toggle_block_comment_bytewise(
                 &edit_file_path.display().to_string(),
                 start_row_0number,
                 end_row_0number,
@@ -11789,7 +11793,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 end_line: usize,
             ) -> Result<(), ToggleIndentError> {
             */
-            let _ = unindent_range(
+            let _ = unindent_range_bytewise(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
                 lines_editor_state.cursor.tui_row,
@@ -11826,7 +11830,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 end_line: usize,
             ) -> Result<(), ToggleIndentError> {
             */
-            let _ = indent_range(
+            let _ = indent_range_bytewise(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
                 lines_editor_state.cursor.tui_row,
@@ -11863,7 +11867,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 to_line: usize,
             ) -> Result<(), ToggleCommentError> {
             */
-            let _ = toggle_range_rust_docstring(
+            let _ = toggle_range_rust_docstring_bytewise(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
                 lines_editor_state.cursor.tui_row,
@@ -11900,7 +11904,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 to_line: usize,
             ) -> Result<(), ToggleCommentError> {
             */
-            let _ = toggle_range_basic_comments(
+            let _ = toggle_range_basic_comments_bytewise(
                 &base_edit_filepath.to_string_lossy(),
                 lines_editor_state.selection_rowline_start,
                 lines_editor_state.cursor.tui_row,
@@ -11931,7 +11935,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             };
 
             // println!("line_number {line_number}");
-            unindent_line(&edit_file_path.display().to_string(), line_number)?;
+            unindent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
@@ -11957,7 +11961,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             };
 
             // println!("line_number {line_number}");
-            indent_line(&edit_file_path.display().to_string(), line_number)?;
+            indent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
@@ -12008,6 +12012,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
         Command::SaveFileStandard => {
             save_file(lines_editor_state)?;
+            let _ = lines_editor_state.set_info_bar_message("Saved");
             Ok(true)
             // SaveFileStandard doesn't need rebuild (no content change in display)
         }

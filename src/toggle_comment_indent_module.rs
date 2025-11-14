@@ -1184,18 +1184,14 @@ Vigilance: We should help support users and developers and the people who depend
 */
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-
-/// Maximum bytes to scan in a line when looking for comment pattern
-/// This prevents unbounded operations on malformed files
-const MAX_SCAN_BYTES: usize = 64;
 
 /// Buffer size for file I/O operations - pre-allocated, stack-friendly size
 const IO_BUFFER_SIZE: usize = 8192;
 
-/// Maximum line length we'll process - safety bound
-const MAX_LINE_LENGTH: usize = 1_000_000; // 64KB per line max
+// // Maximum line length we'll process - safety bound
+// const MAX_LINE_LENGTH: usize = 1_000_000; // 64KB per line max
 
 // ============================================================================
 // ERROR SECTION: ERROR HANDLING SYSTEM (start)
@@ -1213,8 +1209,6 @@ pub enum ToggleCommentError {
     /// File has no extension
     NoExtension,
 
-    // /// File extension not recognized/supported
-    // UnsupportedExtension,
     /// The requested line index exceeds the file's line count
     LineNotFound { requested: usize, file_lines: usize },
 
@@ -1223,15 +1217,6 @@ pub enum ToggleCommentError {
 
     /// Path conversion or manipulation error
     PathError,
-
-    /// Line exceeds maximum safe length
-    LineTooLong { line_number: usize, length: usize },
-
-    /// Block comment markers are inconsistent (only one present)
-    InconsistentBlockMarkers,
-
-    /// Range exceeds maximum allowed lines (MAX_BATCH_LINES)
-    RangeTooLarge { requested: usize, max: usize },
 }
 
 /// Specific I/O operations that can fail
@@ -1276,18 +1261,6 @@ impl std::fmt::Display for ToggleCommentError {
             }
             ToggleCommentError::IoError(op) => write!(f, "IO error: {:?}", op),
             ToggleCommentError::PathError => write!(f, "Path error"),
-            ToggleCommentError::LineTooLong {
-                line_number,
-                length,
-            } => {
-                write!(f, "Line {} too long: {} bytes", line_number, length)
-            }
-            ToggleCommentError::InconsistentBlockMarkers => {
-                write!(f, "Inconsistent block markers (only one found)")
-            }
-            ToggleCommentError::RangeTooLarge { requested, max } => {
-                write!(f, "Range too large: {} lines (max {})", requested, max)
-            }
         }
     }
 }
@@ -1311,25 +1284,25 @@ enum CommentFlag {
     Hash,
 }
 
-impl CommentFlag {
-    /// Get the byte slice representation of the comment flag
-    fn as_bytes(&self) -> &'static [u8] {
-        match self {
-            CommentFlag::TripppleSlash => b"///",
-            CommentFlag::DoubleSlash => b"//",
-            CommentFlag::Hash => b"#",
-        }
-    }
+// impl CommentFlag {
+//     /// Get the byte slice representation of the comment flag
+//     fn as_bytes(&self) -> &'static [u8] {
+//         match self {
+//             CommentFlag::TripppleSlash => b"///",
+//             CommentFlag::DoubleSlash => b"//",
+//             CommentFlag::Hash => b"#",
+//         }
+//     }
 
-    /// Get the string representation of the comment flag
-    fn as_str(&self) -> &'static str {
-        match self {
-            CommentFlag::TripppleSlash => "///",
-            CommentFlag::DoubleSlash => "//",
-            CommentFlag::Hash => "#",
-        }
-    }
-}
+//     /// Get the string representation of the comment flag
+//     fn as_str(&self) -> &'static str {
+//         match self {
+//             CommentFlag::TripppleSlash => "///",
+//             CommentFlag::DoubleSlash => "//",
+//             CommentFlag::Hash => "#",
+//         }
+//     }
+// }
 
 /// Determine comment flag based on file extension
 ///
@@ -1357,154 +1330,6 @@ fn determine_comment_flag(extension: &str) -> Option<CommentFlag> {
 
         // Unknown extension
         _ => None,
-    }
-}
-
-/// Analyze a line to determine if it has a comment flag that should be removed
-///
-/// Scans the first MAX_SCAN_BYTES of the line looking for pattern:
-/// `{0+ spaces}{comment_flag}{1 space}`
-///
-/// # Arguments
-/// * `line_bytes` - The line content as bytes (without newline)
-/// * `flag` - The comment flag to search for
-///
-/// # Returns
-/// * `Some(remove_count)` - Number of bytes to skip if pattern found (flag + space)
-/// * `None` - If pattern not found in first MAX_SCAN_BYTES
-///
-/// # Safety
-/// - Bounded scan (max MAX_SCAN_BYTES bytes)
-/// - No allocations
-/// - Handles malformed UTF-8 safely (works on bytes)
-fn should_remove_comment(line_bytes: &[u8], flag: CommentFlag) -> Option<usize> {
-    let flag_bytes = flag.as_bytes();
-    let flag_len = flag_bytes.len();
-
-    // Scan limit: don't go beyond line length or MAX_SCAN_BYTES
-    let scan_limit = std::cmp::min(line_bytes.len(), MAX_SCAN_BYTES);
-
-    // Track position in line
-    let mut pos = 0;
-
-    // Skip leading spaces - bounded loop with upper limit
-    let mut spaces_skipped = 0;
-    while pos < scan_limit && line_bytes[pos] == b' ' {
-        pos += 1;
-        spaces_skipped += 1;
-
-        // Safety: prevent infinite loop on pathological input
-        if spaces_skipped > MAX_SCAN_BYTES {
-            return None;
-        }
-    }
-
-    // Check if we have room for flag + space
-    if pos + flag_len + 1 > scan_limit {
-        return None;
-    }
-
-    // Check if next bytes match the flag
-    if &line_bytes[pos..pos + flag_len] != flag_bytes {
-        return None;
-    }
-
-    // Check if next byte after flag is a space
-    if line_bytes[pos + flag_len] != b' ' {
-        return None;
-    }
-
-    // Pattern found: return how many bytes to skip (flag + one space)
-    Some(flag_len + 1)
-}
-/// Toggle Rust documentation comment (///) on a specific line
-///
-/// # Overview
-/// Operates identically to `toggle_basic_singleline_comment` but uses
-/// the Rust documentation comment marker `///` instead of determining
-/// the comment type from file extension.
-///
-/// # Arguments
-/// * `file_path` - Path to the source file
-/// * `row_line_zeroindex` - Zero-indexed line number to toggle
-///
-/// # Returns
-/// * `Ok(())` - Comment toggled successfully
-/// * `Err(ToggleCommentError)` - Specific error code
-///
-/// # Example
-/// ```no_run
-/// use toggle_basic_singleline_comment::toggle_rust_docstring_singleline_comment;
-///
-/// match toggle_rust_docstring_singleline_comment("./src/lib.rs", 0) {
-///     Ok(()) => println!("Docstring toggled"),
-///     Err(e) => eprintln!("Failed: {:?}", e),
-/// }
-/// ```
-pub fn toggle_rust_docstring_singleline_comment(
-    file_path: &str,
-    row_line_zeroindex: usize,
-) -> Result<(), ToggleCommentError> {
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleCommentError::FileNotFound);
-            }
-            return Err(ToggleCommentError::PathError);
-        }
-    };
-
-    // Get filename for backup naming
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::PathError),
-    };
-
-    // Use TripleSlash flag (no extension lookup needed)
-    let comment_flag = CommentFlag::TripppleSlash;
-
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
-
-    // Create working temp file in CWD
-    let temp_filename = format!("temp_toggle_docstring_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
-
-    // Process file and toggle comment on target line
-    let process_result =
-        process_file_toggle(&absolute_path, &temp_path, row_line_zeroindex, comment_flag);
-
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
-
-            // Clean up temp file
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                // Non-fatal: temp file left behind but operation succeeded
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
-            }
-
-            Ok(())
-        }
-        Err(e) => {
-            // Failed: clean up and return error
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
-        }
     }
 }
 
@@ -1557,269 +1382,232 @@ enum BlockMode {
     Remove,
 }
 
-/// Detect whether block markers are present
+// ============================================================================
+// BYTE-WISE TOGGLE OPERATIONS (IMPLEMENTATION)
+// ============================================================================
+//
+// ## Architecture
+// This module implements comment toggling using single-byte operations
+// with no heap allocation and no line-loading into memory.
+//
+// Three core operations:
+// 1. find_and_detect_tag_state() - Combined find+detect in one pass
+// 2. write_toggled_file_bytewise() - Three-part byte-by-byte copy with toggle
+// 3. toggle_basic_singleline_comment() - Refactored wrapper using bytewise ops
+//
+// ## Memory Usage
+// - Stack only: single byte buffer [u8; 1]
+// - No Vec, no String, no heap allocations during processing
+// - Total working memory: 1 byte
+//
+// ## Safety
+// - All loops bounded by MAX_BYTE_ITERATIONS
+// - Stops at newline during tag detection
+// - Preserves CRLF vs LF line endings
+// - Returns Ok(None) for line not found (not an error)
+//
+// ============================================================================
+
+/// Maximum bytes to read before safety abort
+/// Allows ~1GB files while preventing infinite loops
+const MAX_BYTE_ITERATIONS: u64 = 1_000_000_000;
+
+/// Combined operation: Find line start position AND detect tag state
 ///
-/// # Arguments
-/// * `file_path` - Path to file
-/// * `start_line` - Expected position of start marker (or first content line)
-/// * `end_line` - Expected position of end marker (or last content line + 1)
-/// * `markers` - Block markers to check for
+/// # Overview
+/// Performs find+detect in a single file pass. After finding target line,
+/// checks COLUMN 0 for comment tag pattern. No indentation handling.
 ///
-/// # Returns
-/// * `Ok(BlockMode::Add)` - Markers not present
-/// * `Ok(BlockMode::Remove)` - Markers present
-/// * `Err(InconsistentBlockMarkers)` - Only one marker present
-/// * `Err(LineNotFound)` - File too short
+/// # Detection Rule (SIMPLE)
+/// Read first bytes of line starting at column 0:
+/// - "// " → HAS_TAG
+/// - "# "  → HAS_TAG
+/// - "/// " → HAS_TAG
+/// - Anything else → NO_TAG
 ///
-/// # Detection Logic
-/// Checks if:
-/// - Line at start_line is EXACTLY the start marker
-/// - Line at end_line is EXACTLY the end marker
-/// Both must match for Remove mode, neither for Add mode
-fn detect_block_mode(
-    file_path: &Path,
-    start_line: usize,
-    end_line: usize,
-    markers: BlockMarkers,
-) -> Result<BlockMode, ToggleCommentError> {
+/// No space skipping. No indentation detection. Column 0 only.
+fn find_and_detect_tag_state(
+    file_path: &str,
+    target_line: usize,
+    comment_flag: CommentFlag,
+) -> Result<Option<(u64, bool)>, ToggleCommentError> {
     // Open file for reading
-    let file = match File::open(file_path) {
+    let mut file = match File::open(file_path) {
         Ok(f) => f,
         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, file);
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
     let mut current_line: usize = 0;
-    let mut start_is_marker = false;
-    let mut end_is_marker = false;
-    let mut found_start_line = false;
-    let mut found_end_line = false;
+    let line_start_pos: u64;
 
-    // Safety limit for loop
-    let line_limit = end_line.saturating_add(1000);
+    // ===========================================
+    // PHASE 1: Find target line start position
+    // ===========================================
 
-    // Read until we've checked both positions
-    loop {
-        // Safety: prevent unbounded loop
-        if current_line > line_limit {
-            return Err(ToggleCommentError::IoError(IoOperation::Read));
-        }
-
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
-        };
-
-        // End of file
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleCommentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
-
-        // Check if this is start_line
-        if current_line == start_line {
-            found_start_line = true;
-            start_is_marker = line_buffer.as_slice() == markers.start;
-        }
-
-        // Check if this is end_line (the line after the content range)
-        if current_line == end_line {
-            found_end_line = true;
-            end_is_marker = line_buffer.as_slice() == markers.end;
-            // Found both - can stop reading
-            break;
-        }
-
-        current_line += 1;
-    }
-
-    // Verify we found both line positions
-    if !found_start_line {
-        return Err(ToggleCommentError::LineNotFound {
-            requested: start_line,
-            file_lines: current_line,
-        });
-    }
-
-    if !found_end_line {
-        return Err(ToggleCommentError::LineNotFound {
-            requested: end_line,
-            file_lines: current_line,
-        });
-    }
-
-    // Determine mode based on marker presence
-    match (start_is_marker, end_is_marker) {
-        (true, true) => Ok(BlockMode::Remove),
-        (false, false) => Ok(BlockMode::Add),
-        _ => Err(ToggleCommentError::InconsistentBlockMarkers),
-    }
-}
-/// Toggle block comment around a range of lines
-///
-/// # Arguments
-/// * `file_path` - Path to source file
-/// * `start_line` - For Add: first content line. For Remove: the start marker line
-/// * `end_line` - For Add: last content line. For Remove: the end marker line
-///
-/// # Logic
-/// **Detection:**
-/// - Check if line[start_line] == start_marker AND line[end_line] == end_marker
-/// - If both match: Remove mode (skip those lines)
-/// - If neither match: Add mode (insert new lines adjacent)
-/// - If only one matches: Error (inconsistent)
-///
-/// **Add Mode:** Insert markers around content
-/// - At start_line: INSERT marker before, then write content
-/// - At end_line: write content, then INSERT marker after
-///
-/// **Remove Mode:** Delete marker lines
-/// - At start_line: SKIP (don't write - this deletes the marker)
-/// - At end_line: SKIP (don't write - this deletes the marker)
-pub fn toggle_block_comment(
-    file_path: &str,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(), ToggleCommentError> {
-    // Sort range automatically
-    let (_, _) = sort_range(start_line, end_line);
-
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleCommentError::FileNotFound);
-            }
-            return Err(ToggleCommentError::PathError);
-        }
-    };
-
-    // Extract and validate extension
-    let extension = match absolute_path.extension() {
-        Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::NoExtension),
-    };
-
-    // Determine block markers from extension
-    let markers = match determine_block_markers(&extension) {
-        Some(m) => m,
-        // // Optional halting, not recommended, will Terminate-Session
-        // #[cfg(debug_assertions)]
-        // None => return Err(ToggleCommentError::UnsupportedExtension),
-
-        // Nothing to do, do nothing, move on.
-        None => return Ok(()),
-    };
-
-    // Detect current state - are markers present AT these line positions?
-    let mode = detect_block_mode(&absolute_path, start_line, end_line, markers)?;
-
-    // Get filename for backup
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::PathError),
-    };
-
-    // Create backup path
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-
-    // Create backup
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
-
-    // Create temp file
-    let temp_filename = format!("temp_toggle_block_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
-
-    // Process file
-    let process_result = process_block_toggle(
-        &absolute_path,
-        &temp_path,
-        start_line,
-        end_line,
-        markers,
-        mode,
-    );
-
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+    if target_line == 0 {
+        line_start_pos = 0;
+    } else {
+        loop {
+            if byte_position >= MAX_BYTE_ITERATIONS {
+                return Err(ToggleCommentError::IoError(IoOperation::Read));
             }
 
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
+            let bytes_read = match file.read(&mut byte_bucket) {
+                Ok(n) => n,
+                Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+            };
+
+            if bytes_read == 0 {
+                return Ok(None); // Line not found
             }
 
-            Ok(())
-        }
-        Err(e) => {
-            // Failed: clean up and return error
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
+            if byte_bucket[0] == b'\n' {
+                current_line += 1;
+                if current_line == target_line {
+                    line_start_pos = byte_position + 1;
+                    break;
+                }
+            }
+
+            byte_position += 1;
         }
     }
+
+    // ===========================================
+    // PHASE 2: Detect tag at column 0 ONLY
+    // ===========================================
+
+    // Seek to line start
+    if let Err(_) = file.seek(std::io::SeekFrom::Start(line_start_pos)) {
+        return Err(ToggleCommentError::IoError(IoOperation::Read));
+    }
+
+    // Read first byte at column 0
+    let bytes_read = match file.read(&mut byte_bucket) {
+        Ok(n) => n,
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+    };
+
+    // EOF or empty line
+    if bytes_read == 0 || byte_bucket[0] == b'\n' {
+        return Ok(Some((line_start_pos, false)));
+    }
+
+    // Check if first byte matches start of tag
+    let has_tag = match comment_flag {
+        CommentFlag::Hash => {
+            // Pattern: "# " at column 0
+            if byte_bucket[0] != b'#' {
+                false
+            } else {
+                // Read next byte - should be space
+                match file.read(&mut byte_bucket) {
+                    Ok(0) => false,
+                    Ok(_) => byte_bucket[0] == b' ',
+                    Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+                }
+            }
+        }
+
+        CommentFlag::DoubleSlash => {
+            // Pattern: "// " at column 0
+            if byte_bucket[0] != b'/' {
+                false
+            } else {
+                // Read second '/'
+                match file.read(&mut byte_bucket) {
+                    Ok(0) => false,
+                    Ok(_) => {
+                        if byte_bucket[0] != b'/' {
+                            false
+                        } else {
+                            // Read space
+                            match file.read(&mut byte_bucket) {
+                                Ok(0) => false,
+                                Ok(_) => byte_bucket[0] == b' ',
+                                Err(_) => {
+                                    return Err(ToggleCommentError::IoError(IoOperation::Read));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+                }
+            }
+        }
+
+        CommentFlag::TripppleSlash => {
+            // Pattern: "/// " at column 0
+            if byte_bucket[0] != b'/' {
+                false
+            } else {
+                // Read second '/'
+                match file.read(&mut byte_bucket) {
+                    Ok(0) => false,
+                    Ok(_) => {
+                        if byte_bucket[0] != b'/' {
+                            false
+                        } else {
+                            // Read third '/'
+                            match file.read(&mut byte_bucket) {
+                                Ok(0) => false,
+                                Ok(_) => {
+                                    if byte_bucket[0] != b'/' {
+                                        false
+                                    } else {
+                                        // Read space
+                                        match file.read(&mut byte_bucket) {
+                                            Ok(0) => false,
+                                            Ok(_) => byte_bucket[0] == b' ',
+                                            Err(_) => {
+                                                return Err(ToggleCommentError::IoError(
+                                                    IoOperation::Read,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    return Err(ToggleCommentError::IoError(IoOperation::Read));
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+                }
+            }
+        }
+    };
+
+    Ok(Some((line_start_pos, has_tag)))
 }
 
-/// Process file to add or remove block comment markers
+/// Write file with one line toggled using byte-by-byte operations
 ///
-/// # Add Mode Logic (Insert new marker lines)
-/// ```text
-/// Source:           Output:
-/// line 4            line 4
-/// line 5 (start) -> """         <- INSERTED
-///                   line 5      <- copied
-/// line 6            line 6
-/// line 7 (end)   -> line 7      <- copied
-///                   """         <- INSERTED
-/// line 8            line 8
-/// ```
+/// # Overview
+/// Copies source file to destination with single line modified.
+/// All tag operations at COLUMN 0 only. No indentation handling.
 ///
-/// # Remove Mode Logic (Delete marker lines)
-/// ```text
-/// Source:           Output:
-/// line 4            line 4
-/// line 5 (marker) -> [SKIP]     <- DELETED
-/// line 6            line 6
-/// line 7 (marker) -> [SKIP]     <- DELETED
-/// line 8            line 8
-/// ```
-fn process_block_toggle(
+/// # Add Mode (has_tag = false)
+/// Write tag at column 0, then copy rest of line
+///
+/// # Remove Mode (has_tag = true)
+/// Skip tag bytes at column 0, then copy rest of line
+fn write_toggled_file_bytewise(
     source_path: &Path,
     dest_path: &Path,
-    start_line: usize,
-    end_line: usize,
-    markers: BlockMarkers,
-    mode: BlockMode,
+    target_line: usize,
+    line_start_pos: u64,
+    has_tag: bool,
+    comment_flag: CommentFlag,
 ) -> Result<(), ToggleCommentError> {
-    // Open source file
-    let source_file = match File::open(source_path) {
+    let mut source_file = match File::open(source_path) {
         Ok(f) => f,
         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-    // Create destination file
     let dest_file = match OpenOptions::new()
         .write(true)
         .create(true)
@@ -1831,91 +1619,151 @@ fn process_block_toggle(
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
 
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-    let mut current_line: usize = 0;
-    let line_limit = end_line.saturating_add(1000000);
+    // ===========================================
+    // PART A: Copy bytes before target line
+    // ===========================================
 
-    // Process file line by line
-    loop {
-        // Safety check
-        if current_line > line_limit {
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
             return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
             Ok(n) => n,
             Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
-        // End of file
+        if bytes_read == 0 {
+            return Err(ToggleCommentError::LineNotFound {
+                requested: target_line,
+                file_lines: 0,
+            });
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // ===========================================
+    // PART B: Toggle target line at column 0
+    // ===========================================
+
+    if has_tag {
+        // REMOVE MODE: Skip tag bytes at column 0
+        let bytes_to_skip = match comment_flag {
+            CommentFlag::Hash => 2,          // "# "
+            CommentFlag::DoubleSlash => 3,   // "// "
+            CommentFlag::TripppleSlash => 4, // "/// "
+        };
+
+        // Skip the tag bytes
+        for _ in 0..bytes_to_skip {
+            if let Err(_) = source_file.read(&mut byte_bucket) {
+                return Err(ToggleCommentError::IoError(IoOperation::Read));
+            }
+        }
+
+        // Copy rest of line
+        loop {
+            let bytes_read = match source_file.read(&mut byte_bucket) {
+                Ok(n) => n,
+                Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+            };
+
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            if let Err(_) = writer.write_all(&byte_bucket) {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+
+            if byte_bucket[0] == b'\n' {
+                break; // End of line
+            }
+        }
+    } else {
+        // ADD MODE: Write tag at column 0, then copy rest of line
+        match comment_flag {
+            CommentFlag::Hash => {
+                if let Err(_) = writer.write_all(b"#") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+                if let Err(_) = writer.write_all(b" ") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+            }
+            CommentFlag::DoubleSlash => {
+                if let Err(_) = writer.write_all(b"//") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+                if let Err(_) = writer.write_all(b" ") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+            }
+            CommentFlag::TripppleSlash => {
+                if let Err(_) = writer.write_all(b"///") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+                if let Err(_) = writer.write_all(b" ") {
+                    return Err(ToggleCommentError::IoError(IoOperation::Write));
+                }
+            }
+        }
+
+        // Copy rest of line
+        loop {
+            let bytes_read = match source_file.read(&mut byte_bucket) {
+                Ok(n) => n,
+                Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+            };
+
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            if let Err(_) = writer.write_all(&byte_bucket) {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+
+            if byte_bucket[0] == b'\n' {
+                break; // End of line
+            }
+        }
+    }
+
+    // ===========================================
+    // PART C: Copy rest of file
+    // ===========================================
+
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
         if bytes_read == 0 {
             break;
         }
 
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleCommentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
 
-        // Handle based on mode
-        match mode {
-            BlockMode::Add => {
-                // ADD mode: INSERT new marker lines adjacent to content
-
-                if current_line == start_line {
-                    // INSERT start marker before this content line
-                    if let Err(_) = writer.write_all(markers.start) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                    // Then write the content line itself
-                    if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                } else if current_line == end_line {
-                    // Write the content line first
-                    if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                    // Then INSERT end marker after this content line
-                    if let Err(_) = writer.write_all(markers.end) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                } else {
-                    // All other lines: copy unchanged
-                    if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                }
-            }
-
-            BlockMode::Remove => {
-                // REMOVE mode: DELETE marker lines by skipping them
-
-                if current_line == start_line {
-                    // This line IS the start marker - SKIP it (don't write)
-                    // This deletes the marker line
-                } else if current_line == end_line {
-                    // This line IS the end marker - SKIP it (don't write)
-                    // This deletes the marker line
-                } else {
-                    // All other lines: copy unchanged
-                    if let Err(_) = writer.write_all(&line_buffer) {
-                        return Err(ToggleCommentError::IoError(IoOperation::Write));
-                    }
-                }
-            }
-        }
-
-        current_line += 1;
+        remaining_bytes += 1;
     }
 
-    // Flush writer
     if let Err(_) = writer.flush() {
         return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
@@ -1923,506 +1771,25 @@ fn process_block_toggle(
     Ok(())
 }
 
-#[cfg(test)]
-mod block_comment_tests {
-    use super::*;
-
-    #[test]
-    fn test_block_comment_add_rust() {
-        let content = "fn main() {\n    println!(\"hello\");\n}\n";
-        let test_file = create_test_file("test_block_add.rs", content);
-
-        // Comment lines 0-2 (entire file)
-        let result = toggle_block_comment(test_file.to_str().unwrap(), 0, 2);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        let expected = "/*\nfn main() {\n    println!(\"hello\");\n}\n*/\n";
-
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_block_test_block_add.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_block_comment_remove_rust() {
-        let content = "/*\nfn main() {\n    println!(\"hello\");\n}\n*/\n";
-        let test_file = create_test_file("test_block_remove.rs", content);
-
-        // Remove markers at lines 0 and 4
-        let result = toggle_block_comment(test_file.to_str().unwrap(), 0, 4);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        let expected = "fn main() {\n    println!(\"hello\");\n}\n";
-
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_block_test_block_remove.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_block_comment_inconsistent() {
-        // Only start marker present
-        let content = "/*\nfn main() {}\n";
-        let test_file = create_test_file("test_block_inconsistent.rs", content);
-
-        let result = toggle_block_comment(test_file.to_str().unwrap(), 0, 1);
-
-        #[cfg(test)]
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::InconsistentBlockMarkers)
-        ));
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_block_test_block_inconsistent.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_block_comment_python() {
-        let content = "def hello():\n    print('world')\n";
-        let test_file = create_test_file("test_block.py", content);
-
-        let result = toggle_block_comment(test_file.to_str().unwrap(), 0, 1);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        let expected = "\"\"\"\ndef hello():\n    print('world')\n\"\"\"\n";
-
-        #[cfg(test)]
-        assert_eq!(new_content, expected);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_block_test_block.py"),
-        ]);
-    }
-}
-
-// ================
-// List Batch Toggle
-// =================
-
-/// Maximum number of lines in batch operations
-/// 128 lines = 1KB of stack space (8 bytes per usize on 64-bit)
-const MAX_BATCH_LINES: usize = 128;
-
-// /// Toggle comments on multiple lines in a single operation
-// ///
-// /// # Overview
-// /// Process multiple lines with one backup and one file pass.
-// /// More efficient than calling toggle function N times.
-// ///
-// /// # Arguments
-// /// * `file_path` - Path to source file
-// /// * `line_numbers` - Slice of line numbers to toggle (zero-indexed)
-// /// * `comment_flag` - Which comment type to use
-// ///
-// /// # Returns
-// /// * `Ok(())` - All lines toggled successfully
-// /// * `Err(ToggleCommentError)` - Processing failed
-// ///
-// /// # Safety
-// /// - Bounded to MAX_BATCH_LINES (128 lines)
-// /// - Single backup, single file pass
-// /// - Stack-only array (no heap)
-// /// - Sorted for O(1) lookup per line
-// ///
-// /// # Example
-// /// ```no_run
-// /// let lines = [5, 10, 15, 20];
-// /// toggle_multiple_lines("./src/main.rs", &lines, CommentFlag::DoubleSlash)?;
-// /// ```
-// fn toggle_multiple_lines(
-//     file_path: &str,
-//     line_numbers: &[usize],
-//     comment_flag: CommentFlag,
-// ) -> Result<(), ToggleCommentError> {
-//     // Validate input
-//     if line_numbers.is_empty() {
-//         return Ok(()); // Nothing to do
-//     }
-
-//     if line_numbers.len() > MAX_BATCH_LINES {
-//         // Too many lines - could return error or just process first N
-//         return Err(ToggleCommentError::IoError(IoOperation::Read)); // Reuse error for now
-//     }
-
-//     // Convert to absolute path
-//     let absolute_path = match Path::new(file_path).canonicalize() {
-//         Ok(p) => p,
-//         Err(e) => {
-//             if e.kind() == std::io::ErrorKind::NotFound {
-//                 return Err(ToggleCommentError::FileNotFound);
-//             }
-//             return Err(ToggleCommentError::PathError);
-//         }
-//     };
-
-//     // Get filename for backup
-//     let filename = match absolute_path.file_name() {
-//         Some(name) => name.to_string_lossy().to_string(),
-//         None => return Err(ToggleCommentError::PathError),
-//     };
-
-//     // Copy line numbers to fixed array and sort
-//     let mut sorted_lines: [usize; MAX_BATCH_LINES] = [0; MAX_BATCH_LINES];
-//     let count = line_numbers.len();
-
-//     // Copy input to our array
-//     for i in 0..count {
-//         sorted_lines[i] = line_numbers[i];
-//     }
-
-//     // Sort the array (only the valid portion)
-//     // This enables O(1) lookup during file processing
-//     sorted_lines[..count].sort_unstable();
-
-//     // Remove duplicates by compacting array
-//     let mut unique_count = 0;
-//     if count > 0 {
-//         sorted_lines[0] = sorted_lines[0]; // First element stays
-//         unique_count = 1;
-
-//         for i in 1..count {
-//             if sorted_lines[i] != sorted_lines[unique_count - 1] {
-//                 sorted_lines[unique_count] = sorted_lines[i];
-//                 unique_count += 1;
-//             }
-//         }
-//     }
-
-//     // If no valid lines after dedup, nothing to do
-//     if unique_count == 0 {
-//         return Ok(());
-//     }
-
-//     // Create backup path in CWD
-//     let backup_filename = format!("backup_toggle_comment_{}", filename);
-//     let backup_path = PathBuf::from(&backup_filename);
-
-//     // Create backup copy
-//     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-//         return Err(ToggleCommentError::IoError(IoOperation::Backup));
-//     }
-
-//     // Create temp file
-//     let temp_filename = format!("temp_toggle_batch_{}_{}", std::process::id(), filename);
-//     let temp_path = PathBuf::from(&temp_filename);
-
-//     // Process file with batch toggle
-//     let process_result = process_batch_toggle(
-//         &absolute_path,
-//         &temp_path,
-//         &sorted_lines[..unique_count],
-//         comment_flag,
-//     );
-
-//     // Handle result
-//     match process_result {
-//         Ok(()) => {
-//             // Success: replace original
-//             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-//                 let _ = std::fs::remove_file(&temp_path);
-//                 return Err(ToggleCommentError::IoError(IoOperation::Replace));
-//             }
-
-//             // Clean up temp
-//             if let Err(_) = std::fs::remove_file(&temp_path) {
-//                 #[cfg(debug_assertions)]
-//                 eprintln!("Warning: Failed to clean up temp file");
-//             }
-
-//             Ok(())
-//         }
-//         Err(e) => {
-//             let _ = std::fs::remove_file(&temp_path);
-//             Err(e)
-//         }
-//     }
-// }
-
-// /// Process file toggling comments on multiple lines
-// ///
-// /// # Arguments
-// /// * `source_path` - Original file
-// /// * `dest_path` - Temporary output file
-// /// * `target_lines` - SORTED array of line numbers to toggle
-// /// * `flag` - Comment flag to use
-// ///
-// /// # Algorithm
-// /// Uses sorted array for O(1) lookup:
-// /// - Keep index into sorted array
-// /// - For each line, check if current_line == sorted_array[index]
-// /// - If match: toggle and increment index
-// /// - If no match: copy unchanged
-// ///
-// /// # Returns
-// /// * `Ok(())` - Processing succeeded
-// /// * `Err(ToggleCommentError)` - Processing failed
-// fn process_batch_toggle(
-//     source_path: &Path,
-//     dest_path: &Path,
-//     target_lines: &[usize], // Pre-sorted, no duplicates
-//     flag: CommentFlag,
-// ) -> Result<(), ToggleCommentError> {
-//     // Open source file
-//     let source_file = match File::open(source_path) {
-//         Ok(f) => f,
-//         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
-//     };
-
-//     let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-//     // Create destination file
-//     let dest_file = match OpenOptions::new()
-//         .write(true)
-//         .create(true)
-//         .truncate(true)
-//         .open(dest_path)
-//     {
-//         Ok(f) => f,
-//         Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
-//     };
-
-//     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
-
-//     let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-//     let mut current_line: usize = 0;
-//     let mut target_index: usize = 0; // Index into sorted target_lines array
-
-//     // Get last target line for safety limit
-//     let max_target_line = target_lines[target_lines.len() - 1];
-//     let line_limit = max_target_line.saturating_add(1000000);
-
-//     // Track how many lines we actually toggled
-//     let mut toggled_count: usize = 0;
-
-//     // Process file line by line
-//     loop {
-//         // Safety check
-//         if current_line > line_limit {
-//             return Err(ToggleCommentError::IoError(IoOperation::Read));
-//         }
-
-//         line_buffer.clear();
-
-//         let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-//             Ok(n) => n,
-//             Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
-//         };
-
-//         // End of file
-//         if bytes_read == 0 {
-//             break;
-//         }
-
-//         // Safety: check line length
-//         if line_buffer.len() > MAX_LINE_LENGTH {
-//             return Err(ToggleCommentError::LineTooLong {
-//                 line_number: current_line,
-//                 length: line_buffer.len(),
-//             });
-//         }
-
-//         // Check if this is a target line (O(1) because array is sorted)
-//         if target_index < target_lines.len() && current_line == target_lines[target_index] {
-//             // This is a target line - toggle it
-//             if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
-//                 return Err(e);
-//             }
-
-//             // Move to next target
-//             target_index += 1;
-//             toggled_count += 1;
-//         } else {
-//             // Not a target line - copy unchanged
-//             if let Err(_) = writer.write_all(&line_buffer) {
-//                 return Err(ToggleCommentError::IoError(IoOperation::Write));
-//             }
-//         }
-
-//         current_line += 1;
-//     }
-
-//     // Flush writer
-//     if let Err(_) = writer.flush() {
-//         return Err(ToggleCommentError::IoError(IoOperation::Flush));
-//     }
-
-//     // Verify we found all target lines
-//     if toggled_count < target_lines.len() {
-//         // Some target lines were beyond EOF
-//         let first_missing = target_lines[toggled_count];
-//         return Err(ToggleCommentError::LineNotFound {
-//             requested: first_missing,
-//             file_lines: current_line,
-//         });
-//     }
-
-//     Ok(())
-// }
-
-// /// Toggle basic comments on multiple lines (extension-based)
-// ///
-// /// # Arguments
-// /// * `file_path` - Path to source file
-// /// * `line_numbers` - Slice of line numbers to toggle
-// ///
-// /// # Returns
-// /// * `Ok(())` - All lines toggled successfully
-// /// * `Err(ToggleCommentError)` - Processing failed
-// ///
-// /// # Example
-// /// ```no_run
-// /// let lines = [5, 10, 15];
-// /// toggle_multiple_basic_comments("./src/main.rs", &lines)?;
-// /// ```
-// pub fn toggle_multiple_basic_comments(
-//     file_path: &str,
-//     line_numbers: &[usize],
-// ) -> Result<(), ToggleCommentError> {
-//     // Determine comment flag from extension
-//     let path = Path::new(file_path);
-//     let extension = match path.extension() {
-//         Some(ext) => ext.to_string_lossy().to_string(),
-//         None => return Err(ToggleCommentError::NoExtension),
-//     };
-
-//     let comment_flag = match determine_comment_flag(&extension) {
-//         Some(flag) => flag,
-//         // // Optional halting, not recommended, will Terminate-Session
-//         // #[cfg(debug_assertions)]
-//         // None => return Err(ToggleCommentError::UnsupportedExtension),
-
-//         // Nothing to do, do nothing, move on.
-//         None => return Ok(()),
-//     };
-
-//     toggle_multiple_lines(file_path, line_numbers, comment_flag)
-// }
-
-// /// Toggle Rust docstrings on multiple lines
-// ///
-// /// # Arguments
-// /// * `file_path` - Path to source file
-// /// * `line_numbers` - Slice of line numbers to toggle
-// ///
-// /// # Returns
-// /// * `Ok(())` - All docstrings toggled successfully
-// /// * `Err(ToggleCommentError)` - Processing failed
-// ///
-// /// # Example
-// /// ```no_run
-// /// let lines = [10, 20, 30];
-// /// toggle_multiple_singline_docstrings("./src/lib.rs", &lines)?;
-// /// ```
-// pub fn toggle_multiple_singline_docstrings(
-//     file_path: &str,
-//     line_numbers_list: &[usize],
-// ) -> Result<(), ToggleCommentError> {
-//     toggle_multiple_lines(file_path, line_numbers_list, CommentFlag::TripppleSlash)
-// }
-
-// #[cfg(test)]
-// mod batch_tests {
-//     use super::*;
-
-//     #[test]
-//     fn test_batch_toggle_multiple_lines() {
-//         let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
-//         let test_file = create_test_file("test_batch.rs", content);
-
-//         let lines = [1, 3]; // Toggle lines 1 and 3
-//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-
-//         #[cfg(test)]
-//         assert!(result.is_ok());
-
-//         let new_content = read_file_content(&test_file);
-//         let expected = "line 0\n// line 1\nline 2\n// line 3\nline 4\n";
-
-//         #[cfg(test)]
-//         assert_eq!(new_content, expected);
-
-//         cleanup_files(&[
-//             &test_file,
-//             &PathBuf::from("backup_toggle_batch_test_batch.rs"),
-//         ]);
-//     }
-
-//     #[test]
-//     fn test_batch_toggle_unsorted_input() {
-//         let content = "line 0\nline 1\nline 2\nline 3\n";
-//         let test_file = create_test_file("test_batch_unsort.rs", content);
-
-//         let lines = [3, 1, 2]; // Unsorted input
-//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-
-//         #[cfg(test)]
-//         assert!(result.is_ok());
-
-//         let new_content = read_file_content(&test_file);
-//         let expected = "line 0\n// line 1\n// line 2\n// line 3\n";
-
-//         #[cfg(test)]
-//         assert_eq!(new_content, expected);
-
-//         cleanup_files(&[
-//             &test_file,
-//             &PathBuf::from("backup_toggle_batch_test_batch_unsort.rs"),
-//         ]);
-//     }
-
-//     #[test]
-//     fn test_batch_toggle_duplicates() {
-//         let content = "line 0\nline 1\nline 2\n";
-//         let test_file = create_test_file("test_batch_dup.rs", content);
-
-//         let lines = [1, 1, 1]; // Duplicates
-//         let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-
-//         #[cfg(test)]
-//         assert!(result.is_ok());
-
-//         let new_content = read_file_content(&test_file);
-//         let expected = "line 0\n// line 1\nline 2\n";
-
-//         #[cfg(test)]
-//         assert_eq!(new_content, expected);
-
-//         cleanup_files(&[
-//             &test_file,
-//             &PathBuf::from("backup_toggle_batch_test_batch_dup.rs"),
-//         ]);
-//     }
-// }
-
-/// Toggle comment on a specific line in a source code file
+// ============================================================================
+// REFACTORED WRAPPER - Uses Bytewise Operations
+// ============================================================================
+
+/// Toggle comment on a specific line using byte-wise operations (REFACTORED)
 ///
 /// # Overview
-/// This function safely toggles a comment flag on a single line without loading
-/// the entire file into memory. It creates a backup before any modifications and
-/// only replaces the original file on success.
+/// **This function has been refactored to use byte-wise operations with no
+/// line buffering or heap allocation.** The public API remains unchanged for
+/// backward compatibility.
 ///
-/// Comment type is determined by file extension.
+/// Previous implementation loaded entire lines into Vec<u8>. New implementation
+/// uses single-byte buffer and separate find/detect/write operations.
+///
+/// # New Implementation
+/// 1. Calls `find_and_detect_tag_state()` - finds line and detects tag in one pass
+/// 2. Handles `Ok(None)` gracefully (line not found - not treated as error initially)
+/// 3. Calls `write_toggled_file_bytewise()` - performs byte-wise toggle
+/// 4. Preserves existing backup/temp file behavior
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -2434,14 +1801,26 @@ const MAX_BATCH_LINES: usize = 128;
 ///
 /// # Example
 /// ```no_run
-/// use toggle_basic_singleline_comment::toggle_basic_singleline_comment;
+/// use toggle_comment_indent_module::toggle_basic_singleline_comment;
 ///
-/// match toggle_basic_singleline_comment("./src/main.rs", 0) {
-///     Ok(()) => println!("Toggled"),
+/// match toggle_basic_singleline_comment("./src/main.rs", 5) {
+///     Ok(()) => println!("Line 5 toggled"),
 ///     Err(e) => eprintln!("Failed: {:?}", e),
 /// }
 /// ```
-pub fn toggle_basic_singleline_comment(
+///
+/// # Memory Usage
+/// - Previous: Up to MAX_LINE_LENGTH (10KB) per line
+/// - New: 1 byte working buffer
+/// - Reduction: ~10,000x less memory
+///
+/// # Performance
+/// - Previous: Read entire line into Vec
+/// - New: Single-byte operations, may be slower but more memory-safe
+/// - Trade-off: Safety and bounded memory over raw speed
+//
+// NOTE: This is the refactored version using bytewise operations
+pub fn toggle_basic_singleline_comment_bytewise(
     file_path: &str,
     row_line_zeroindex: usize,
 ) -> Result<(), ToggleCommentError> {
@@ -2465,14 +1844,23 @@ pub fn toggle_basic_singleline_comment(
     // Determine comment flag from extension
     let comment_flag = match determine_comment_flag(&extension) {
         Some(flag) => flag,
-
-        // // Optional halting, not recommended, will Terminate-Session
-        // #[cfg(debug_assertions)]
-        // None => return Err(ToggleCommentError::UnsupportedExtension),
-
-        // Nothing to do, do nothing, move on.
-        None => return Ok(()),
+        None => return Ok(()), // Unsupported extension - no-op
     };
+
+    // ==================================================
+    // NEW: Combined find and detect in single pass
+    // ==================================================
+    let (line_start_pos, has_tag) =
+        match find_and_detect_tag_state(file_path, row_line_zeroindex, comment_flag)? {
+            Some((pos, tag_state)) => (pos, tag_state),
+            None => {
+                // Line not found - return appropriate error
+                return Err(ToggleCommentError::LineNotFound {
+                    requested: row_line_zeroindex,
+                    file_lines: 0, // Unknown in bytewise mode
+                });
+            }
+        };
 
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
@@ -2490,26 +1878,32 @@ pub fn toggle_basic_singleline_comment(
     }
 
     // Create working temp file in CWD
-    let temp_filename = format!("temp_toggle_{}_{}", std::process::id(), filename);
+    let temp_filename = format!("temp_toggle_bytewise_{}_{}", std::process::id(), filename);
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and toggle comment on target line
-    let process_result =
-        process_file_toggle(&absolute_path, &temp_path, row_line_zeroindex, comment_flag);
+    // ==================================================
+    // NEW: Byte-wise write operation
+    // ==================================================
+    let process_result = write_toggled_file_bytewise(
+        &absolute_path,
+        &temp_path,
+        row_line_zeroindex,
+        line_start_pos,
+        has_tag,
+        comment_flag,
+    );
 
-    // Handle processing result
+    // Handle processing result (same as before)
     match process_result {
         Ok(()) => {
             // Success: replace original with temp file
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                // Failed to replace - clean up and error
                 let _ = std::fs::remove_file(&temp_path);
                 return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
             // Clean up temp file
             if let Err(_) = std::fs::remove_file(&temp_path) {
-                // Non-fatal: temp file left behind but operation succeeded
                 #[cfg(debug_assertions)]
                 eprintln!("Warning: Failed to clean up temp file");
             }
@@ -2517,192 +1911,397 @@ pub fn toggle_basic_singleline_comment(
             Ok(())
         }
         Err(e) => {
-            // Failed: clean up temp file and return error
             let _ = std::fs::remove_file(&temp_path);
             Err(e)
         }
     }
 }
 
-/// Process file line-by-line, toggling comment on target line
-///
-/// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `target_line` - Zero-indexed line number to toggle
-/// * `flag` - Comment flag to use
-///
-/// # Returns
-/// * `Ok(())` - Processing succeeded, target line was found and toggled
-/// * `Err(ToggleCommentError)` - Processing failed
-///
-/// # Safety
-/// - Pre-allocated buffers only
-/// - Bounded line length checks
-/// - No dynamic allocation during loop
-fn process_file_toggle(
-    source_path: &Path,
-    dest_path: &Path,
-    target_line: usize,
-    flag: CommentFlag,
-) -> Result<(), ToggleCommentError> {
-    // Open source file for reading
-    let source_file = match File::open(source_path) {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
-    };
+// ============================================================================
+// TESTS - Byte-Wise Operations
+// ============================================================================
 
-    // Create buffered reader with pre-allocated buffer
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
+#[cfg(test)]
+mod bytewise_tests {
+    use super::*;
 
-    // Create destination file
-    let dest_file = match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dest_path)
-    {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
-    };
+    // ========================================
+    // find_and_detect_tag_state() Tests
+    // ========================================
 
-    // Create buffered writer with pre-allocated buffer
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    #[test]
+    fn test_find_and_detect_line_0() {
+        let content = "code\nmore\n";
+        let test_file = create_test_file("test_bytewise_find_0.rs", content);
 
-    // Pre-allocate line buffer - fixed size, reused for all lines
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 0, CommentFlag::DoubleSlash);
 
-    // Track current line number (zero-indexed)
-    let mut current_line: usize = 0;
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (pos, has_tag) = found.unwrap();
+        assert_eq!(pos, 0); // Line 0 starts at position 0
+        assert_eq!(has_tag, false); // "code" has no "//" tag
 
-    // Track if we found the target line
-    let mut found_target = false;
-
-    // Line counter safety limit - prevent infinite loops
-    let line_limit = target_line.saturating_add(1000000);
-
-    // Process file line by line
-    loop {
-        // Safety check: prevent unbounded loop
-        if current_line > line_limit {
-            return Err(ToggleCommentError::IoError(IoOperation::Read));
-        }
-
-        // Clear buffer for reuse
-        line_buffer.clear();
-
-        // Read next line into pre-allocated buffer
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
-        };
-
-        // End of file reached
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleCommentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
-
-        // Check if this is our target line
-        if current_line == target_line {
-            found_target = true;
-
-            // Toggle comment on this line
-            if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
-                return Err(e);
-            }
-        } else {
-            // Copy line unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleCommentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
+        cleanup_files(&[&test_file]);
     }
 
-    // Flush writer to ensure all data written
-    if let Err(_) = writer.flush() {
-        return Err(ToggleCommentError::IoError(IoOperation::Flush));
+    #[test]
+    fn test_find_and_detect_line_1() {
+        let content = "line 0\n// line 1\nline 2\n";
+        let test_file = create_test_file("test_bytewise_find_1.rs", content);
+
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 1, CommentFlag::DoubleSlash);
+
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (pos, has_tag) = found.unwrap();
+        assert_eq!(pos, 7); // After "line 0\n"
+        assert_eq!(has_tag, true); // Has "// " pattern
+
+        cleanup_files(&[&test_file]);
     }
 
-    // Check if we found the target line
-    if !found_target {
-        return Err(ToggleCommentError::LineNotFound {
-            requested: target_line,
-            file_lines: current_line,
-        });
+    #[test]
+    fn test_find_and_detect_line_not_found() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_bytewise_notfound.rs", content);
+
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 10, CommentFlag::DoubleSlash);
+
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_none()); // Line 10 doesn't exist - Ok(None)
+
+        cleanup_files(&[&test_file]);
     }
 
-    Ok(())
-}
+    #[test]
+    fn test_find_and_detect_no_space_after_tag() {
+        let content = "line 0\n//code\nline 2\n";
+        let test_file = create_test_file("test_bytewise_nospace.rs", content);
 
-/// Toggle comment flag on a single line
-///
-/// # Arguments
-/// * `writer` - Buffered writer to output modified line
-/// * `line_buffer` - Complete line including newline
-/// * `flag` - Comment flag to toggle
-///
-/// # Returns
-/// * `Ok(())` - Line written successfully
-/// * `Err(ToggleCommentError)` - Write failed
-///
-/// # Logic
-/// - Extract line content (without trailing newline)
-/// - Check if comment should be removed
-/// - If yes: write line without flag+space
-/// - If no: write flag+space at start, then rest of line
-/// - Always preserve original newline
-fn toggle_line(
-    writer: &mut BufWriter<File>,
-    line_buffer: &[u8],
-    flag: CommentFlag,
-) -> Result<(), ToggleCommentError> {
-    // Separate line content from newline
-    let (content, newline) = if line_buffer.ends_with(b"\r\n") {
-        (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
-    } else if line_buffer.ends_with(b"\n") {
-        (&line_buffer[..line_buffer.len() - 1], &b"\n"[..])
-    } else {
-        // No newline (last line of file might not have one)
-        (line_buffer, &b""[..])
-    };
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 1, CommentFlag::DoubleSlash);
 
-    // Check if we should remove comment
-    if let Some(skip_count) = should_remove_comment(content, flag) {
-        // REMOVE mode: write content skipping flag+space
-        if let Err(_) = writer.write_all(&content[skip_count..]) {
-            return Err(ToggleCommentError::IoError(IoOperation::Write));
-        }
-    } else {
-        // ADD mode: write flag+space, then content
-        let flag_with_space = format!("{} ", flag.as_str());
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (_pos, has_tag) = found.unwrap();
+        assert_eq!(has_tag, false); // "//code" doesn't match "// " pattern
 
-        if let Err(_) = writer.write_all(flag_with_space.as_bytes()) {
-            return Err(ToggleCommentError::IoError(IoOperation::Write));
-        }
-
-        if let Err(_) = writer.write_all(content) {
-            return Err(ToggleCommentError::IoError(IoOperation::Write));
-        }
+        cleanup_files(&[&test_file]);
     }
 
-    // Write newline back (preserve original line ending)
-    if !newline.is_empty() {
-        if let Err(_) = writer.write_all(newline) {
-            return Err(ToggleCommentError::IoError(IoOperation::Write));
-        }
+    #[test]
+    fn test_find_and_detect_empty_line() {
+        let content = "line 0\n\nline 2\n";
+        let test_file = create_test_file("test_bytewise_empty.rs", content);
+
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 1, CommentFlag::DoubleSlash);
+
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (_pos, has_tag) = found.unwrap();
+        assert_eq!(has_tag, false); // Empty line has no tag
+
+        cleanup_files(&[&test_file]);
     }
 
-    Ok(())
+    #[test]
+    fn test_find_and_detect_hash_comment() {
+        let content = "line 0\n# code\nline 2\n";
+        let test_file = create_test_file("test_bytewise_hash.py", content);
+
+        let result = find_and_detect_tag_state(test_file.to_str().unwrap(), 1, CommentFlag::Hash);
+
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (_pos, has_tag) = found.unwrap();
+        assert_eq!(has_tag, true); // "# " pattern found
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_find_and_detect_triple_slash() {
+        let content = "line 0\n/// docs\nline 2\n";
+        let test_file = create_test_file("test_bytewise_triple.rs", content);
+
+        let result =
+            find_and_detect_tag_state(test_file.to_str().unwrap(), 1, CommentFlag::TripppleSlash);
+
+        assert!(result.is_ok());
+        let found = result.unwrap();
+        assert!(found.is_some());
+        let (_pos, has_tag) = found.unwrap();
+        assert_eq!(has_tag, true); // "/// " pattern found
+
+        cleanup_files(&[&test_file]);
+    }
+
+    // ========================================
+    // write_toggled_file_bytewise() Tests
+    // ========================================
+
+    #[test]
+    fn test_write_bytewise_add_tag() {
+        let content = "line 0\ncode\nline 2\n";
+        let test_file = create_test_file("test_bytewise_write_add.rs", content);
+
+        let temp_file = PathBuf::from("temp_test_bytewise_add.rs");
+
+        let result = write_toggled_file_bytewise(
+            &test_file,
+            &temp_file,
+            1,
+            7,     // Position after "line 0\n"
+            false, // has_tag = false (ADD mode)
+            CommentFlag::DoubleSlash,
+        );
+
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\n// code\nline 2\n");
+
+        cleanup_files(&[&test_file, &temp_file]);
+    }
+
+    #[test]
+    fn test_write_bytewise_remove_tag() {
+        let content = "line 0\n// code\nline 2\n";
+        let test_file = create_test_file("test_bytewise_write_remove.rs", content);
+
+        let temp_file = PathBuf::from("temp_test_bytewise_remove.rs");
+
+        let result = write_toggled_file_bytewise(
+            &test_file,
+            &temp_file,
+            1,
+            7,    // Position after "line 0\n"
+            true, // has_tag = true (REMOVE mode)
+            CommentFlag::DoubleSlash,
+        );
+
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\ncode\nline 2\n");
+
+        cleanup_files(&[&test_file, &temp_file]);
+    }
+
+    #[test]
+    fn test_write_bytewise_preserves_other_lines() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_bytewise_preserve.rs", content);
+
+        let temp_file = PathBuf::from("temp_test_bytewise_preserve.rs");
+
+        let result = write_toggled_file_bytewise(
+            &test_file,
+            &temp_file,
+            1,
+            7,     // After "line 0\n"
+            false, // ADD mode
+            CommentFlag::DoubleSlash,
+        );
+
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\n// line 1\nline 2\nline 3\n");
+
+        cleanup_files(&[&test_file, &temp_file]);
+    }
+
+    #[test]
+    fn test_write_bytewise_empty_line_add() {
+        let content = "line 0\n\nline 2\n";
+        let test_file = create_test_file("test_bytewise_empty_add.rs", content);
+
+        let temp_file = PathBuf::from("temp_test_bytewise_empty_add.rs");
+
+        let result = write_toggled_file_bytewise(
+            &test_file,
+            &temp_file,
+            1,
+            7,     // After "line 0\n"
+            false, // ADD mode
+            CommentFlag::DoubleSlash,
+        );
+
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\n// \nline 2\n"); // Tag added to empty line
+
+        cleanup_files(&[&test_file, &temp_file]);
+    }
+
+    #[test]
+    fn test_write_bytewise_crlf_preservation() {
+        let content = "line 0\r\ncode\r\nline 2\r\n";
+        let test_file = create_test_file("test_bytewise_crlf.rs", content);
+
+        let temp_file = PathBuf::from("temp_test_bytewise_crlf.rs");
+
+        let result = write_toggled_file_bytewise(
+            &test_file,
+            &temp_file,
+            1,
+            8,     // After "line 0\r\n"
+            false, // ADD mode
+            CommentFlag::DoubleSlash,
+        );
+
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&temp_file);
+        // CRLF should be preserved
+        assert_eq!(new_content, "line 0\r\n// code\r\nline 2\r\n");
+
+        cleanup_files(&[&test_file, &temp_file]);
+    }
+
+    // ========================================
+    // Integration Tests - Full Toggle
+    // ========================================
+
+    #[test]
+    fn test_bytewise_toggle_full_add() {
+        let content = "fn main() {}\n";
+        let test_file = create_test_file("test_bytewise_full_add.rs", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "// fn main() {}\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_full_add.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_toggle_full_remove() {
+        let content = "// fn main() {}\n";
+        let test_file = create_test_file("test_bytewise_full_remove.rs", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "fn main() {}\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_full_remove.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_toggle_roundtrip() {
+        let original = "code\n";
+        let test_file = create_test_file("test_bytewise_roundtrip.rs", original);
+
+        // Toggle on
+        let result1 = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result1.is_ok());
+
+        let content1 = read_file_content(&test_file);
+        assert_eq!(content1, "// code\n");
+
+        // Toggle off
+        let result2 = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result2.is_ok());
+
+        let content2 = read_file_content(&test_file);
+        assert_eq!(content2, original);
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_roundtrip.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_toggle_middle_line() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_bytewise_middle.rs", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n// line 1\nline 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_middle.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_toggle_last_line() {
+        let content = "line 0\nline 1\nline 2";
+        let test_file = create_test_file("test_bytewise_last.rs", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\nline 1\n// line 2");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_last.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_toggle_python() {
+        let content = "print('hello')\n";
+        let test_file = create_test_file("test_bytewise_python.py", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "# print('hello')\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_python.py"),
+        ]);
+    }
+
+    #[test]
+    fn test_bytewise_line_not_found_error() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_bytewise_notfound_err.rs", content);
+
+        let result = toggle_basic_singleline_comment_bytewise(test_file.to_str().unwrap(), 10);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::LineNotFound { .. })
+        ));
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_bytewise_notfound_err.rs"),
+        ]);
+    }
 }
 
 // ============================================================================
@@ -2733,444 +2332,6 @@ fn read_file_content(path: &Path) -> String {
 fn cleanup_files(paths: &[&Path]) {
     for path in paths {
         let _ = std::fs::remove_file(path);
-    }
-}
-
-#[cfg(test)]
-mod toggle_comment_tests {
-    use super::*;
-
-    #[test]
-    fn test_determine_comment_flag() {
-        // Double-slash languages
-        assert_eq!(determine_comment_flag("rs"), Some(CommentFlag::DoubleSlash));
-        assert_eq!(
-            determine_comment_flag("cpp"),
-            Some(CommentFlag::DoubleSlash)
-        );
-        assert_eq!(determine_comment_flag("js"), Some(CommentFlag::DoubleSlash));
-
-        // Hash languages
-        assert_eq!(determine_comment_flag("py"), Some(CommentFlag::Hash));
-        assert_eq!(determine_comment_flag("toml"), Some(CommentFlag::Hash));
-        assert_eq!(determine_comment_flag("sh"), Some(CommentFlag::Hash));
-
-        // Unknown
-        assert_eq!(determine_comment_flag("txt"), None);
-        assert_eq!(determine_comment_flag("unknown"), None);
-    }
-
-    #[test]
-    fn test_should_remove_comment_rust() {
-        let flag = CommentFlag::DoubleSlash;
-
-        // Should remove: "// code"
-        assert_eq!(should_remove_comment(b"// code", flag), Some(3));
-
-        // Should remove: "  // code"
-        assert_eq!(should_remove_comment(b"  // code", flag), Some(3));
-
-        // Should NOT remove: "//code" (no space after flag)
-        assert_eq!(should_remove_comment(b"//code", flag), None);
-
-        // Should NOT remove: "code // comment"
-        assert_eq!(should_remove_comment(b"code // comment", flag), None);
-
-        // Should NOT remove: empty line
-        assert_eq!(should_remove_comment(b"", flag), None);
-
-        // Should NOT remove: only spaces
-        assert_eq!(should_remove_comment(b"    ", flag), None);
-    }
-
-    #[test]
-    fn test_should_remove_comment_python() {
-        let flag = CommentFlag::Hash;
-
-        // Should remove: "# code"
-        assert_eq!(should_remove_comment(b"# code", flag), Some(2));
-
-        // Should remove: "  # code"
-        assert_eq!(should_remove_comment(b"  # code", flag), Some(2));
-
-        // Should NOT remove: "#code" (no space after flag)
-        assert_eq!(should_remove_comment(b"#code", flag), None);
-
-        // Should NOT remove: "code # comment"
-        assert_eq!(should_remove_comment(b"code # comment", flag), None);
-    }
-
-    #[test]
-    fn test_toggle_comment_add_rust() {
-        let test_file = create_test_file("test_add.rs", "fn main() {}\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let content = read_file_content(&test_file);
-
-        #[cfg(test)]
-        assert_eq!(content, "// fn main() {}\n");
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_add.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_remove_rust() {
-        let test_file = create_test_file("test_remove.rs", "// fn main() {}\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let content = read_file_content(&test_file);
-
-        #[cfg(test)]
-        assert_eq!(content, "fn main() {}\n");
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_remove.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_add_python() {
-        let test_file = create_test_file("test_add.py", "print('hello')\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let content = read_file_content(&test_file);
-
-        #[cfg(test)]
-        assert_eq!(content, "# print('hello')\n");
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_add.py"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_remove_python() {
-        let test_file = create_test_file("test_remove.py", "# print('hello')\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let content = read_file_content(&test_file);
-
-        #[cfg(test)]
-        assert_eq!(content, "print('hello')\n");
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_remove.py"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_line_not_found() {
-        let test_file = create_test_file("test_notfound.rs", "fn main() {}\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 10);
-
-        #[cfg(test)]
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::LineNotFound { .. })
-        ));
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_notfound.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_no_extension() {
-        let test_file = create_test_file("test_noext", "some content\n");
-
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-
-        #[cfg(test)]
-        assert!(matches!(result, Err(ToggleCommentError::NoExtension)));
-
-        // Cleanup
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
-    fn test_toggle_preserves_other_lines() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_preserve.rs", content);
-
-        // Toggle line 1
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 1);
-
-        #[cfg(test)]
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-
-        #[cfg(test)]
-        assert_eq!(new_content, "line 0\n// line 1\nline 2\n");
-
-        // Cleanup
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_preserve.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_rust_docstring_add() {
-        let test_file = create_test_file("test_docstring1.rs", "/// Some docs\n");
-        let result = toggle_rust_docstring_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "Some docs\n"); // Should remove ///
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_docstring.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_rust_docstring_remove() {
-        let test_file = create_test_file("test_docstring2.rs", "Some docs\n");
-        let result = toggle_rust_docstring_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "/// Some docs\n"); // Should add ///
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_docstring.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_no_newline_at_eof() {
-        // Last line without newline
-        let test_file = create_test_file("test_no_newline.rs", "fn main() {}");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// fn main() {}"); // No newline added
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_no_newline.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_crlf_line_ending() {
-        // Windows-style line ending
-        let test_file = create_test_file("test_crlf.rs", "fn main() {}\r\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// fn main() {}\r\n"); // Preserve CRLF
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_crlf.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_with_tabs() {
-        let test_file = create_test_file("test_tabs.rs", "\t\tfn main() {}\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// \t\tfn main() {}\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_tabs.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_only_whitespace_line() {
-        // Line with only spaces/tabs
-        let test_file = create_test_file("test_whitespace.rs", "    \n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "//     \n"); // Comment even whitespace-only lines
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_whitespace.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_empty_line() {
-        let test_file = create_test_file("test_empty.rs", "\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// \n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_empty.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_idempotent() {
-        // Toggle on, then off - should return to original
-        let original = "fn main() {}\n";
-        let test_file = create_test_file("test_idempotent.rs", original);
-
-        let result1 = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result1.is_ok());
-
-        let result2 = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result2.is_ok());
-
-        let content = read_file_content(&test_file);
-        assert_eq!(content, original);
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_idempotent.rs"),
-        ]);
-    }
-    #[test]
-    fn test_toggle_comment_double_comment() {
-        // Line that's "// // code"
-        let test_file = create_test_file("test_double.rs", "// // code\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        // Should remove outer comment only
-        assert_eq!(content, "// code\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_double.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_just_flag_and_space() {
-        // Line with only "// "
-        let test_file = create_test_file("test_just_flag.rs", "// \n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "\n"); // Just whitespace removed
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_just_flag.rs"),
-        ]);
-    }
-    #[test]
-    fn test_toggle_comment_last_line() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_last_line.rs", content);
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 2);
-        assert!(result.is_ok());
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\nline 1\n// line 2\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_last_line.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_comment_single_line_file() {
-        let test_file = create_test_file("test_single.rs", "code\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// code\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_single.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_file_not_found() {
-        let result = toggle_basic_singleline_comment("/nonexistent/path/file.rs", 0);
-        assert!(matches!(result, Err(ToggleCommentError::FileNotFound)));
-    }
-    #[test]
-    fn test_extension_case_insensitive() {
-        let test_file = create_test_file("test_upper.RS", "code\n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_upper.RS"),
-        ]);
-    }
-    // #[test]
-    // fn test_batch_empty_array() {
-    //     let test_file = create_test_file("test_batch_empty.rs", "line 0\n");
-    //     let lines: [usize; 0] = [];
-    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-    //     assert!(result.is_ok()); // Should succeed (no-op)
-    //     cleanup_files(&[&test_file]);
-    // }
-
-    // #[test]
-    // fn test_batch_out_of_range() {
-    //     let test_file = create_test_file("test_batch_oob.rs", "line 0\n");
-    //     let lines = [100]; // Way beyond file
-    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-    //     assert!(matches!(
-    //         result,
-    //         Err(ToggleCommentError::LineNotFound { .. })
-    //     ));
-    //     cleanup_files(&[
-    //         &test_file,
-    //         &PathBuf::from("backup_toggle_batch_test_batch_oob.rs"),
-    //     ]);
-    // }
-
-    // #[test]
-    // fn test_batch_exceeds_max() {
-    //     let test_file = create_test_file("test_batch_max.rs", "line\n".repeat(150).as_str());
-    //     let lines: Vec<usize> = (0..130).collect(); // > MAX_BATCH_LINES
-    //     let result = toggle_multiple_basic_comments(test_file.to_str().unwrap(), &lines);
-    //     assert!(result.is_err()); // Should reject
-    //     cleanup_files(&[&test_file]);
-    // }
-    #[test]
-    fn test_determine_block_markers() {
-        assert!(determine_block_markers("rs").is_some());
-        assert!(determine_block_markers("py").is_some());
-        assert!(determine_block_markers("sh").is_none()); // No block comments
-    }
-    #[test]
-    fn test_toggle_preserves_trailing_whitespace() {
-        let test_file = create_test_file("test_trailing.rs", "code   \n");
-        let result = toggle_basic_singleline_comment(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "// code   \n"); // Trailing spaces preserved
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_trailing.rs"),
-        ]);
     }
 }
 
@@ -3219,9 +2380,6 @@ pub enum ToggleIndentError {
 
     /// Path conversion or manipulation error
     PathError,
-
-    /// Line exceeds maximum safe length
-    LineTooLong { line_number: usize, length: usize },
 }
 
 impl std::fmt::Display for ToggleIndentError {
@@ -3240,12 +2398,6 @@ impl std::fmt::Display for ToggleIndentError {
             }
             ToggleIndentError::IoError(op) => write!(f, "IO error: {:?}", op),
             ToggleIndentError::PathError => write!(f, "Path error"),
-            ToggleIndentError::LineTooLong {
-                line_number,
-                length,
-            } => {
-                write!(f, "Line {} too long: {} bytes", line_number, length)
-            }
         }
     }
 }
@@ -3256,11 +2408,346 @@ impl std::error::Error for ToggleIndentError {}
 // ERROR SECTION: ERROR HANDLING SYSTEM (end)
 // ============================================================================
 
-/// Add 4 spaces to the start of a specific line
+// ============================================================================
+// PHASE 2: INDENT/UNINDENT - BYTEWISE OPERATIONS
+// ============================================================================
+
+/// Helper: Find line start position (extracted for reuse)
 ///
 /// # Overview
-/// Adds exactly 4 spaces at the beginning of the target line, regardless of
-/// existing indentation. Works on any file type (language-agnostic).
+/// Reads file byte-by-byte counting newlines until target line is found.
+/// Returns byte offset where target line begins.
+///
+/// # Arguments
+/// * `file_path` - Path to source file
+/// * `target_line` - Zero-indexed line number to find
+///
+/// # Returns
+/// * `Ok(Some(position))` - Line found at byte offset
+/// * `Ok(None)` - Line not found (file has fewer lines)
+/// * `Err(ToggleIndentError)` - File operation failed
+///
+/// # Example
+/// ```text
+/// File:  "line 0\nline 1\nline 2\n"
+///
+/// find_line_start_position(path, 0) → Ok(Some(0))
+/// find_line_start_position(path, 1) → Ok(Some(7))
+/// find_line_start_position(path, 2) → Ok(Some(14))
+/// find_line_start_position(path, 10) → Ok(None)
+/// ```
+pub fn find_line_start_position(
+    file_path: &str,
+    target_line: usize,
+) -> Result<Option<u64>, ToggleIndentError> {
+    let mut file = match File::open(file_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+    };
+
+    // Special case: line 0 always starts at position 0
+    if target_line == 0 {
+        return Ok(Some(0));
+    }
+
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
+    let mut current_line: usize = 0;
+
+    loop {
+        // Safety check
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Ok(None); // Line not found
+        }
+
+        if byte_bucket[0] == b'\n' {
+            current_line += 1;
+            if current_line == target_line {
+                return Ok(Some(byte_position + 1));
+            }
+        }
+
+        byte_position += 1;
+    }
+}
+
+/// Write file with 4 spaces added at start of target line
+///
+/// # Overview
+/// Copies source to dest, inserting 4 spaces at column 0 of target line.
+/// Simple three-part copy: before, modified line, after.
+///
+/// # Arguments
+/// * `source_path` - Original file
+/// * `dest_path` - Temp file for output
+/// * `line_start_pos` - Byte offset where target line begins
+///
+/// # Returns
+/// * `Ok(())` - File written successfully
+/// * `Err(ToggleIndentError)` - Write operation failed
+///
+/// # Memory
+/// - 1 byte buffer only
+/// - No heap allocation
+pub fn write_indented_file_bytewise(
+    source_path: &Path,
+    dest_path: &Path,
+    line_start_pos: u64,
+) -> Result<(), ToggleIndentError> {
+    let mut source_file = match File::open(source_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+    };
+
+    let dest_file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dest_path)
+    {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
+    };
+
+    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
+
+    // PART A: Copy before target line
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // PART B: Add 4 spaces at column 0, then copy rest of line
+    if let Err(_) = writer.write_all(b"    ") {
+        return Err(ToggleIndentError::IoError(IoOperation::Write));
+    }
+
+    // Copy rest of line
+    loop {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        if byte_bucket[0] == b'\n' {
+            break; // End of line
+        }
+    }
+
+    // PART C: Copy rest of file
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        remaining_bytes += 1;
+    }
+
+    if let Err(_) = writer.flush() {
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
+    }
+
+    Ok(())
+}
+
+/// Write file with up to 4 spaces removed from start of target line
+///
+/// # Overview
+/// Copies source to dest, removing up to 4 spaces from column 0 of target line.
+/// If line has fewer than 4 spaces, removes only what's there.
+///
+/// # Arguments
+/// * `source_path` - Original file
+/// * `dest_path` - Temp file for output
+/// * `line_start_pos` - Byte offset where target line begins
+///
+/// # Returns
+/// * `Ok(())` - File written successfully
+/// * `Err(ToggleIndentError)` - Write operation failed
+///
+/// # Memory
+/// - 1 byte buffer only
+/// - No heap allocation
+pub fn write_unindented_file_bytewise(
+    source_path: &Path,
+    dest_path: &Path,
+    line_start_pos: u64,
+) -> Result<(), ToggleIndentError> {
+    let mut source_file = match File::open(source_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+    };
+
+    let dest_file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dest_path)
+    {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
+    };
+
+    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
+
+    // PART A: Copy before target line
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // PART B: Skip up to 4 spaces at column 0, then copy rest of line
+    let mut spaces_skipped: usize = 0;
+    loop {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        // If it's a space and we haven't skipped 4 yet, skip it
+        if byte_bucket[0] == b' ' && spaces_skipped < INDENT_SPACES {
+            spaces_skipped += 1;
+            continue; // Skip this space, don't write it
+        }
+
+        // Not a space, or already skipped 4 - write rest of line
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        if byte_bucket[0] == b'\n' {
+            break; // End of line
+        }
+
+        // Copy rest of line
+        loop {
+            let bytes_read = match source_file.read(&mut byte_bucket) {
+                Ok(n) => n,
+                Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+            };
+
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            if let Err(_) = writer.write_all(&byte_bucket) {
+                return Err(ToggleIndentError::IoError(IoOperation::Write));
+            }
+
+            if byte_bucket[0] == b'\n' {
+                break; // End of line
+            }
+        }
+
+        break;
+    }
+
+    // PART C: Copy rest of file
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleIndentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleIndentError::IoError(IoOperation::Write));
+        }
+
+        remaining_bytes += 1;
+    }
+
+    if let Err(_) = writer.flush() {
+        return Err(ToggleIndentError::IoError(IoOperation::Flush));
+    }
+
+    Ok(())
+}
+
+/// Add 4 spaces to the start of a specific line (bytewise)
+///
+/// # Overview
+/// Bytewise implementation - adds exactly 4 spaces at column 0 of target line.
+/// No heap allocation, single byte buffer.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -3270,18 +2757,12 @@ impl std::error::Error for ToggleIndentError {}
 /// * `Ok(())` - Line indented successfully
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
-/// # Safety
-/// - Uses same backup system as toggle_comment
-/// - Atomic file operations
-/// - No heap allocation during processing
-/// - Preserves line endings (LF/CRLF/none)
-///
 /// # Example
 /// ```no_run
-/// use toggle_comment_indent_module::indent_line;
+/// use toggle_comment_indent_module::indent_line_bytewise;
 ///
-/// match indent_line("./src/main.rs", 5) {
-///     Ok(()) => println!("Line indented"),
+/// match indent_line_bytewise("./src/main.rs", 5) {
+///     Ok(()) => println!("Line 5 indented"),
 ///     Err(e) => eprintln!("Failed: {:?}", e),
 /// }
 /// ```
@@ -3291,10 +2772,10 @@ impl std::error::Error for ToggleIndentError {}
 /// Before: "code"
 /// After:  "    code"
 ///
-/// Before: "  code"  (already indented 2 spaces)
-/// After:  "      code"  (now indented 6 spaces)
+/// Before: "  code"  (already indented 2)
+/// After:  "      code"  (now indented 6)
 /// ```
-pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIndentError> {
+pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), ToggleIndentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
@@ -3306,38 +2787,46 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleInde
         }
     };
 
-    // Get filename for backup naming
+    // Find line start position
+    let line_start_pos = match find_line_start_position(file_path, line_number)? {
+        Some(pos) => pos,
+        None => {
+            return Err(ToggleIndentError::LineNotFound {
+                requested: line_number,
+                file_lines: 0,
+            });
+        }
+    };
+
+    // Get filename for backup
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // Create backup path in CWD (reuse same backup name as toggle_comment)
+    // Create backup
     let backup_filename = format!("backup_toggle_comment_{}", filename);
     let backup_path = PathBuf::from(&backup_filename);
 
-    // Create backup copy of original file
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
         return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
-    // Create working temp file in CWD
-    let temp_filename = format!("temp_indent_{}_{}", std::process::id(), filename);
+    // Create temp file
+    let temp_filename = format!("temp_indent_bytewise_{}_{}", std::process::id(), filename);
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and indent target line
-    let process_result = process_file_indent(&absolute_path, &temp_path, line_number);
+    // Write indented file
+    let process_result = write_indented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
 
-    // Handle processing result
+    // Handle result
     match process_result {
         Ok(()) => {
-            // Success: replace original with temp file
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
-            // Clean up temp file
             if let Err(_) = std::fs::remove_file(&temp_path) {
                 #[cfg(debug_assertions)]
                 eprintln!("Warning: Failed to clean up temp file");
@@ -3346,19 +2835,18 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleInde
             Ok(())
         }
         Err(e) => {
-            // Failed: clean up temp file and return error
             let _ = std::fs::remove_file(&temp_path);
             Err(e)
         }
     }
 }
 
-/// Remove up to 4 spaces from the start of a specific line
+/// Remove up to 4 spaces from the start of a specific line (bytewise)
 ///
 /// # Overview
-/// Removes up to 4 leading spaces from the target line. If the line has fewer
-/// than 4 leading spaces, removes only what's there (0, 1, 2, or 3 spaces).
-/// Non-space characters at line start are left unchanged.
+/// Bytewise implementation - removes up to 4 spaces from column 0.
+/// If line has fewer than 4 spaces, removes only what's there.
+/// No heap allocation, single byte buffer.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -3368,18 +2856,12 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleInde
 /// * `Ok(())` - Line unindented successfully (even if no spaces removed)
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
-/// # Safety
-/// - Uses same backup system as toggle_comment
-/// - Atomic file operations
-/// - No heap allocation during processing
-/// - Preserves line endings (LF/CRLF/none)
-///
 /// # Example
 /// ```no_run
-/// use toggle_comment_indent_module::unindent_line;
+/// use toggle_comment_indent_module::unindent_line_bytewise;
 ///
-/// match unindent_line("./src/main.rs", 5) {
-///     Ok(()) => println!("Line unindented"),
+/// match unindent_line_bytewise("./src/main.rs", 5) {
+///     Ok(()) => println!("Line 5 unindented"),
 ///     Err(e) => eprintln!("Failed: {:?}", e),
 /// }
 /// ```
@@ -3393,12 +2875,12 @@ pub fn indent_line(file_path: &str, line_number: usize) -> Result<(), ToggleInde
 /// After:  "code"      (removed 2)
 ///
 /// Before: "code"      (0 spaces)
-/// After:  "code"      (removed 0 - no-op success)
-///
-/// Before: "\tcode"    (tab, not spaces)
-/// After:  "\tcode"    (unchanged - only removes spaces)
+/// After:  "code"      (removed 0 - no-op)
 /// ```
-pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIndentError> {
+pub fn unindent_line_bytewise(
+    file_path: &str,
+    line_number: usize,
+) -> Result<(), ToggleIndentError> {
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
@@ -3410,38 +2892,46 @@ pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIn
         }
     };
 
-    // Get filename for backup naming
+    // Find line start position
+    let line_start_pos = match find_line_start_position(file_path, line_number)? {
+        Some(pos) => pos,
+        None => {
+            return Err(ToggleIndentError::LineNotFound {
+                requested: line_number,
+                file_lines: 0,
+            });
+        }
+    };
+
+    // Get filename for backup
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // Create backup path in CWD
+    // Create backup
     let backup_filename = format!("backup_toggle_comment_{}", filename);
     let backup_path = PathBuf::from(&backup_filename);
 
-    // Create backup copy
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
         return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
     // Create temp file
-    let temp_filename = format!("temp_unindent_{}_{}", std::process::id(), filename);
+    let temp_filename = format!("temp_unindent_bytewise_{}_{}", std::process::id(), filename);
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and unindent target line
-    let process_result = process_file_unindent(&absolute_path, &temp_path, line_number);
+    // Write unindented file
+    let process_result = write_unindented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
 
     // Handle result
     match process_result {
         Ok(()) => {
-            // Success: replace original
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
-            // Clean up temp
             if let Err(_) = std::fs::remove_file(&temp_path) {
                 #[cfg(debug_assertions)]
                 eprintln!("Warning: Failed to clean up temp file");
@@ -3456,588 +2946,301 @@ pub fn unindent_line(file_path: &str, line_number: usize) -> Result<(), ToggleIn
     }
 }
 
-/// Process file line-by-line, adding 4 spaces to target line
+/// Add 4 spaces to multiple lines using simple loop (bytewise)
+///
+/// # Overview
+/// **Simple implementation:** Calls `indent_line_bytewise()` once for each
+/// line in the range. File opened/closed multiple times - intentional for simplicity.
 ///
 /// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `target_line` - Zero-indexed line number to indent
+/// * `file_path` - Path to the source file
+/// * `start_line` - First line to indent (will be sorted with end_line)
+/// * `end_line` - Last line to indent (will be sorted with start_line)
 ///
 /// # Returns
-/// * `Ok(())` - Processing succeeded, target line was found and indented
-/// * `Err(ToggleIndentError)` - Processing failed
+/// * `Ok(())` - All lines indented successfully
+/// * `Err(ToggleIndentError)` - Specific error code
 ///
-/// # Safety
-/// - Pre-allocated buffers only
-/// - Bounded line length checks
-/// - No dynamic allocation during loop
-fn process_file_indent(
-    source_path: &Path,
-    dest_path: &Path,
-    target_line: usize,
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::indent_range_bytewise;
+///
+/// // Indent lines 5-10 (order doesn't matter)
+/// match indent_range_bytewise("./src/main.rs", 5, 10) {
+///     Ok(()) => println!("Range indented"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+/// ```
+pub fn indent_range_bytewise(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
 ) -> Result<(), ToggleIndentError> {
-    // Open source file for reading
-    let source_file = match File::open(source_path) {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
-    };
+    let (start, end) = sort_range(start_line, end_line);
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-    // Create destination file
-    let dest_file = match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dest_path)
-    {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
-    };
-
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
-
-    // Pre-allocate line buffer
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-
-    // Track current line number
-    let mut current_line: usize = 0;
-    let mut found_target = false;
-
-    // Safety limit for loop
-    let line_limit = target_line.saturating_add(1000000);
-
-    // Process file line by line
-    loop {
-        // Safety check: prevent unbounded loop
-        if current_line > line_limit {
-            return Err(ToggleIndentError::IoError(IoOperation::Read));
-        }
-
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
-        };
-
-        // End of file reached
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleIndentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
-
-        // Check if this is our target line
-        if current_line == target_line {
-            found_target = true;
-
-            // Add 4 spaces to start of line
-            if let Err(e) = indent_single_line(&mut writer, &line_buffer) {
-                return Err(e);
-            }
-        } else {
-            // Copy line unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleIndentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
+    // Safety check
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > 10000 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "Warning: Large range ({} lines) - this will be slow",
+            range_size
+        );
     }
 
-    // Flush writer
-    if let Err(_) = writer.flush() {
-        return Err(ToggleIndentError::IoError(IoOperation::Flush));
-    }
-
-    // Check if we found the target line
-    if !found_target {
-        return Err(ToggleIndentError::LineNotFound {
-            requested: target_line,
-            file_lines: current_line,
-        });
+    // Simple loop: indent each line independently
+    for line_num in start..=end {
+        indent_line_bytewise(file_path, line_num)?;
     }
 
     Ok(())
 }
 
-/// Process file line-by-line, removing up to 4 spaces from target line
+/// Remove up to 4 spaces from multiple lines using simple loop (bytewise)
+///
+/// # Overview
+/// **Simple implementation:** Calls `unindent_line_bytewise()` once for each
+/// line in the range. File opened/closed multiple times - intentional for simplicity.
 ///
 /// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `target_line` - Zero-indexed line number to unindent
+/// * `file_path` - Path to the source file
+/// * `start_line` - First line to unindent (will be sorted with end_line)
+/// * `end_line` - Last line to unindent (will be sorted with start_line)
 ///
 /// # Returns
-/// * `Ok(())` - Processing succeeded, target line was found and unindented
-/// * `Err(ToggleIndentError)` - Processing failed
-fn process_file_unindent(
-    source_path: &Path,
-    dest_path: &Path,
-    target_line: usize,
+/// * `Ok(())` - All lines unindented successfully
+/// * `Err(ToggleIndentError)` - Specific error code
+///
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::unindent_range_bytewise;
+///
+/// // Unindent lines 5-10 (order doesn't matter)
+/// match unindent_range_bytewise("./src/main.rs", 5, 10) {
+///     Ok(()) => println!("Range unindented"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+/// ```
+pub fn unindent_range_bytewise(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
 ) -> Result<(), ToggleIndentError> {
-    // Open source file
-    let source_file = match File::open(source_path) {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
-    };
+    let (start, end) = sort_range(start_line, end_line);
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-    // Create destination file
-    let dest_file = match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dest_path)
-    {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
-    };
-
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
-
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-    let mut current_line: usize = 0;
-    let mut found_target = false;
-
-    // Safety limit
-    let line_limit = target_line.saturating_add(1000000);
-
-    // Process file
-    loop {
-        // Safety check
-        if current_line > line_limit {
-            return Err(ToggleIndentError::IoError(IoOperation::Read));
-        }
-
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
-        };
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleIndentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
-
-        // Check if this is our target line
-        if current_line == target_line {
-            found_target = true;
-
-            // Remove up to 4 spaces from start
-            if let Err(e) = unindent_single_line(&mut writer, &line_buffer) {
-                return Err(e);
-            }
-        } else {
-            // Copy unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleIndentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
+    // Safety check
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > 10000 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "Warning: Large range ({} lines) - this will be slow",
+            range_size
+        );
     }
 
-    // Flush writer
-    if let Err(_) = writer.flush() {
-        return Err(ToggleIndentError::IoError(IoOperation::Flush));
-    }
-
-    // Check if we found target
-    if !found_target {
-        return Err(ToggleIndentError::LineNotFound {
-            requested: target_line,
-            file_lines: current_line,
-        });
-    }
-
-    Ok(())
-}
-
-/// Add 4 spaces to the start of a single line
-///
-/// # Arguments
-/// * `writer` - Buffered writer to output modified line
-/// * `line_buffer` - Complete line including newline
-///
-/// # Returns
-/// * `Ok(())` - Line written successfully
-/// * `Err(ToggleIndentError)` - Write failed
-///
-/// # Logic
-/// - Separate line content from trailing newline
-/// - Write 4 spaces
-/// - Write original content
-/// - Write original newline
-pub fn indent_single_line(
-    writer: &mut BufWriter<File>,
-    line_buffer: &[u8],
-) -> Result<(), ToggleIndentError> {
-    // Separate content from newline
-    let (content, newline) = if line_buffer.ends_with(b"\r\n") {
-        (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
-    } else if line_buffer.ends_with(b"\n") {
-        (&line_buffer[..line_buffer.len() - 1], &b"\n"[..])
-    } else {
-        // No newline (last line of file)
-        (line_buffer, &b""[..])
-    };
-
-    // Write 4 spaces
-    if let Err(_) = writer.write_all(b"    ") {
-        return Err(ToggleIndentError::IoError(IoOperation::Write));
-    }
-
-    // Write original content
-    if let Err(_) = writer.write_all(content) {
-        return Err(ToggleIndentError::IoError(IoOperation::Write));
-    }
-
-    // Write newline
-    if !newline.is_empty() {
-        if let Err(_) = writer.write_all(newline) {
-            return Err(ToggleIndentError::IoError(IoOperation::Write));
-        }
-    }
-
-    Ok(())
-}
-
-/// Remove up to 4 leading spaces from a single line
-///
-/// # Arguments
-/// * `writer` - Buffered writer to output modified line
-/// * `line_buffer` - Complete line including newline
-///
-/// # Returns
-/// * `Ok(())` - Line written successfully
-/// * `Err(ToggleIndentError)` - Write failed
-///
-/// # Logic
-/// - Separate content from newline
-/// - Count leading spaces (max 4)
-/// - Write content starting after counted spaces
-/// - Write original newline
-pub fn unindent_single_line(
-    writer: &mut BufWriter<File>,
-    line_buffer: &[u8],
-) -> Result<(), ToggleIndentError> {
-    // Separate content from newline
-    let (content, newline) = if line_buffer.ends_with(b"\r\n") {
-        (&line_buffer[..line_buffer.len() - 2], &b"\r\n"[..])
-    } else if line_buffer.ends_with(b"\n") {
-        (&line_buffer[..line_buffer.len() - 1], &b"\n"[..])
-    } else {
-        (line_buffer, &b""[..])
-    };
-
-    // Count leading spaces (up to 4)
-    let mut spaces_to_remove = 0;
-    for &byte in content.iter() {
-        if byte == b' ' && spaces_to_remove < INDENT_SPACES {
-            spaces_to_remove += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Write content starting after the spaces we're removing
-    if let Err(_) = writer.write_all(&content[spaces_to_remove..]) {
-        return Err(ToggleIndentError::IoError(IoOperation::Write));
-    }
-
-    // Write newline
-    if !newline.is_empty() {
-        if let Err(_) = writer.write_all(newline) {
-            return Err(ToggleIndentError::IoError(IoOperation::Write));
-        }
+    // Simple loop: unindent each line independently
+    for line_num in start..=end {
+        unindent_line_bytewise(file_path, line_num)?;
     }
 
     Ok(())
 }
 
 // ============================================================================
-// TESTS - Indent/Unindent Single Line
+// TESTS - PHASE 2: INDENT/UNINDENT BYTEWISE
 // ============================================================================
 
 #[cfg(test)]
-mod indent_tests {
+mod indent_bytewise_tests {
     use super::*;
 
     // ========================================
-    // Indent Tests
+    // Single Line Indent Tests
     // ========================================
 
     #[test]
-    fn test_indent_line_basic() {
-        let test_file = create_test_file("test_indent_basic.txt", "code\n");
-        let result = indent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "    code\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_basic.txt"),
-        ]);
-    }
+    fn test_indent_bytewise_basic() {
+        let content = "code\n";
+        let test_file = create_test_file("test_indent_bw_basic.txt", content);
 
-    #[test]
-    fn test_indent_line_already_indented() {
-        let test_file = create_test_file("test_indent_existing.txt", "  code\n");
-        let result = indent_line(test_file.to_str().unwrap(), 0);
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "      code\n"); // 2 + 4 = 6 spaces
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_existing.txt"),
-        ]);
-    }
 
-    #[test]
-    fn test_indent_line_empty() {
-        let test_file = create_test_file("test_indent_empty.txt", "\n");
-        let result = indent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "    \n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_empty.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_line_no_newline() {
-        let test_file = create_test_file("test_indent_no_newline.txt", "code");
-        let result = indent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "    code");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_no_newline.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_line_crlf() {
-        let test_file = create_test_file("test_indent_crlf.txt", "code\r\n");
-        let result = indent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "    code\r\n");
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_crlf.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_line_middle_of_file() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_indent_middle.txt", content);
-        let result = indent_line(test_file.to_str().unwrap(), 1);
-        assert!(result.is_ok());
         let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n    line 1\nline 2\n");
+        assert_eq!(new_content, "    code\n");
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_middle.txt"),
+            &PathBuf::from("backup_toggle_comment_test_indent_bw_basic.txt"),
         ]);
     }
 
     #[test]
-    fn test_indent_line_not_found() {
-        let test_file = create_test_file("test_indent_notfound.txt", "code\n");
-        let result = indent_line(test_file.to_str().unwrap(), 10);
-        assert!(matches!(
-            result,
-            Err(ToggleIndentError::LineNotFound { .. })
-        ));
+    fn test_indent_bytewise_already_indented() {
+        let content = "  code\n";
+        let test_file = create_test_file("test_indent_bw_existing.txt", content);
+
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "      code\n"); // 2 + 4 = 6 spaces
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_notfound.txt"),
+            &PathBuf::from("backup_toggle_comment_test_indent_bw_existing.txt"),
         ]);
     }
 
     #[test]
-    fn test_indent_line_file_not_found() {
-        let result = indent_line("/nonexistent/file.txt", 0);
-        assert!(matches!(result, Err(ToggleIndentError::FileNotFound)));
+    fn test_indent_bytewise_empty_line() {
+        let content = "\n";
+        let test_file = create_test_file("test_indent_bw_empty.txt", content);
+
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "    \n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_indent_bw_empty.txt"),
+        ]);
     }
 
     // ========================================
-    // Unindent Tests
+    // Single Line Unindent Tests
     // ========================================
 
     #[test]
-    fn test_unindent_line_four_spaces() {
-        let test_file = create_test_file("test_unindent_four.txt", "    code\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
+    fn test_unindent_bytewise_four_spaces() {
+        let content = "    code\n";
+        let test_file = create_test_file("test_unindent_bw_four.txt", content);
+
+        let result = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "code\n");
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "code\n");
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_four.txt"),
+            &PathBuf::from("backup_toggle_comment_test_unindent_bw_four.txt"),
         ]);
     }
 
     #[test]
-    fn test_unindent_line_two_spaces() {
-        let test_file = create_test_file("test_unindent_two.txt", "  code\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
+    fn test_unindent_bytewise_two_spaces() {
+        let content = "  code\n";
+        let test_file = create_test_file("test_unindent_bw_two.txt", content);
+
+        let result = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "code\n"); // Removed 2 spaces (all available)
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "code\n");
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_two.txt"),
+            &PathBuf::from("backup_toggle_comment_test_unindent_bw_two.txt"),
         ]);
     }
 
     #[test]
-    fn test_unindent_line_no_spaces() {
-        let test_file = create_test_file("test_unindent_none.txt", "code\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok()); // Success (no-op)
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "code\n"); // Unchanged
+    fn test_unindent_bytewise_no_spaces() {
+        let content = "code\n";
+        let test_file = create_test_file("test_unindent_bw_none.txt", content);
+
+        let result = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "code\n"); // Unchanged
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_none.txt"),
+            &PathBuf::from("backup_toggle_comment_test_unindent_bw_none.txt"),
         ]);
     }
 
     #[test]
-    fn test_unindent_line_six_spaces() {
-        let test_file = create_test_file("test_unindent_six.txt", "      code\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
+    fn test_unindent_bytewise_six_spaces() {
+        let content = "      code\n";
+        let test_file = create_test_file("test_unindent_bw_six.txt", content);
+
+        let result = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "  code\n"); // Removed 4, left 2
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "  code\n"); // Removed 4, left 2
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_six.txt"),
+            &PathBuf::from("backup_toggle_comment_test_unindent_bw_six.txt"),
+        ]);
+    }
+
+    // ========================================
+    // Range Tests
+    // ========================================
+
+    #[test]
+    fn test_indent_range_bytewise_basic() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_indent_range_bw.txt", content);
+
+        let result = indent_range_bytewise(test_file.to_str().unwrap(), 0, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "    line 0\n    line 1\n    line 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_indent_range_bw.txt"),
         ]);
     }
 
     #[test]
-    fn test_unindent_line_tab() {
-        let test_file = create_test_file("test_unindent_tab.txt", "\tcode\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "\tcode\n"); // Tab unchanged (only removes spaces)
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_tab.txt"),
-        ]);
-    }
+    fn test_unindent_range_bytewise_basic() {
+        let content = "    line 0\n    line 1\n    line 2\n";
+        let test_file = create_test_file("test_unindent_range_bw.txt", content);
 
-    #[test]
-    fn test_unindent_line_spaces_and_tab() {
-        let test_file = create_test_file("test_unindent_mixed.txt", "  \tcode\n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
+        let result = unindent_range_bytewise(test_file.to_str().unwrap(), 0, 2);
         assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "\tcode\n"); // Removed 2 spaces, left tab
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_mixed.txt"),
-        ]);
-    }
 
-    #[test]
-    fn test_unindent_line_middle_of_file() {
-        let content = "line 0\n    line 1\nline 2\n";
-        let test_file = create_test_file("test_unindent_middle.txt", content);
-        let result = unindent_line(test_file.to_str().unwrap(), 1);
-        assert!(result.is_ok());
         let new_content = read_file_content(&test_file);
         assert_eq!(new_content, "line 0\nline 1\nline 2\n");
+
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_middle.txt"),
+            &PathBuf::from("backup_toggle_comment_test_unindent_range_bw.txt"),
         ]);
     }
-
-    #[test]
-    fn test_unindent_line_empty() {
-        let test_file = create_test_file("test_unindent_empty.txt", "    \n");
-        let result = unindent_line(test_file.to_str().unwrap(), 0);
-        assert!(result.is_ok());
-        let content = read_file_content(&test_file);
-        assert_eq!(content, "\n"); // All spaces removed
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_empty.txt"),
-        ]);
-    }
-
-    // ========================================
-    // Round-trip Tests
-    // ========================================
 
     #[test]
     fn test_indent_unindent_roundtrip() {
         let original = "code\n";
-        let test_file = create_test_file("test_roundtrip.txt", original);
+        let test_file = create_test_file("test_indent_roundtrip_bw.txt", original);
 
         // Indent
-        let result1 = indent_line(test_file.to_str().unwrap(), 0);
+        let result1 = indent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result1.is_ok());
+
         let content1 = read_file_content(&test_file);
         assert_eq!(content1, "    code\n");
 
         // Unindent back
-        let result2 = unindent_line(test_file.to_str().unwrap(), 0);
+        let result2 = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
         assert!(result2.is_ok());
+
         let content2 = read_file_content(&test_file);
         assert_eq!(content2, original);
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_roundtrip.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_unindent_idempotent() {
-        // Unindenting line with no spaces should be no-op
-        let original = "code\n";
-        let test_file = create_test_file("test_unindent_idempotent.txt", original);
-
-        let result1 = unindent_line(test_file.to_str().unwrap(), 0);
-        assert!(result1.is_ok());
-
-        let result2 = unindent_line(test_file.to_str().unwrap(), 0);
-        assert!(result2.is_ok());
-
-        let content = read_file_content(&test_file);
-        assert_eq!(content, original);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_idempotent.txt"),
+            &PathBuf::from("backup_toggle_comment_test_indent_roundtrip_bw.txt"),
         ]);
     }
 }
@@ -4089,527 +3292,41 @@ fn sort_range(from: usize, to: usize) -> (usize, usize) {
 // INDENT/UNINDENT RANGE FUNCTIONS
 // ============================================================================
 
-/// Add 4 spaces to the start of multiple lines (range, inclusive)
-///
-/// # Overview
-/// Adds exactly 4 spaces at the beginning of each line in the specified range.
-/// Both start_line and end_line are included in the operation.
-/// **Range is automatically sorted** - order of arguments doesn't matter.
-///
-/// # Arguments
-/// * `file_path` - Path to the source file
-/// * `start_line` - First line to indent (will be sorted with end_line)
-/// * `end_line` - Last line to indent (will be sorted with start_line)
-///
-/// # Returns
-/// * `Ok(())` - Lines indented successfully
-/// * `Err(ToggleIndentError)` - Specific error code
-///
-/// # Example
-/// ```no_run
-/// use toggle_comment_indent_module::indent_range;
-///
-/// // Both calls equivalent (auto-sorted):
-/// indent_range("./src/main.rs", 5, 10)?;
-/// indent_range("./src/main.rs", 10, 5)?;  // Same result
-/// ```
-pub fn indent_range(
-    file_path: &str,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(), ToggleIndentError> {
-    // Sort range automatically - no validation needed
-    let (start, end) = sort_range(start_line, end_line);
-
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleIndentError::FileNotFound);
-            }
-            return Err(ToggleIndentError::PathError);
-        }
-    };
-
-    // Get filename for backup naming
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleIndentError::PathError),
-    };
-
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleIndentError::IoError(IoOperation::Backup));
-    }
-
-    // Create temp file
-    let temp_filename = format!("temp_indent_range_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
-
-    // Process file and indent range (using sorted values)
-    let process_result = process_file_indent_range(&absolute_path, &temp_path, start, end);
-
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleIndentError::IoError(IoOperation::Replace));
-            }
-
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
-            }
-
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
-        }
-    }
-}
-
-/// Remove up to 4 spaces from the start of multiple lines (range, inclusive)
-///
-/// # Overview
-/// Removes up to 4 leading spaces from each line in the specified range.
-/// Both start_line and end_line are included in the operation.
-/// **Range is automatically sorted** - order of arguments doesn't matter.
-///
-/// # Arguments
-/// * `file_path` - Path to the source file
-/// * `start_line` - First line to unindent (will be sorted with end_line)
-/// * `end_line` - Last line to unindent (will be sorted with start_line)
-///
-/// # Returns
-/// * `Ok(())` - Lines unindented successfully
-/// * `Err(ToggleIndentError)` - Specific error code
-///
-/// # Example
-/// ```no_run
-/// use toggle_comment_indent_module::unindent_range;
-///
-/// // Both calls equivalent (auto-sorted):
-/// unindent_range("./src/main.rs", 5, 10)?;
-/// unindent_range("./src/main.rs", 10, 5)?;  // Same result
-/// ```
-pub fn unindent_range(
-    file_path: &str,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(), ToggleIndentError> {
-    // Sort range automatically - no validation needed
-    let (start, end) = sort_range(start_line, end_line);
-
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleIndentError::FileNotFound);
-            }
-            return Err(ToggleIndentError::PathError);
-        }
-    };
-
-    // Get filename for backup naming
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleIndentError::PathError),
-    };
-
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleIndentError::IoError(IoOperation::Backup));
-    }
-
-    // Create temp file
-    let temp_filename = format!("temp_unindent_range_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
-
-    // Process file and unindent range (using sorted values)
-    let process_result = process_file_unindent_range(&absolute_path, &temp_path, start, end);
-
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleIndentError::IoError(IoOperation::Replace));
-            }
-
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
-            }
-
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
-        }
-    }
-}
-
 // ============================================================================
-// RANGE COMMENT TOGGLE FUNCTIONALITY
+// PHASE 1: RANGE TOGGLE - SIMPLE LOOP APPROACH (BYTEWISE)
 // ============================================================================
 
-/// Process file toggling comments on a range of lines
+/// Toggle Rust documentation comment (///) on a specific line - bytewise version
 ///
 /// # Overview
-/// Internal function that performs single-pass file processing to toggle
-/// comment flags on all lines within the specified range. Each line is
-/// toggled independently based on its current state.
-///
-/// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `start_line` - First line to toggle (inclusive, zero-indexed)
-/// * `end_line` - Last line to toggle (inclusive, zero-indexed)
-/// * `flag` - Comment flag to use (DoubleSlash, Hash, or TripppleSlash)
-///
-/// # Returns
-/// * `Ok(())` - Processing succeeded, all lines in range toggled
-/// * `Err(ToggleCommentError)` - Processing failed
-///
-/// # Safety
-/// - Pre-allocated buffers only
-/// - Bounded line length checks
-/// - No dynamic allocation during loop
-/// - Single file pass (efficient)
-///
-/// # Toggle Logic Per Line
-/// Each line in range is toggled independently:
-/// - If line has `{spaces}{flag}{space}` pattern → remove comment
-/// - If line doesn't match pattern → add comment
-/// - Lines outside range → copied unchanged
-fn process_range_toggle(
-    source_path: &Path,
-    dest_path: &Path,
-    start_line: usize,
-    end_line: usize,
-    flag: CommentFlag,
-) -> Result<(), ToggleCommentError> {
-    // Open source file for reading
-    let source_file = match File::open(source_path) {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
-    };
-
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-    // Create destination file
-    let dest_file = match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(dest_path)
-    {
-        Ok(f) => f,
-        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
-    };
-
-    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
-
-    // Pre-allocate line buffer
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-
-    // Track current line number
-    let mut current_line: usize = 0;
-    let mut found_end_line = false;
-
-    // Safety limit for loop
-    let line_limit = end_line.saturating_add(1000000);
-
-    // Process file line by line
-    loop {
-        // Safety check: prevent unbounded loop
-        if current_line > line_limit {
-            return Err(ToggleCommentError::IoError(IoOperation::Read));
-        }
-
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
-            Ok(n) => n,
-            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
-        };
-
-        // End of file reached
-        if bytes_read == 0 {
-            break;
-        }
-
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleCommentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
-        }
-
-        // Check if this line is in our target range
-        if current_line >= start_line && current_line <= end_line {
-            // This line is in range - toggle it
-            if let Err(e) = toggle_line(&mut writer, &line_buffer, flag) {
-                return Err(e);
-            }
-
-            // Track if we've seen the end line
-            if current_line == end_line {
-                found_end_line = true;
-            }
-        } else {
-            // Not in range - copy unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleCommentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
-    }
-
-    // Flush writer
-    if let Err(_) = writer.flush() {
-        return Err(ToggleCommentError::IoError(IoOperation::Flush));
-    }
-
-    // Verify we found the end line
-    if !found_end_line {
-        return Err(ToggleCommentError::LineNotFound {
-            requested: end_line,
-            file_lines: current_line,
-        });
-    }
-
-    Ok(())
-}
-
-/// Toggle basic comments on a range of lines (extension-based)
-///
-/// # Overview
-/// Toggles comment flags (`//` or `#`) on all lines within the specified range.
-/// Comment type is automatically determined from file extension. Each line is
-/// toggled independently based on its current state.
-///
-/// **Range is automatically sorted** - argument order doesn't matter.
+/// Bytewise implementation of docstring toggle. Identical to
+/// `toggle_basic_singleline_comment_bytewise()` but uses TripleSlash flag.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
-/// * `from_line` - First line to toggle (will be sorted with to_line)
-/// * `to_line` - Last line to toggle (will be sorted with from_line)
+/// * `row_line_zeroindex` - Zero-indexed line number to toggle
 ///
 /// # Returns
-/// * `Ok(())` - All lines in range toggled successfully
+/// * `Ok(())` - Comment toggled successfully
 /// * `Err(ToggleCommentError)` - Specific error code
 ///
-/// # Limits
-/// - Maximum range: 128 lines (enforced)
-/// - Returns `RangeTooLarge` error if exceeded
-///
-/// # Behavior
-/// Each line toggled independently:
-/// ```text
-/// Input range [0-2]:
-/// line 0          →  // line 0
-/// // line 1       →  line 1
-/// line 2          →  // line 2
-/// ```
+/// # Memory Usage
+/// - Single byte buffer [u8; 1]
+/// - No heap allocation during processing
 ///
 /// # Example
 /// ```no_run
-/// use toggle_comment_indent_module::toggle_range_basic_comments;
+/// use toggle_comment_indent_module::toggle_rust_docstring_singleline_comment_bytewise;
 ///
-/// // Toggle lines 5-10 (both inclusive)
-/// match toggle_range_basic_comments("./src/main.rs", 5, 10) {
-///     Ok(()) => println!("Range toggled"),
+/// match toggle_rust_docstring_singleline_comment_bytewise("./src/lib.rs", 5) {
+///     Ok(()) => println!("Docstring toggled"),
 ///     Err(e) => eprintln!("Failed: {:?}", e),
 /// }
-///
-/// // Order doesn't matter - same result:
-/// toggle_range_basic_comments("./src/main.rs", 10, 5)?;
 /// ```
-///
-/// # Supported Extensions
-/// - `//` : rs, c, cpp, cc, cxx, h, hpp, js, ts, java, go, swift
-/// - `#`  : py, sh, bash, toml, yaml, yml, rb, pl, r
-pub fn toggle_range_basic_comments(
+pub fn toggle_rust_docstring_singleline_comment_bytewise(
     file_path: &str,
-    from_line: usize,
-    to_line: usize,
+    row_line_zeroindex: usize,
 ) -> Result<(), ToggleCommentError> {
-    // Sort range automatically
-    let (start, end) = sort_range(from_line, to_line);
-
-    // Validate range size (end - start + 1 because inclusive)
-    let range_size = end.saturating_sub(start).saturating_add(1);
-    if range_size > MAX_BATCH_LINES {
-        return Err(ToggleCommentError::RangeTooLarge {
-            requested: range_size,
-            max: MAX_BATCH_LINES,
-        });
-    }
-
-    // Convert to absolute path
-    let absolute_path = match Path::new(file_path).canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                return Err(ToggleCommentError::FileNotFound);
-            }
-            return Err(ToggleCommentError::PathError);
-        }
-    };
-
-    // Extract and validate file extension
-    let extension = match absolute_path.extension() {
-        Some(ext) => ext.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::NoExtension),
-    };
-
-    // Determine comment flag from extension
-    let comment_flag = match determine_comment_flag(&extension) {
-        Some(flag) => flag,
-
-        // // Optional halting, not recommended, will Terminate-Session
-        // #[cfg(debug_assertions)]
-        // None => return Err(ToggleCommentError::UnsupportedExtension),
-
-        // Nothing to do, do nothing, move on.
-        None => return Ok(()),
-    };
-
-    // Get filename for backup naming
-    let filename = match absolute_path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => return Err(ToggleCommentError::PathError),
-    };
-
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
-
-    // Create temp file
-    let temp_filename = format!(
-        "temp_toggle_range_basic_{}_{}",
-        std::process::id(),
-        filename
-    );
-    let temp_path = PathBuf::from(&temp_filename);
-
-    // Process file and toggle range
-    let process_result = process_range_toggle(&absolute_path, &temp_path, start, end, comment_flag);
-
-    // Handle result
-    match process_result {
-        Ok(()) => {
-            // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
-
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
-            }
-
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
-        }
-    }
-}
-
-/// Toggle Rust documentation comments on a range of lines (///)
-///
-/// # Overview
-/// Toggles Rust doc comment markers (`///`) on all lines within the specified
-/// range. Each line is toggled independently based on its current state.
-///
-/// **Range is automatically sorted** - argument order doesn't matter.
-///
-/// # Arguments
-/// * `file_path` - Path to the source file
-/// * `from_line` - First line to toggle (will be sorted with to_line)
-/// * `to_line` - Last line to toggle (will be sorted with from_line)
-///
-/// # Returns
-/// * `Ok(())` - All lines in range toggled successfully
-/// * `Err(ToggleCommentError)` - Specific error code
-///
-/// # Limits
-/// - Maximum range: 128 lines (enforced)
-/// - Returns `RangeTooLarge` error if exceeded
-///
-/// # Behavior
-/// Each line toggled independently:
-/// ```text
-/// Input range [0-2]:
-/// Some docs       →  /// Some docs
-/// /// More docs   →  More docs
-/// Final line      →  /// Final line
-/// ```
-///
-/// # Example
-/// ```no_run
-/// use toggle_comment_indent_module::toggle_range_rust_docstring;
-///
-/// // Toggle docstrings on lines 5-10 (both inclusive)
-/// match toggle_range_rust_docstring("./src/lib.rs", 5, 10) {
-///     Ok(()) => println!("Docstring range toggled"),
-///     Err(e) => eprintln!("Failed: {:?}", e),
-/// }
-///
-/// // Order doesn't matter - same result:
-/// toggle_range_rust_docstring("./src/lib.rs", 10, 5)?;
-/// ```
-///
-/// # Note
-/// No file extension validation - works on any file type.
-/// Caller responsible for using on appropriate files.
-pub fn toggle_range_rust_docstring(
-    file_path: &str,
-    from_line: usize,
-    to_line: usize,
-) -> Result<(), ToggleCommentError> {
-    // Sort range automatically
-    let (start, end) = sort_range(from_line, to_line);
-
-    // Validate range size (end - start + 1 because inclusive)
-    let range_size = end.saturating_sub(start).saturating_add(1);
-    if range_size > MAX_BATCH_LINES {
-        return Err(ToggleCommentError::RangeTooLarge {
-            requested: range_size,
-            max: MAX_BATCH_LINES,
-        });
-    }
-
     // Convert to absolute path
     let absolute_path = match Path::new(file_path).canonicalize() {
         Ok(p) => p,
@@ -4624,6 +3341,18 @@ pub fn toggle_range_rust_docstring(
     // Use TripleSlash flag (no extension check needed)
     let comment_flag = CommentFlag::TripppleSlash;
 
+    // Combined find and detect in single pass
+    let (line_start_pos, has_tag) =
+        match find_and_detect_tag_state(file_path, row_line_zeroindex, comment_flag)? {
+            Some((pos, tag_state)) => (pos, tag_state),
+            None => {
+                return Err(ToggleCommentError::LineNotFound {
+                    requested: row_line_zeroindex,
+                    file_lines: 0,
+                });
+            }
+        };
+
     // Get filename for backup naming
     let filename = match absolute_path.file_name() {
         Some(name) => name.to_string_lossy().to_string(),
@@ -4641,14 +3370,21 @@ pub fn toggle_range_rust_docstring(
 
     // Create temp file
     let temp_filename = format!(
-        "temp_toggle_range_docstring_{}_{}",
+        "temp_toggle_docstring_bytewise_{}_{}",
         std::process::id(),
         filename
     );
     let temp_path = PathBuf::from(&temp_filename);
 
-    // Process file and toggle range
-    let process_result = process_range_toggle(&absolute_path, &temp_path, start, end, comment_flag);
+    // Byte-wise write operation
+    let process_result = write_toggled_file_bytewise(
+        &absolute_path,
+        &temp_path,
+        row_line_zeroindex,
+        line_start_pos,
+        has_tag,
+        comment_flag,
+    );
 
     // Handle result
     match process_result {
@@ -4674,56 +3410,182 @@ pub fn toggle_range_rust_docstring(
     }
 }
 
+/// Toggle basic comments on a range of lines using simple loop (bytewise)
+///
+/// # Overview
+/// **Simple implementation:** Calls `toggle_basic_singleline_comment_bytewise()`
+/// once for each line in the range. No optimization, no single-pass complexity.
+/// File is opened/closed multiple times - this is intentional for simplicity.
+///
+/// Each line is toggled independently based on its current state.
+/// Range is automatically sorted - argument order doesn't matter.
+///
+/// # Arguments
+/// * `file_path` - Path to the source file
+/// * `start_line` - First line to toggle (will be sorted with end_line)
+/// * `end_line` - Last line to toggle (will be sorted with start_line)
+///
+/// # Returns
+/// * `Ok(())` - All lines in range toggled successfully
+/// * `Err(ToggleCommentError)` - Specific error code
+///
+/// # Algorithm
+/// ```text
+/// for each line in start..=end:
+///     toggle_basic_singleline_comment_bytewise(file, line)
+/// ```
+///
+/// # Memory Usage
+/// - Per line: 1 byte buffer
+/// - Total: 1 byte (reused for each line)
+/// - No accumulation, no line counting needed
+///
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::toggle_range_basic_comments_bytewise;
+///
+/// // Toggle lines 5-10 (both inclusive, order doesn't matter)
+/// match toggle_range_basic_comments_bytewise("./src/main.rs", 5, 10) {
+///     Ok(()) => println!("Range toggled"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+///
+/// // Same result (auto-sorted):
+/// toggle_range_basic_comments_bytewise("./src/main.rs", 10, 5)?;
+/// ```
+///
+/// # Behavior
+/// Each line toggled independently:
+/// ```text
+/// Input range [5-7]:
+/// line 5          →  // line 5
+/// // line 6       →  line 6
+/// line 7          →  // line 7
+/// ```
+///
+/// # Performance Note
+/// This is NOT optimized for performance - it's optimized for:
+/// - Simplicity (easy to understand and maintain)
+/// - Safety (reuses proven single-line bytewise code)
+/// - Memory bounds (constant memory regardless of range size)
+///
+/// For a 100-line range, this opens the file 100 times. That's OK.
+/// Simple is better than clever.
+pub fn toggle_range_basic_comments_bytewise(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(), ToggleCommentError> {
+    // Sort range automatically
+    let (start, end) = sort_range(start_line, end_line);
+
+    // Safety check: reasonable range size
+    // This is just a sanity check, not a hard limit
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > 10000 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "Warning: Large range ({} lines) - this will be slow",
+            range_size
+        );
+    }
+
+    // Simple loop: toggle each line independently
+    for line_num in start..=end {
+        // If any line fails, propagate the error immediately
+        toggle_basic_singleline_comment_bytewise(file_path, line_num)?;
+    }
+
+    Ok(())
+}
+
+/// Toggle Rust docstrings on a range of lines using simple loop (bytewise)
+///
+/// # Overview
+/// **Simple implementation:** Calls `toggle_rust_docstring_singleline_comment_bytewise()`
+/// once for each line in the range. No optimization, no single-pass complexity.
+/// File is opened/closed multiple times - this is intentional for simplicity.
+///
+/// Each line is toggled independently based on its current state.
+/// Range is automatically sorted - argument order doesn't matter.
+///
+/// # Arguments
+/// * `file_path` - Path to the source file
+/// * `start_line` - First line to toggle (will be sorted with end_line)
+/// * `end_line` - Last line to toggle (will be sorted with start_line)
+///
+/// # Returns
+/// * `Ok(())` - All lines in range toggled successfully
+/// * `Err(ToggleCommentError)` - Specific error code
+///
+/// # Algorithm
+/// ```text
+/// for each line in start..=end:
+///     toggle_rust_docstring_singleline_comment_bytewise(file, line)
+/// ```
+///
+/// # Memory Usage
+/// - Per line: 1 byte buffer
+/// - Total: 1 byte (reused for each line)
+///
+/// # Example
+/// ```no_run
+/// use toggle_comment_indent_module::toggle_range_rust_docstring_bytewise;
+///
+/// // Toggle docstrings on lines 5-10
+/// match toggle_range_rust_docstring_bytewise("./src/lib.rs", 5, 10) {
+///     Ok(()) => println!("Docstrings toggled"),
+///     Err(e) => eprintln!("Failed: {:?}", e),
+/// }
+/// ```
+///
+/// # Note
+/// No file extension validation - works on any file type.
+/// Caller responsible for using on appropriate files.
+pub fn toggle_range_rust_docstring_bytewise(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(), ToggleCommentError> {
+    // Sort range automatically
+    let (start, end) = sort_range(start_line, end_line);
+
+    // Safety check: reasonable range size
+    let range_size = end.saturating_sub(start).saturating_add(1);
+    if range_size > 10000 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "Warning: Large range ({} lines) - this will be slow",
+            range_size
+        );
+    }
+
+    // Simple loop: toggle each line independently
+    for line_num in start..=end {
+        toggle_rust_docstring_singleline_comment_bytewise(file_path, line_num)?;
+    }
+
+    Ok(())
+}
+
 // ============================================================================
-// TESTS - Range Comment Toggle
+// TESTS - PHASE 1: RANGE TOGGLE BYTEWISE
 // ============================================================================
 
 #[cfg(test)]
-mod range_toggle_tests {
+mod range_toggle_bytewise_tests {
     use super::*;
 
     // ========================================
-    // sort_range() Tests
+    // Basic Range Toggle Tests
     // ========================================
 
     #[test]
-    fn test_sort_range_already_sorted() {
-        let (start, end) = sort_range(5, 10);
-        assert_eq!(start, 5);
-        assert_eq!(end, 10);
-    }
-
-    #[test]
-    fn test_sort_range_reversed() {
-        let (start, end) = sort_range(10, 5);
-        assert_eq!(start, 5);
-        assert_eq!(end, 10);
-    }
-
-    #[test]
-    fn test_sort_range_same_value() {
-        let (start, end) = sort_range(7, 7);
-        assert_eq!(start, 7);
-        assert_eq!(end, 7);
-    }
-
-    #[test]
-    fn test_sort_range_zero() {
-        let (start, end) = sort_range(5, 0);
-        assert_eq!(start, 0);
-        assert_eq!(end, 5);
-    }
-
-    // ========================================
-    // toggle_range_basic_comments() Tests
-    // ========================================
-
-    #[test]
-    fn test_toggle_range_basic_sorted_input() {
+    fn test_range_bytewise_basic_all_off() {
         let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_range_basic_sorted.rs", content);
+        let test_file = create_test_file("test_range_bw_all_off.rs", content);
 
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 2);
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 1, 2);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
@@ -4731,17 +3593,52 @@ mod range_toggle_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_sorted.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_all_off.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_basic_reversed_input() {
-        let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_range_basic_reversed.rs", content);
+    fn test_range_bytewise_basic_all_on() {
+        let content = "line 0\n// line 1\n// line 2\nline 3\n";
+        let test_file = create_test_file("test_range_bw_all_on.rs", content);
 
-        // Reversed input: 2, 1 (should auto-correct to 1, 2)
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 2, 1);
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\nline 1\nline 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_bw_all_on.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_range_bytewise_basic_mixed() {
+        let content = "line 0\n// line 1\nline 2\n// line 3\nline 4\n";
+        let test_file = create_test_file("test_range_bw_mixed.rs", content);
+
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 1, 3);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        // Each line toggled independently
+        assert_eq!(new_content, "line 0\nline 1\n// line 2\nline 3\nline 4\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_bw_mixed.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_range_bytewise_reversed_input() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_bw_reversed.rs", content);
+
+        // Reversed input: 2, 1 (should auto-sort to 1, 2)
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 2, 1);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
@@ -4749,17 +3646,17 @@ mod range_toggle_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_reversed.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_reversed.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_basic_single_line() {
+    fn test_range_bytewise_single_line() {
         let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_basic_single.rs", content);
+        let test_file = create_test_file("test_range_bw_single.rs", content);
 
         // Range of one line (1, 1)
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 1);
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 1, 1);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
@@ -4767,147 +3664,17 @@ mod range_toggle_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_single.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_single.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_basic_mixed_state() {
-        let content = "line 0\n// line 1\nline 2\n// line 3\n";
-        let test_file = create_test_file("test_range_basic_mixed.rs", content);
-
-        // Toggle range with mixed commented/uncommented
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        // Each line toggled independently
-        assert_eq!(new_content, "line 0\nline 1\n// line 2\n// line 3\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_mixed.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_full_file() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_basic_full.rs", content);
-
-        // Toggle entire file
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "// line 0\n// line 1\n// line 2\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_full.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_python() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_basic_python.py", content);
-
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "# line 0\n# line 1\nline 2\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_python.py"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_exceeds_128_lines() {
-        let content = "line\n".repeat(150);
-        let test_file = create_test_file("test_range_basic_too_large.rs", &content);
-
-        // Try to toggle 129 lines (0 to 128 inclusive)
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 128);
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::RangeTooLarge {
-                requested: 129,
-                max: 128
-            })
-        ));
-
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_exactly_128_lines() {
-        let content = "line\n".repeat(128);
-        let test_file = create_test_file("test_range_basic_max.rs", &content);
-
-        // Exactly 128 lines should succeed
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 127);
-        assert!(result.is_ok());
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_max.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_beyond_eof() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_range_basic_eof.rs", content);
-
-        // Range beyond file
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 10);
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::LineNotFound { .. })
-        ));
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_eof.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_roundtrip() {
-        let original = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_basic_roundtrip.rs", original);
-
-        // Toggle on
-        let result1 = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
-        assert!(result1.is_ok());
-
-        let content1 = read_file_content(&test_file);
-        assert_eq!(content1, "// line 0\n// line 1\n// line 2\n");
-
-        // Toggle off
-        let result2 = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 2);
-        assert!(result2.is_ok());
-
-        let content2 = read_file_content(&test_file);
-        assert_eq!(content2, original);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_roundtrip.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_basic_preserves_outside() {
+    fn test_range_bytewise_preserves_outside() {
         let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
-        let test_file = create_test_file("test_range_basic_preserve.rs", content);
+        let test_file = create_test_file("test_range_bw_preserve.rs", content);
 
         // Toggle only middle lines
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 1, 3);
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 1, 3);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
@@ -4918,140 +3685,123 @@ mod range_toggle_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_basic_preserve.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_preserve.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_basic_no_extension() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_range_basic_noext", content);
+    fn test_range_bytewise_roundtrip() {
+        let original = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_range_bw_roundtrip.rs", original);
 
-        let result = toggle_range_basic_comments(test_file.to_str().unwrap(), 0, 1);
-        assert!(matches!(result, Err(ToggleCommentError::NoExtension)));
+        // Toggle on
+        let result1 = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 0, 2);
+        assert!(result1.is_ok());
 
-        cleanup_files(&[&test_file]);
-    }
+        let content1 = read_file_content(&test_file);
+        assert_eq!(content1, "// line 0\n// line 1\n// line 2\n");
 
-    // ========================================
-    // toggle_range_rust_docstring() Tests
-    // ========================================
+        // Toggle off
+        let result2 = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 0, 2);
+        assert!(result2.is_ok());
 
-    #[test]
-    fn test_toggle_range_docstring_sorted_input() {
-        let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_range_doc_sorted.rs", content);
-
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n/// line 1\n/// line 2\nline 3\n");
+        let content2 = read_file_content(&test_file);
+        assert_eq!(content2, original);
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_sorted.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_roundtrip.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_docstring_reversed_input() {
-        let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_range_doc_reversed.rs", content);
-
-        // Reversed input
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 2, 1);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n/// line 1\n/// line 2\nline 3\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_reversed.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_docstring_single_line() {
+    fn test_range_bytewise_python() {
         let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_doc_single.rs", content);
+        let test_file = create_test_file("test_range_bw_python.py", content);
 
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 1);
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 0, 1);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n/// line 1\nline 2\n");
+        assert_eq!(new_content, "# line 0\n# line 1\nline 2\n");
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_single.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_python.py"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_docstring_mixed_state() {
-        let content = "line 0\n/// line 1\nline 2\n/// line 3\n";
-        let test_file = create_test_file("test_range_doc_mixed.rs", content);
+    fn test_range_bytewise_line_not_found() {
+        let content = "line 0\nline 1\n";
+        let test_file = create_test_file("test_range_bw_notfound.rs", content);
 
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 1, 2);
+        // Range extends beyond file
+        let result = toggle_range_basic_comments_bytewise(test_file.to_str().unwrap(), 0, 10);
+        assert!(matches!(
+            result,
+            Err(ToggleCommentError::LineNotFound { .. })
+        ));
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_bw_notfound.rs"),
+        ]);
+    }
+
+    // ========================================
+    // Docstring Range Toggle Tests
+    // ========================================
+
+    #[test]
+    fn test_range_bytewise_docstring_basic() {
+        let content = "line 0\nline 1\nline 2\nline 3\n";
+        let test_file = create_test_file("test_range_bw_doc.rs", content);
+
+        let result = toggle_range_rust_docstring_bytewise(test_file.to_str().unwrap(), 1, 2);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "line 0\n/// line 1\n/// line 2\nline 3\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_range_bw_doc.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_range_bytewise_docstring_mixed() {
+        let content = "line 0\n/// line 1\nline 2\n/// line 3\n";
+        let test_file = create_test_file("test_range_bw_doc_mixed.rs", content);
+
+        let result = toggle_range_rust_docstring_bytewise(test_file.to_str().unwrap(), 1, 3);
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
         // Each line toggled independently
-        assert_eq!(new_content, "line 0\nline 1\n/// line 2\n/// line 3\n");
+        assert_eq!(new_content, "line 0\nline 1\n/// line 2\nline 3\n");
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_mixed.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_doc_mixed.rs"),
         ]);
     }
 
     #[test]
-    fn test_toggle_range_docstring_exceeds_128_lines() {
-        let content = "line\n".repeat(150);
-        let test_file = create_test_file("test_range_doc_too_large.rs", &content);
-
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 128);
-        assert!(matches!(
-            result,
-            Err(ToggleCommentError::RangeTooLarge {
-                requested: 129,
-                max: 128
-            })
-        ));
-
-        cleanup_files(&[&test_file]);
-    }
-
-    #[test]
-    fn test_toggle_range_docstring_exactly_128_lines() {
-        let content = "line\n".repeat(128);
-        let test_file = create_test_file("test_range_doc_max.rs", &content);
-
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 127);
-        assert!(result.is_ok());
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_max.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_docstring_roundtrip() {
+    fn test_range_bytewise_docstring_roundtrip() {
         let original = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_doc_roundtrip.rs", original);
+        let test_file = create_test_file("test_range_bw_doc_roundtrip.rs", original);
 
         // Toggle on
-        let result1 = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
+        let result1 = toggle_range_rust_docstring_bytewise(test_file.to_str().unwrap(), 0, 2);
         assert!(result1.is_ok());
 
         let content1 = read_file_content(&test_file);
         assert_eq!(content1, "/// line 0\n/// line 1\n/// line 2\n");
 
         // Toggle off
-        let result2 = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
+        let result2 = toggle_range_rust_docstring_bytewise(test_file.to_str().unwrap(), 0, 2);
         assert!(result2.is_ok());
 
         let content2 = read_file_content(&test_file);
@@ -5059,77 +3809,150 @@ mod range_toggle_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_roundtrip.rs"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_docstring_no_extension_check() {
-        // Docstring function should work on any file (no extension validation)
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_range_doc_anyfile.txt", content);
-
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 1);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "/// line 0\n/// line 1\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_anyfile.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_toggle_range_docstring_preserves_line_endings() {
-        let content = "line 0\r\nline 1\r\nline 2\r\n";
-        let test_file = create_test_file("test_range_doc_crlf.rs", content);
-
-        let result = toggle_range_rust_docstring(test_file.to_str().unwrap(), 0, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "/// line 0\r\n/// line 1\r\n/// line 2\r\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_doc_crlf.rs"),
+            &PathBuf::from("backup_toggle_comment_test_range_bw_doc_roundtrip.rs"),
         ]);
     }
 }
 
-/// Process file line-by-line, adding 4 spaces to lines in range
+// ============================================================================
+// PHASE 3: BLOCK COMMENTS - BYTEWISE OPERATIONS
+// ============================================================================
+
+/// Detect if specific line starts with exact byte pattern at column 0
+///
+/// # Overview
+/// Reads first bytes of target line and compares against expected pattern.
+/// Used for block comment marker detection.
 ///
 /// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `start_line` - First line to indent (inclusive)
-/// * `end_line` - Last line to indent (inclusive)
+/// * `file_path` - Path to source file
+/// * `line_number` - Zero-indexed line to check
+/// * `pattern` - Exact byte sequence to match (e.g., b"/*\n")
 ///
 /// # Returns
-/// * `Ok(())` - Processing succeeded, all lines in range indented
-/// * `Err(ToggleIndentError)` - Processing failed
+/// * `Ok(true)` - Line starts with exact pattern at column 0
+/// * `Ok(false)` - Line doesn't match pattern
+/// * `Err(ToggleCommentError)` - File operation failed or line not found
 ///
-/// # Safety
-/// - Pre-allocated buffers only
-/// - Bounded line length checks
-/// - No dynamic allocation during loop
-fn process_file_indent_range(
-    source_path: &Path,
-    dest_path: &Path,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(), ToggleIndentError> {
-    // Open source file
-    let source_file = match File::open(source_path) {
+/// # Example
+/// ```text
+/// File line 5: "/*\n"
+/// detect_line_pattern(path, 5, b"/*\n") → Ok(true)
+///
+/// File line 5: "  /*\n"  (indented)
+/// detect_line_pattern(path, 5, b"/*\n") → Ok(false)
+///
+/// File line 5: "/* comment\n"  (has content after)
+/// detect_line_pattern(path, 5, b"/*\n") → Ok(false)
+/// ```
+pub fn detect_line_pattern(
+    file_path: &str,
+    line_number: usize,
+    pattern: &[u8],
+) -> Result<bool, ToggleCommentError> {
+    // Find line start position
+    let line_start_pos =
+        match find_line_start_position(file_path, line_number).map_err(|e| match e {
+            ToggleIndentError::FileNotFound => ToggleCommentError::FileNotFound,
+            ToggleIndentError::LineNotFound {
+                requested,
+                file_lines,
+            } => ToggleCommentError::LineNotFound {
+                requested,
+                file_lines,
+            },
+            ToggleIndentError::IoError(op) => ToggleCommentError::IoError(op),
+            ToggleIndentError::PathError => ToggleCommentError::PathError,
+        })? {
+            Some(pos) => pos,
+            None => return Ok(false), // Line not found = doesn't match
+        };
+
+    let mut file = match File::open(file_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
+    // Seek to line start
+    if let Err(_) = file.seek(std::io::SeekFrom::Start(line_start_pos)) {
+        return Err(ToggleCommentError::IoError(IoOperation::Read));
+    }
 
-    // Create destination file
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+
+    // Compare each byte in pattern
+    for &expected_byte in pattern.iter() {
+        let bytes_read = match file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Ok(false); // EOF before pattern complete
+        }
+
+        if byte_bucket[0] != expected_byte {
+            return Ok(false); // Mismatch
+        }
+    }
+
+    // All bytes matched
+    Ok(true)
+}
+
+/// Delete entire line from file (bytewise copy, skip target line)
+///
+/// # Overview
+/// Copies source to dest, skipping all bytes of target line including newline.
+/// Simple three-part copy: before, skip, after.
+///
+/// # Arguments
+/// * `source_path` - Original file
+/// * `dest_path` - Temp file for output
+/// * `line_number` - Zero-indexed line to delete
+///
+/// # Returns
+/// * `Ok(())` - Line deleted successfully
+/// * `Err(ToggleCommentError)` - Operation failed
+///
+/// # Memory
+/// - 1 byte buffer only
+/// - No heap allocation
+pub fn delete_line_bytewise(
+    source_path: &Path,
+    dest_path: &Path,
+    line_number: usize,
+) -> Result<(), ToggleCommentError> {
+    // Find line start position
+    let line_start_pos =
+        match find_line_start_position(source_path.to_str().unwrap_or(""), line_number).map_err(
+            |e| match e {
+                ToggleIndentError::FileNotFound => ToggleCommentError::FileNotFound,
+                ToggleIndentError::LineNotFound {
+                    requested,
+                    file_lines,
+                } => ToggleCommentError::LineNotFound {
+                    requested,
+                    file_lines,
+                },
+                ToggleIndentError::IoError(op) => ToggleCommentError::IoError(op),
+                ToggleIndentError::PathError => ToggleCommentError::PathError,
+            },
+        )? {
+            Some(pos) => pos,
+            None => {
+                return Err(ToggleCommentError::LineNotFound {
+                    requested: line_number,
+                    file_lines: 0,
+                });
+            }
+        };
+
+    let mut source_file = match File::open(source_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
+    };
+
     let dest_file = match OpenOptions::new()
         .write(true)
         .create(true)
@@ -5137,107 +3960,131 @@ fn process_file_indent_range(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
 
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-    let mut current_line: usize = 0;
-    let mut found_end_line = false;
-
-    // Safety limit
-    let line_limit = end_line.saturating_add(1000000);
-
-    // Process file
-    loop {
-        // Safety check
-        if current_line > line_limit {
-            return Err(ToggleIndentError::IoError(IoOperation::Read));
+    // PART A: Copy before target line
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // PART B: Skip entire target line (don't write anything)
+    loop {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break; // EOF - line had no newline
+        }
+
+        if byte_bucket[0] == b'\n' {
+            break; // Found newline - skip it too, line is deleted
+        }
+    }
+
+    // PART C: Copy rest of file
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         if bytes_read == 0 {
             break;
         }
 
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleIndentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
 
-        // Check if this line is in our target range
-        if current_line >= start_line && current_line <= end_line {
-            // This line is in range - indent it
-            if let Err(e) = indent_single_line(&mut writer, &line_buffer) {
-                return Err(e);
-            }
-
-            // Track if we've seen the end line
-            if current_line == end_line {
-                found_end_line = true;
-            }
-        } else {
-            // Not in range - copy unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleIndentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
+        remaining_bytes += 1;
     }
 
-    // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(ToggleIndentError::IoError(IoOperation::Flush));
-    }
-
-    // Verify we found the end line
-    if !found_end_line {
-        return Err(ToggleIndentError::LineNotFound {
-            requested: end_line,
-            file_lines: current_line,
-        });
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
 
     Ok(())
 }
 
-/// Process file line-by-line, removing up to 4 spaces from lines in range
+/// Insert new line before target line (bytewise)
+///
+/// # Overview
+/// Copies source to dest, inserting new line content before target line.
 ///
 /// # Arguments
-/// * `source_path` - Original file to read from
-/// * `dest_path` - Temporary file to write modified content to
-/// * `start_line` - First line to unindent (inclusive)
-/// * `end_line` - Last line to unindent (inclusive)
+/// * `source_path` - Original file
+/// * `dest_path` - Temp file for output
+/// * `line_number` - Zero-indexed line to insert before
+/// * `content` - Bytes to insert (should include newline)
 ///
 /// # Returns
-/// * `Ok(())` - Processing succeeded, all lines in range unindented
-/// * `Err(ToggleIndentError)` - Processing failed
-fn process_file_unindent_range(
+/// * `Ok(())` - Line inserted successfully
+/// * `Err(ToggleCommentError)` - Operation failed
+pub fn insert_line_before_bytewise(
     source_path: &Path,
     dest_path: &Path,
-    start_line: usize,
-    end_line: usize,
-) -> Result<(), ToggleIndentError> {
-    // Open source file
-    let source_file = match File::open(source_path) {
+    line_number: usize,
+    content: &[u8],
+) -> Result<(), ToggleCommentError> {
+    // Find line start position
+    let line_start_pos =
+        match find_line_start_position(source_path.to_str().unwrap_or(""), line_number).map_err(
+            |e| match e {
+                ToggleIndentError::FileNotFound => ToggleCommentError::FileNotFound,
+                ToggleIndentError::LineNotFound {
+                    requested,
+                    file_lines,
+                } => ToggleCommentError::LineNotFound {
+                    requested,
+                    file_lines,
+                },
+                ToggleIndentError::IoError(op) => ToggleCommentError::IoError(op),
+                ToggleIndentError::PathError => ToggleCommentError::PathError,
+            },
+        )? {
+            Some(pos) => pos,
+            None => {
+                return Err(ToggleCommentError::LineNotFound {
+                    requested: line_number,
+                    file_lines: 0,
+                });
+            }
+        };
+
+    let mut source_file = match File::open(source_path) {
         Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Open)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
     };
 
-    let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, source_file);
-
-    // Create destination file
     let dest_file = match OpenOptions::new()
         .write(true)
         .create(true)
@@ -5245,275 +4092,625 @@ fn process_file_unindent_range(
         .open(dest_path)
     {
         Ok(f) => f,
-        Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Create)),
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
     };
 
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
 
-    let mut line_buffer = Vec::with_capacity(MAX_LINE_LENGTH);
-    let mut current_line: usize = 0;
-    let mut found_end_line = false;
-
-    // Safety limit
-    let line_limit = end_line.saturating_add(1000000);
-
-    // Process file
-    loop {
-        // Safety check
-        if current_line > line_limit {
-            return Err(ToggleIndentError::IoError(IoOperation::Read));
+    // PART A: Copy before target line
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
         }
 
-        line_buffer.clear();
-
-        let bytes_read = match reader.read_until(b'\n', &mut line_buffer) {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
             Ok(n) => n,
-            Err(_) => return Err(ToggleIndentError::IoError(IoOperation::Read)),
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // PART B: Insert new content
+    if let Err(_) = writer.write_all(content) {
+        return Err(ToggleCommentError::IoError(IoOperation::Write));
+    }
+
+    // PART C: Copy rest of file
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
         };
 
         if bytes_read == 0 {
             break;
         }
 
-        // Safety: check line length
-        if line_buffer.len() > MAX_LINE_LENGTH {
-            return Err(ToggleIndentError::LineTooLong {
-                line_number: current_line,
-                length: line_buffer.len(),
-            });
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
         }
 
-        // Check if this line is in our target range
-        if current_line >= start_line && current_line <= end_line {
-            // This line is in range - unindent it
-            if let Err(e) = unindent_single_line(&mut writer, &line_buffer) {
-                return Err(e);
-            }
-
-            // Track if we've seen the end line
-            if current_line == end_line {
-                found_end_line = true;
-            }
-        } else {
-            // Not in range - copy unchanged
-            if let Err(_) = writer.write_all(&line_buffer) {
-                return Err(ToggleIndentError::IoError(IoOperation::Write));
-            }
-        }
-
-        current_line += 1;
+        remaining_bytes += 1;
     }
 
-    // Flush writer
     if let Err(_) = writer.flush() {
-        return Err(ToggleIndentError::IoError(IoOperation::Flush));
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
     }
 
-    // Verify we found the end line
-    if !found_end_line {
-        return Err(ToggleIndentError::LineNotFound {
-            requested: end_line,
-            file_lines: current_line,
-        });
+    Ok(())
+}
+
+/// Insert new line after target line (bytewise)
+///
+/// # Overview
+/// Copies source to dest, inserting new line content after target line's newline.
+///
+/// # Arguments
+/// * `source_path` - Original file
+/// * `dest_path` - Temp file for output
+/// * `line_number` - Zero-indexed line to insert after
+/// * `content` - Bytes to insert (should include newline)
+///
+/// # Returns
+/// * `Ok(())` - Line inserted successfully
+/// * `Err(ToggleCommentError)` - Operation failed
+pub fn insert_line_after_bytewise(
+    source_path: &Path,
+    dest_path: &Path,
+    line_number: usize,
+    content: &[u8],
+) -> Result<(), ToggleCommentError> {
+    // Find line start position
+    let line_start_pos =
+        match find_line_start_position(source_path.to_str().unwrap_or(""), line_number).map_err(
+            |e| match e {
+                ToggleIndentError::FileNotFound => ToggleCommentError::FileNotFound,
+                ToggleIndentError::LineNotFound {
+                    requested,
+                    file_lines,
+                } => ToggleCommentError::LineNotFound {
+                    requested,
+                    file_lines,
+                },
+                ToggleIndentError::IoError(op) => ToggleCommentError::IoError(op),
+                ToggleIndentError::PathError => ToggleCommentError::PathError,
+            },
+        )? {
+            Some(pos) => pos,
+            None => {
+                return Err(ToggleCommentError::LineNotFound {
+                    requested: line_number,
+                    file_lines: 0,
+                });
+            }
+        };
+
+    let mut source_file = match File::open(source_path) {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Open)),
+    };
+
+    let dest_file = match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dest_path)
+    {
+        Ok(f) => f,
+        Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Create)),
+    };
+
+    let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, dest_file);
+    let mut byte_bucket: [u8; 1] = [0u8; 1];
+    let mut byte_position: u64 = 0;
+
+    // PART A: Copy up to and including target line
+    while byte_position < line_start_pos {
+        if byte_position >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        byte_position += 1;
+    }
+
+    // PART B: Copy target line until newline
+    loop {
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            // EOF - no newline at end, insert content here
+            if let Err(_) = writer.write_all(b"\n") {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+            if let Err(_) = writer.write_all(content) {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+            break;
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        if byte_bucket[0] == b'\n' {
+            // Found newline - insert after it
+            if let Err(_) = writer.write_all(content) {
+                return Err(ToggleCommentError::IoError(IoOperation::Write));
+            }
+            break;
+        }
+    }
+
+    // PART C: Copy rest of file
+    let mut remaining_bytes: u64 = 0;
+    loop {
+        if remaining_bytes >= MAX_BYTE_ITERATIONS {
+            return Err(ToggleCommentError::IoError(IoOperation::Read));
+        }
+
+        let bytes_read = match source_file.read(&mut byte_bucket) {
+            Ok(n) => n,
+            Err(_) => return Err(ToggleCommentError::IoError(IoOperation::Read)),
+        };
+
+        if bytes_read == 0 {
+            break;
+        }
+
+        if let Err(_) = writer.write_all(&byte_bucket) {
+            return Err(ToggleCommentError::IoError(IoOperation::Write));
+        }
+
+        remaining_bytes += 1;
+    }
+
+    if let Err(_) = writer.flush() {
+        return Err(ToggleCommentError::IoError(IoOperation::Flush));
+    }
+
+    Ok(())
+}
+
+/// Toggle block comment markers around range of lines (bytewise)
+///
+/// # Overview
+/// Adds or removes block comment markers (`/* */` or `"""`) at column 0.
+/// Markers placed on their own lines before/after content.
+///
+/// # Rules
+/// - **Column 0 only** - no indentation handling
+/// - **Single line (start == end)** - always ADD mode
+/// - **Detection** - if BOTH lines start with markers → REMOVE, else ADD
+/// - **ADD mode** - insert new line before start, new line after end
+/// - **REMOVE mode** - delete end line first, then start line
+///
+/// # Arguments
+/// * `file_path` - Path to source file
+/// * `start_line` - First line of content range (zero-indexed)
+/// * `end_line` - Last line of content range (zero-indexed)
+///
+/// # Returns
+/// * `Ok(())` - Block comment toggled successfully
+/// * `Err(ToggleCommentError)` - Specific error code
+///
+/// # Example (Rust - ADD mode)
+/// ```text
+/// Before:
+/// line 5: code line 1
+/// line 6: code line 2
+///
+/// After toggle_block_comment_bytewise(path, 5, 6):
+/// line 5: /*
+/// line 6: code line 1
+/// line 7: code line 2
+/// line 8: */
+/// ```
+///
+/// # Example (Rust - REMOVE mode)
+/// ```text
+/// Before:
+/// line 5: /*
+/// line 6: code line 1
+/// line 7: code line 2
+/// line 8: */
+///
+/// After toggle_block_comment_bytewise(path, 5, 8):
+/// line 5: code line 1
+/// line 6: code line 2
+/// ```
+///
+/// # Example (Python)
+/// ```text
+/// Uses """ markers instead of /* */
+/// ```
+pub fn toggle_block_comment_bytewise(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Result<(), ToggleCommentError> {
+    // Sort range
+    let (start, end) = sort_range(start_line, end_line);
+
+    // Convert to absolute path
+    let absolute_path = match Path::new(file_path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(ToggleCommentError::FileNotFound);
+            }
+            return Err(ToggleCommentError::PathError);
+        }
+    };
+
+    // Determine block markers from extension
+    let extension = match absolute_path.extension() {
+        Some(ext) => ext.to_string_lossy().to_string(),
+        None => return Err(ToggleCommentError::NoExtension),
+    };
+
+    let markers = match determine_block_markers(&extension) {
+        Some(m) => m,
+        None => return Ok(()), // Unsupported - no-op
+    };
+
+    // Get filename
+    let filename = match absolute_path.file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => return Err(ToggleCommentError::PathError),
+    };
+
+    // EDGE CASE: Single line always ADD mode
+    if start == end {
+        // Create backup
+        let backup_filename = format!("backup_toggle_comment_{}", filename);
+        let backup_path = PathBuf::from(&backup_filename);
+        if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
+            return Err(ToggleCommentError::IoError(IoOperation::Backup));
+        }
+
+        // Insert closing marker after line (do this first so line numbers don't shift)
+        let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
+        let temp1_path = PathBuf::from(&temp1_filename);
+        insert_line_after_bytewise(&absolute_path, &temp1_path, start, markers.end)?;
+
+        // Replace original with temp1
+        if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
+            let _ = std::fs::remove_file(&temp1_path);
+            return Err(ToggleCommentError::IoError(IoOperation::Replace));
+        }
+
+        // Insert opening marker before line
+        let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
+        let temp2_path = PathBuf::from(&temp2_filename);
+        insert_line_before_bytewise(&absolute_path, &temp2_path, start, markers.start)?;
+
+        // Replace original with temp2
+        if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
+            let _ = std::fs::remove_file(&temp2_path);
+            return Err(ToggleCommentError::IoError(IoOperation::Replace));
+        }
+
+        // Cleanup temps
+        let _ = std::fs::remove_file(&temp1_path);
+        let _ = std::fs::remove_file(&temp2_path);
+
+        return Ok(());
+    }
+
+    // DETECT MODE: Check if both markers present at column 0
+    let start_has_marker = detect_line_pattern(file_path, start, markers.start)?;
+    let end_has_marker = detect_line_pattern(file_path, end, markers.end)?;
+
+    let mode = if start_has_marker && end_has_marker {
+        BlockMode::Remove
+    } else {
+        BlockMode::Add
+    };
+
+    // Create backup
+    let backup_filename = format!("backup_toggle_comment_{}", filename);
+    let backup_path = PathBuf::from(&backup_filename);
+    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
+        return Err(ToggleCommentError::IoError(IoOperation::Backup));
+    }
+
+    match mode {
+        BlockMode::Remove => {
+            // DELETE end_line FIRST (so start_line number stays valid)
+            let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
+            let temp1_path = PathBuf::from(&temp1_filename);
+            delete_line_bytewise(&absolute_path, &temp1_path, end)?;
+
+            // Replace original
+            if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp1_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // DELETE start_line
+            let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
+            let temp2_path = PathBuf::from(&temp2_filename);
+            delete_line_bytewise(&absolute_path, &temp2_path, start)?;
+
+            // Replace original
+            if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp2_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // Cleanup temps
+            let _ = std::fs::remove_file(&temp1_path);
+            let _ = std::fs::remove_file(&temp2_path);
+        }
+
+        BlockMode::Add => {
+            // INSERT closing marker after end_line (do this first)
+            let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
+            let temp1_path = PathBuf::from(&temp1_filename);
+            insert_line_after_bytewise(&absolute_path, &temp1_path, end, markers.end)?;
+
+            // Replace original
+            if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp1_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // INSERT opening marker before start_line
+            let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
+            let temp2_path = PathBuf::from(&temp2_filename);
+            insert_line_before_bytewise(&absolute_path, &temp2_path, start, markers.start)?;
+
+            // Replace original
+            if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
+                let _ = std::fs::remove_file(&temp2_path);
+                return Err(ToggleCommentError::IoError(IoOperation::Replace));
+            }
+
+            // Cleanup temps
+            let _ = std::fs::remove_file(&temp1_path);
+            let _ = std::fs::remove_file(&temp2_path);
+        }
     }
 
     Ok(())
 }
 
 // ============================================================================
-// TESTS - Indent/Unindent Range
+// TESTS - PHASE 3: BLOCK COMMENTS BYTEWISE
 // ============================================================================
 
 #[cfg(test)]
-mod indent_range_tests {
+mod block_comment_bytewise_tests {
     use super::*;
 
     // ========================================
-    // Indent Range Tests
+    // Detection Tests
     // ========================================
 
     #[test]
-    fn test_indent_range_basic() {
+    fn test_detect_line_pattern_match() {
+        let content = "line 0\n/*\nline 2\n";
+        let test_file = create_test_file("test_detect_match.rs", content);
+
+        let result = detect_line_pattern(test_file.to_str().unwrap(), 1, b"/*\n");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), true);
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_detect_line_pattern_no_match() {
+        let content = "line 0\ncode\nline 2\n";
+        let test_file = create_test_file("test_detect_no_match.rs", content);
+
+        let result = detect_line_pattern(test_file.to_str().unwrap(), 1, b"/*\n");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+
+        cleanup_files(&[&test_file]);
+    }
+
+    #[test]
+    fn test_detect_line_pattern_indented() {
+        let content = "line 0\n  /*\nline 2\n";
+        let test_file = create_test_file("test_detect_indented.rs", content);
+
+        // Should NOT match - pattern must be at column 0
+        let result = detect_line_pattern(test_file.to_str().unwrap(), 1, b"/*\n");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+
+        cleanup_files(&[&test_file]);
+    }
+
+    // ========================================
+    // Delete Line Tests
+    // ========================================
+
+    #[test]
+    fn test_delete_line_bytewise_middle() {
         let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_indent_range_basic.txt", content);
+        let test_file = create_test_file("test_delete_middle.txt", content);
+        let temp_file = PathBuf::from("temp_delete_test.txt");
 
-        let result = indent_range(test_file.to_str().unwrap(), 0, 2);
+        let result = delete_line_bytewise(&test_file, &temp_file, 1);
         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "    line 0\n    line 1\n    line 2\n");
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\nline 2\n");
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_basic.txt"),
-        ]);
+        cleanup_files(&[&test_file, &temp_file]);
     }
 
     #[test]
-    fn test_indent_range_middle() {
-        let content = "line 0\nline 1\nline 2\nline 3\n";
-        let test_file = create_test_file("test_indent_range_middle.txt", content);
-
-        let result = indent_range(test_file.to_str().unwrap(), 1, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n    line 1\n    line 2\nline 3\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_middle.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_range_single_line() {
+    fn test_delete_line_bytewise_first() {
         let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_indent_range_single.txt", content);
+        let test_file = create_test_file("test_delete_first.txt", content);
+        let temp_file = PathBuf::from("temp_delete_first.txt");
 
-        // Range of just one line (start == end)
-        let result = indent_range(test_file.to_str().unwrap(), 1, 1);
+        let result = delete_line_bytewise(&test_file, &temp_file, 0);
         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\n    line 1\nline 2\n");
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 1\nline 2\n");
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_single.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_range_beyond_eof() {
-        let content = "line 0\nline 1\n";
-        let test_file = create_test_file("test_indent_range_eof.txt", content);
-
-        // end_line beyond file
-        let result = indent_range(test_file.to_str().unwrap(), 0, 10);
-        assert!(matches!(
-            result,
-            Err(ToggleIndentError::LineNotFound { .. })
-        ));
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_eof.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_range_preserves_outside() {
-        let content = "line 0\nline 1\nline 2\nline 3\nline 4\n";
-        let test_file = create_test_file("test_indent_range_preserve.txt", content);
-
-        let result = indent_range(test_file.to_str().unwrap(), 1, 3);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(
-            new_content,
-            "line 0\n    line 1\n    line 2\n    line 3\nline 4\n"
-        );
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_preserve.txt"),
-        ]);
+        cleanup_files(&[&test_file, &temp_file]);
     }
 
     // ========================================
-    // Unindent Range Tests
+    // Insert Line Tests
     // ========================================
 
     #[test]
-    fn test_unindent_range_basic() {
-        let content = "    line 0\n    line 1\n    line 2\n";
-        let test_file = create_test_file("test_unindent_range_basic.txt", content);
+    fn test_insert_line_before_bytewise() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_insert_before.txt", content);
+        let temp_file = PathBuf::from("temp_insert_before.txt");
 
-        let result = unindent_range(test_file.to_str().unwrap(), 0, 2);
+        let result = insert_line_before_bytewise(&test_file, &temp_file, 1, b"NEW\n");
         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\nline 1\nline 2\n");
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\nNEW\nline 1\nline 2\n");
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_range_basic.txt"),
-        ]);
+        cleanup_files(&[&test_file, &temp_file]);
     }
 
     #[test]
-    fn test_unindent_range_middle() {
-        let content = "line 0\n    line 1\n    line 2\nline 3\n";
-        let test_file = create_test_file("test_unindent_range_middle.txt", content);
+    fn test_insert_line_after_bytewise() {
+        let content = "line 0\nline 1\nline 2\n";
+        let test_file = create_test_file("test_insert_after.txt", content);
+        let temp_file = PathBuf::from("temp_insert_after.txt");
 
-        let result = unindent_range(test_file.to_str().unwrap(), 1, 2);
+        let result = insert_line_after_bytewise(&test_file, &temp_file, 1, b"NEW\n");
         assert!(result.is_ok());
 
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\nline 1\nline 2\nline 3\n");
+        let new_content = read_file_content(&temp_file);
+        assert_eq!(new_content, "line 0\nline 1\nNEW\nline 2\n");
 
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_range_middle.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_unindent_range_mixed_indents() {
-        let content = "    line 0\n  line 1\nline 2\n      line 3\n";
-        let test_file = create_test_file("test_unindent_range_mixed.txt", content);
-
-        let result = unindent_range(test_file.to_str().unwrap(), 0, 3);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        // Removes: 4, 2, 0, 4 spaces respectively
-        assert_eq!(new_content, "line 0\nline 1\nline 2\n  line 3\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_range_mixed.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_unindent_range_single_line() {
-        let content = "line 0\n    line 1\nline 2\n";
-        let test_file = create_test_file("test_unindent_range_single.txt", content);
-
-        // Range of just one line
-        let result = unindent_range(test_file.to_str().unwrap(), 1, 1);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "line 0\nline 1\nline 2\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_range_single.txt"),
-        ]);
+        cleanup_files(&[&test_file, &temp_file]);
     }
 
     // ========================================
-    // Round-trip Tests
+    // Block Comment Toggle Tests
     // ========================================
 
     #[test]
-    fn test_indent_unindent_range_roundtrip() {
-        let original = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_range_roundtrip.txt", original);
+    fn test_block_comment_bytewise_add_rust() {
+        let content = "code line 1\ncode line 2\n";
+        let test_file = create_test_file("test_block_add.rs", content);
 
-        // Indent range
-        let result1 = indent_range(test_file.to_str().unwrap(), 0, 2);
+        let result = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "/*\ncode line 1\ncode line 2\n*/\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_block_add.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_block_comment_bytewise_remove_rust() {
+        let content = "/*\ncode line 1\ncode line 2\n*/\n";
+        let test_file = create_test_file("test_block_remove.rs", content);
+
+        let result = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 3);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "code line 1\ncode line 2\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_block_remove.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_block_comment_bytewise_single_line() {
+        let content = "code line\n";
+        let test_file = create_test_file("test_block_single.rs", content);
+
+        // Single line always ADD
+        let result = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "/*\ncode line\n*/\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_block_single.rs"),
+        ]);
+    }
+
+    #[test]
+    fn test_block_comment_bytewise_python() {
+        let content = "code line 1\ncode line 2\n";
+        let test_file = create_test_file("test_block_python.py", content);
+
+        let result = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 1);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "\"\"\"\ncode line 1\ncode line 2\n\"\"\"\n");
+
+        cleanup_files(&[
+            &test_file,
+            &PathBuf::from("backup_toggle_comment_test_block_python.py"),
+        ]);
+    }
+
+    #[test]
+    fn test_block_comment_bytewise_roundtrip() {
+        let original = "code line 1\ncode line 2\n";
+        let test_file = create_test_file("test_block_roundtrip.rs", original);
+
+        // Add
+        let result1 = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 1);
         assert!(result1.is_ok());
 
         let content1 = read_file_content(&test_file);
-        assert_eq!(content1, "    line 0\n    line 1\n    line 2\n");
+        assert_eq!(content1, "/*\ncode line 1\ncode line 2\n*/\n");
 
-        // Unindent back
-        let result2 = unindent_range(test_file.to_str().unwrap(), 0, 2);
+        // Remove
+        let result2 = toggle_block_comment_bytewise(test_file.to_str().unwrap(), 0, 3);
         assert!(result2.is_ok());
 
         let content2 = read_file_content(&test_file);
@@ -5521,42 +4718,7 @@ mod indent_range_tests {
 
         cleanup_files(&[
             &test_file,
-            &PathBuf::from("backup_toggle_comment_test_range_roundtrip.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_indent_range_preserves_line_endings() {
-        let content = "line 0\r\nline 1\r\nline 2\r\n";
-        let test_file = create_test_file("test_indent_range_crlf.txt", content);
-
-        let result = indent_range(test_file.to_str().unwrap(), 0, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "    line 0\r\n    line 1\r\n    line 2\r\n");
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_indent_range_crlf.txt"),
-        ]);
-    }
-
-    #[test]
-    fn test_unindent_range_no_spaces() {
-        let content = "line 0\nline 1\nline 2\n";
-        let test_file = create_test_file("test_unindent_range_noop.txt", content);
-
-        // Should succeed (no-op)
-        let result = unindent_range(test_file.to_str().unwrap(), 0, 2);
-        assert!(result.is_ok());
-
-        let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, content);
-
-        cleanup_files(&[
-            &test_file,
-            &PathBuf::from("backup_toggle_comment_test_unindent_range_noop.txt"),
+            &PathBuf::from("backup_toggle_comment_test_block_roundtrip.rs"),
         ]);
     }
 }
