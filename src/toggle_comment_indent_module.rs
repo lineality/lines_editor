@@ -333,10 +333,11 @@ use std::env;
 use std::process;
 mod toggle_comment_indent_module;
 use toggle_comment_indent_module::{
-    ToggleIndentError, ToggleCommentError, indent_line, indent_range, toggle_basic_singleline_comment,
-    toggle_block_comment, toggle_multiple_basic_comments, toggle_multiple_singline_docstrings,
-    toggle_range_basic_comments, toggle_range_rust_docstring,
-    toggle_rust_docstring_singleline_comment, unindent_line, unindent_range,
+    ToggleCommentError, ToggleIndentError, indent_line_bytewise, indent_range_bytewise,
+    toggle_basic_singleline_comment_bytewise, toggle_block_comment_bytewise,
+    toggle_range_basic_comments_bytewise, toggle_range_rust_docstring_bytewise,
+    toggle_rust_docstring_singleline_comment_bytewise, unindent_line_bytewise,
+    unindent_range_bytewise,
 };
 
 /// Maximum number of lines that can be toggled in batch mode
@@ -431,7 +432,7 @@ fn print_usage() {
 
 /// Execute range toggle - basic comments
 fn execute_range_toggle_basic(file_path: &str, start_line: usize, end_line: usize) -> i32 {
-    match toggle_range_basic_comments(file_path, start_line, end_line) {
+    match toggle_range_basic_comments_bytewise(file_path, start_line, end_line) {
         Ok(()) => {
             println!(
                 "Successfully toggled comment range (lines {}-{})",
@@ -448,7 +449,7 @@ fn execute_range_toggle_basic(file_path: &str, start_line: usize, end_line: usiz
 
 /// Execute range toggle - rust docstrings
 fn execute_range_toggle_docstring(file_path: &str, start_line: usize, end_line: usize) -> i32 {
-    match toggle_range_rust_docstring(file_path, start_line, end_line) {
+    match toggle_range_rust_docstring_bytewise(file_path, start_line, end_line) {
         Ok(()) => {
             println!(
                 "Successfully toggled docstring range (lines {}-{})",
@@ -483,47 +484,47 @@ fn parse_line_number(arg: &str, arg_name: &str) -> Result<usize, ()> {
     }
 }
 
-/// Parse multiple line number arguments into a fixed-size array
-///
-/// # Arguments
-/// * `args` - Slice of string arguments to parse
-///
-/// # Returns
-/// * `Ok((count, array))` - Successfully parsed line numbers
-/// * `Err(())` - Parse failed or too many lines
-///
-/// # Safety
-/// - Bounded to MAX_BATCH_LINES (512)
-/// - Pre-allocated fixed array on stack
-fn parse_line_list(args: &[String]) -> Result<(usize, [usize; MAX_BATCH_LINES]), ()> {
-// Check bounds
-    if args.is_empty() {
-        eprintln!("Error: No line numbers provided");
-        return Err(());
-    }
+// /// Parse multiple line number arguments into a fixed-size array
+// ///
+// /// # Arguments
+// /// * `args` - Slice of string arguments to parse
+// ///
+// /// # Returns
+// /// * `Ok((count, array))` - Successfully parsed line numbers
+// /// * `Err(())` - Parse failed or too many lines
+// ///
+// /// # Safety
+// /// - Bounded to MAX_BATCH_LINES (512)
+// /// - Pre-allocated fixed array on stack
+// fn parse_line_list(args: &[String]) -> Result<(usize, [usize; MAX_BATCH_LINES]), ()> {
+//     // Check bounds
+//     if args.is_empty() {
+//         eprintln!("Error: No line numbers provided");
+//         return Err(());
+//     }
 
-    if args.len() > MAX_BATCH_LINES {
-        eprintln!("Error: Too many lines (max {})", MAX_BATCH_LINES);
-        return Err(());
-    }
+//     if args.len() > MAX_BATCH_LINES {
+//         eprintln!("Error: Too many lines (max {})", MAX_BATCH_LINES);
+//         return Err(());
+//     }
 
-// Pre-allocate fixed array
-    let mut line_array: [usize; MAX_BATCH_LINES] = [0; MAX_BATCH_LINES];
-    let count = args.len();
+//     // Pre-allocate fixed array
+//     let mut line_array: [usize; MAX_BATCH_LINES] = [0; MAX_BATCH_LINES];
+//     let count = args.len();
 
-// Parse each line number
-    for (i, arg) in args.iter().enumerate() {
-        match arg.parse::<usize>() {
-            Ok(n) => line_array[i] = n,
-            Err(_) => {
-                eprintln!("Error: Invalid line number: {}", arg);
-                return Err(());
-            }
-        }
-    }
+//     // Parse each line number
+//     for (i, arg) in args.iter().enumerate() {
+//         match arg.parse::<usize>() {
+//             Ok(n) => line_array[i] = n,
+//             Err(_) => {
+//                 eprintln!("Error: Invalid line number: {}", arg);
+//                 return Err(());
+//             }
+//         }
+//     }
 
-    Ok((count, line_array))
-}
+//     Ok((count, line_array))
+// }
 
 /// Convert ToggleCommentError to exit code
 ///
@@ -536,13 +537,9 @@ fn error_to_exit_code(error: ToggleCommentError) -> i32 {
     match error {
         ToggleCommentError::FileNotFound => 2,
         ToggleCommentError::NoExtension => 3,
-        ToggleCommentError::UnsupportedExtension => 4,
         ToggleCommentError::LineNotFound { .. } => 5,
         ToggleCommentError::IoError(_) => 6,
         ToggleCommentError::PathError => 7,
-        ToggleCommentError::LineTooLong { .. } => 8,
-        ToggleCommentError::InconsistentBlockMarkers => 9,
-        ToggleCommentError::RangeTooLarge { .. } => 10,
     }
 }
 
@@ -559,13 +556,12 @@ fn indent_error_to_exit_code(error: ToggleIndentError) -> i32 {
         ToggleIndentError::LineNotFound { .. } => 5,
         ToggleIndentError::IoError(_) => 6,
         ToggleIndentError::PathError => 7,
-        ToggleIndentError::LineTooLong { .. } => 8,
     }
 }
 
 /// Execute indent on a single line
 fn execute_indent(file_path: &str, line_number: usize) -> i32 {
-    match indent_line(file_path, line_number) {
+    match indent_line_bytewise(file_path, line_number) {
         Ok(()) => {
             println!("Successfully indented line {}", line_number);
             0
@@ -579,7 +575,7 @@ fn execute_indent(file_path: &str, line_number: usize) -> i32 {
 
 /// Execute unindent on a single line
 fn execute_unindent(file_path: &str, line_number: usize) -> i32 {
-    match unindent_line(file_path, line_number) {
+    match unindent_line_bytewise(file_path, line_number) {
         Ok(()) => {
             println!("Successfully unindented line {}", line_number);
             0
@@ -593,7 +589,7 @@ fn execute_unindent(file_path: &str, line_number: usize) -> i32 {
 
 /// Execute basic single-line comment toggle
 fn execute_basic_toggle(file_path: &str, line_number: usize) -> i32 {
-    match toggle_basic_singleline_comment(file_path, line_number) {
+    match toggle_basic_singleline_comment_bytewise(file_path, line_number) {
         Ok(()) => {
             println!("Successfully toggled comment on line {}", line_number);
             0
@@ -607,7 +603,7 @@ fn execute_basic_toggle(file_path: &str, line_number: usize) -> i32 {
 
 /// Execute Rust docstring single-line comment toggle
 fn execute_docstring_toggle(file_path: &str, line_number: usize) -> i32 {
-    match toggle_rust_docstring_singleline_comment(file_path, line_number) {
+    match toggle_rust_docstring_singleline_comment_bytewise(file_path, line_number) {
         Ok(()) => {
             println!("Successfully toggled docstring on line {}", line_number);
             0
@@ -621,7 +617,7 @@ fn execute_docstring_toggle(file_path: &str, line_number: usize) -> i32 {
 
 /// Execute block comment toggle
 fn execute_block_toggle(file_path: &str, start_line: usize, end_line: usize) -> i32 {
-    match toggle_block_comment(file_path, start_line, end_line) {
+    match toggle_block_comment_bytewise(file_path, start_line, end_line) {
         Ok(()) => {
             println!(
                 "Successfully toggled block comment (lines {}-{})",
@@ -638,7 +634,7 @@ fn execute_block_toggle(file_path: &str, start_line: usize, end_line: usize) -> 
 
 /// Execute indent on a range of lines
 fn execute_indent_range(file_path: &str, start_line: usize, end_line: usize) -> i32 {
-    match indent_range(file_path, start_line, end_line) {
+    match indent_range_bytewise(file_path, start_line, end_line) {
         Ok(()) => {
             println!("Successfully indented lines {} to {}", start_line, end_line);
             0
@@ -652,7 +648,7 @@ fn execute_indent_range(file_path: &str, start_line: usize, end_line: usize) -> 
 
 /// Execute unindent on a range of lines
 fn execute_unindent_range(file_path: &str, start_line: usize, end_line: usize) -> i32 {
-    match unindent_range(file_path, start_line, end_line) {
+    match unindent_range_bytewise(file_path, start_line, end_line) {
         Ok(()) => {
             println!(
                 "Successfully unindented lines {} to {}",
@@ -667,47 +663,47 @@ fn execute_unindent_range(file_path: &str, start_line: usize, end_line: usize) -
     }
 }
 
-/// Execute batch toggle - basic comments
-fn execute_batch_toggle_standard(
-    file_path: &str,
-    count: usize,
-    lines: &[usize; MAX_BATCH_LINES],
-) -> i32 {
-// Use only the valid portion of array
-    let line_slice = &lines[..count];
+// /// Execute batch toggle - basic comments
+// fn execute_batch_toggle_standard(
+//     file_path: &str,
+//     count: usize,
+//     lines: &[usize; MAX_BATCH_LINES],
+// ) -> i32 {
+//     // Use only the valid portion of array
+//     let line_slice = &lines[..count];
 
-    match toggle_multiple_basic_comments(file_path, line_slice) {
-        Ok(()) => {
-            println!("Successfully toggled {} lines", count);
-            0
-        }
-        Err(e) => {
-            eprintln!("Error batch toggling {}: {}", file_path, e);
-            error_to_exit_code(e)
-        }
-    }
-}
+//     match toggle_multiple_basic_comments(file_path, line_slice) {
+//         Ok(()) => {
+//             println!("Successfully toggled {} lines", count);
+//             0
+//         }
+//         Err(e) => {
+//             eprintln!("Error batch toggling {}: {}", file_path, e);
+//             error_to_exit_code(e)
+//         }
+//     }
+// }
 
-/// Execute batch toggle - docstrings
-fn execute_batch_toggle_docstring(
-    file_path: &str,
-    count: usize,
-    lines: &[usize; MAX_BATCH_LINES],
-) -> i32 {
-// Use only the valid portion of array
-    let line_slice = &lines[..count];
+// /// Execute batch toggle - docstrings
+// fn execute_batch_toggle_docstring(
+//     file_path: &str,
+//     count: usize,
+//     lines: &[usize; MAX_BATCH_LINES],
+// ) -> i32 {
+//     // Use only the valid portion of array
+//     let line_slice = &lines[..count];
 
-    match toggle_multiple_singline_docstrings(file_path, line_slice) {
-        Ok(()) => {
-            println!("Successfully toggled {} docstrings", count);
-            0
-        }
-        Err(e) => {
-            eprintln!("Error batch toggling docstrings {}: {}", file_path, e);
-            error_to_exit_code(e)
-        }
-    }
-}
+//     match toggle_multiple_singline_docstrings(file_path, line_slice) {
+//         Ok(()) => {
+//             println!("Successfully toggled {} docstrings", count);
+//             0
+//         }
+//         Err(e) => {
+//             eprintln!("Error batch toggling docstrings {}: {}", file_path, e);
+//             error_to_exit_code(e)
+//         }
+//     }
+// }
 
 fn main() {
 // Collect command line arguments
@@ -782,51 +778,51 @@ fn main() {
                 execute_block_toggle(file_path, start_line, end_line)
             }
 
-            "--list-basic" => {
-// Expect: --list-basic <file> <line1> <line2> ...
-                if args.len() < 4 {
-                    eprintln!("Error: --list-basic requires <file_path> <line1> [line2] ...");
-                    eprintln!();
-                    print_usage();
-                    process::exit(1);
-                }
+// "--list-basic" => {
+//     // Expect: --list-basic <file> <line1> <line2> ...
+//     if args.len() < 4 {
+//         eprintln!("Error: --list-basic requires <file_path> <line1> [line2] ...");
+//         eprintln!();
+//         print_usage();
+//         process::exit(1);
+//     }
 
-                let file_path = &args[2];
-                let line_args = &args[3..];
+//     let file_path = &args[2];
+//     let line_args = &args[3..];
 
-                let (count, line_array) = match parse_line_list(line_args) {
-                    Ok(result) => result,
-                    Err(_) => {
-                        print_usage();
-                        process::exit(1);
-                    }
-                };
+//     let (count, line_array) = match parse_line_list(line_args) {
+//         Ok(result) => result,
+//         Err(_) => {
+//             print_usage();
+//             process::exit(1);
+//         }
+//     };
 
-                execute_batch_toggle_standard(file_path, count, &line_array)
-            }
+//     execute_batch_toggle_standard(file_path, count, &line_array)
+// }
 
-            "--list-docstring" => {
-// Expect: --list-docstring <file> <line1> <line2> ...
-                if args.len() < 4 {
-                    eprintln!("Error: --list-docstring requires <file_path> <line1> [line2] ...");
-                    eprintln!();
-                    print_usage();
-                    process::exit(1);
-                }
+// "--list-docstring" => {
+//     // Expect: --list-docstring <file> <line1> <line2> ...
+//     if args.len() < 4 {
+//         eprintln!("Error: --list-docstring requires <file_path> <line1> [line2] ...");
+//         eprintln!();
+//         print_usage();
+//         process::exit(1);
+//     }
 
-                let file_path = &args[2];
-                let line_args = &args[3..];
+//     let file_path = &args[2];
+//     let line_args = &args[3..];
 
-                let (count, line_array) = match parse_line_list(line_args) {
-                    Ok(result) => result,
-                    Err(_) => {
-                        print_usage();
-                        process::exit(1);
-                    }
-                };
+//     let (count, line_array) = match parse_line_list(line_args) {
+//         Ok(result) => result,
+//         Err(_) => {
+//             print_usage();
+//             process::exit(1);
+//         }
+//     };
 
-                execute_batch_toggle_docstring(file_path, count, &line_array)
-            }
+//     execute_batch_toggle_docstring(file_path, count, &line_array)
+// }
             "--indent" => {
 // Expect: --indent <file> <line>
                 if args.len() != 4 {
@@ -1034,6 +1030,7 @@ fn main() {
 
 /*
 
+
 # Rust rules:
 - Always best practice.
 - Always extensive doc strings: what the code is doing with project context
@@ -1049,7 +1046,7 @@ fn main() {
 - Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. increment and load only what is required pragmatically. Do not fill 'state' with every possible piece of un-used information. Do not insecurity output information broadly in the case of errors and exceptions.
 
 - Always defensive best practice
-- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on.
+- Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failure, power-supply failure, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on. This does not mean that no function can return an error. Handling should occur where needed, e.g. before later functions are reached.
 
 Somehow there seems to be no clear vocabulary for 'Do not stop.' When you come to something to handle, handle it:
 - Handle and move on: Do not halt the program.
@@ -1067,6 +1064,8 @@ Safety, reliability, maintainability, fail-safe, communication-documentation, ar
 
 ## No third party libraries (or very strictly avoid third party libraries where possible).
 
+## Scale: Code should be future proof and scale well. The Y2K bug was not a wonderful feature, it was a horrendous mistake. Scale and size should be handled in a modular no-load way, not arbitrarily capped so that everything breaks.
+
 ## Rule of Thumb, ideals not absolute rules: Follow NASA's 'Power of 10 rules' where possible and sensible (as updated for 2025 and Rust (not narrowly 2006 c for embedded systems):
 1. no unsafe stuff:
 - no recursion
@@ -1081,6 +1080,9 @@ Safety, reliability, maintainability, fail-safe, communication-documentation, ar
 4. Clear function scope and Data Ownership: Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is unsafe. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every operation into a microfunction just for the sake of doing so. (See more in rule 9.)
 
 5. Defensive programming: debug-assert, test-assert, prod safely check & handle, not 'assert!' panic
+
+Note: Terminology varies across "error" / "fail" / "exception" / "catch" / "case" et al. The standard terminology is 'error handling' but 'case handling' or 'issue handling' may be a more accurate description, especially where 'error' refers to the output when unable to handle a case (which becomes semantically paradoxical). The goal is not terminating / halting / ending / shutting down / stopping, etc., or crashing / failing / panicking / coredumping / undefined-behavior-ing, etc. the program when an expected case occurs. Here production and debugging/testing starkly diverge: during testing you want to see how (and where in the code) the program may 'fail' and where and when cases are encountered. In production the satellite must not fall out of the sky ever, regardless of how pedantically beautiful the error-message in the ball of flames may have been.
+
 For production-release code:
 1. check and handle without panic/halt in production
 2. return result (such as Result<T, E>) and smoothly handle errors (not halt-panic stopping the application): no assert!() outside of test-only code
@@ -1130,6 +1132,11 @@ if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
     ));
 }
 
+stack_format() not format!()
+
+
+Note: Error messages must be unique per function (e.g. name of function (or abbreviation) in the error message). Colliding generic error messages that cannot be traced to a specific function are a significant liability.
+
 
 Avoid heap for error messages and for all things:
 Is heap used for error messages because that is THE best way, the most secure, the most efficient, proper separate of debug testing vs. secure production code?
@@ -1158,7 +1165,7 @@ All debug-prints not for production must be tagged with
 #[cfg(debug_assertions)]
 ```
 
-Production output following an error must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
+Production output following an error / exception / case must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
 
 6. Manage ownership and borrowing
 
