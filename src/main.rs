@@ -17,6 +17,9 @@ mod toggle_comment_indent_module;
 mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
 
+mod buffy_format_write_module;
+use buffy_format_write_module::{FormatArg, buffy_print, buffy_println};
+
 // To make a smaller binary, you can remove source-it.
 /// Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[
@@ -38,6 +41,10 @@ const SOURCE_FILES: &[SourcedFile] = &[
     SourcedFile::new(
         "src/toggle_comment_indent_module.rs",
         include_str!("toggle_comment_indent_module.rs"),
+    ),
+    SourcedFile::new(
+        "src/buffy_format_write_module.rs",
+        include_str!("buffy_format_write_module.rs"),
     ),
     SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
     // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
@@ -267,13 +274,17 @@ fn main() -> Result<(), LinesError> {
             return Ok(());
         }
         ArgMode::Version => {
-            println!("Lines-Editor Version: {}", env!("CARGO_PKG_VERSION"));
+            buffy_print(
+                "Lines-Editor Version: {}",
+                &[FormatArg::Str(env!("CARGO_PKG_VERSION"))],
+            )?;
+
             return Ok(());
         }
         ArgMode::Source => {
             // To make a smaller binary, you can remove source-it.
             match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
-                Ok(path) => println!("Source extracted to: {}", path.display()),
+                Ok(path) => buffy_print("Source extracted to: {}", &[FormatArg::Path(&path)])?,
                 Err(e) => eprintln!("Failed to extract source: {}", e),
             }
             return Ok(());
@@ -281,10 +292,11 @@ fn main() -> Result<(), LinesError> {
         ArgMode::AppendMode => {
             // Memo mode (append-only) - requires file path
             if let Some(file_path) = parsed.file_path {
-                println!(
+                buffy_print(
                     "Starting memo mode (append-only) with file: {}",
-                    file_path.display()
-                );
+                    &[FormatArg::Path(&file_path)],
+                )?;
+
                 return memo_mode_mini_editor_loop(&file_path);
             } else {
                 eprintln!("Error: --append flag requires a file path");
@@ -302,12 +314,15 @@ fn main() -> Result<(), LinesError> {
             // No file specified
             if in_home {
                 // Memo mode: create today's file
-                println!("Starting memo mode...");
+                buffy_println("Starting memo mode...", &[])?;
                 let original_file_path = get_default_filepath(None)?;
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {
                 // Full editor mode - prompt for filename in current directory
-                println!("No file specified. Creating new file in current directory.");
+                buffy_println(
+                    "No file specified. Creating new file in current directory.",
+                    &[],
+                )?;
                 let filename = prompt_for_filename()?;
                 let current_dir = env::current_dir()?;
                 let original_file_path = current_dir.join(filename);
@@ -335,7 +350,11 @@ fn main() -> Result<(), LinesError> {
                 && parsed.session_path.is_none()
             // Only memo mode if no session specified
             {
-                println!("Starting memo mode with custom file: {}", file_path_str);
+                buffy_print(
+                    "Starting memo mode with custom file: {}",
+                    &[FormatArg::Str(&file_path_str)],
+                )?;
+
                 let original_file_path = get_default_filepath(Some(&file_path_str))?;
                 memo_mode_mini_editor_loop(&original_file_path)
             } else {

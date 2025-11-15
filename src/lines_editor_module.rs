@@ -991,6 +991,8 @@ use super::buttons_reversible_edit_changelog_module::{
     read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
 };
 
+use super::buffy_format_write_module::{FormatArg, buffy_print, buffy_println};
+
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
 /// This module manages all editor state using only pre-allocated memory.
@@ -1146,9 +1148,8 @@ pub enum LinesError {
     /// Invalid user input or argument
     InvalidInput(String),
 
-    /// String formatting or display error
-    FormatError(String),
-
+    // /// String formatting or display error
+    // FormatError(String),
     /// UTF-8 encoding/decoding error
     Utf8Error(String),
 
@@ -1168,7 +1169,7 @@ impl std::fmt::Display for LinesError {
         match self {
             LinesError::Io(e) => write!(f, "IO error: {}", e),
             LinesError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
-            LinesError::FormatError(msg) => write!(f, "Format error: {}", msg),
+            // LinesError::FormatError(msg) => write!(f, "Format error: {}", msg),
             LinesError::Utf8Error(msg) => write!(f, "UTF-8 error: {}", msg),
             LinesError::DisplayError(msg) => write!(f, "Display error: {}", msg),
             LinesError::StateError(msg) => write!(f, "State error: {}", msg),
@@ -2072,7 +2073,7 @@ mod hex_format_tests {
 /// ```
 pub fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> String {
     // Internal stack buffer for result
-    let mut buf = [0u8; 512];
+    let mut buf = [0u8; 256];
 
     // Maximum number of inserts to prevent abuse
     const MAX_INSERTS: usize = 128;
@@ -2476,7 +2477,7 @@ mod limits {
     /// Allows up to 20-digit repeat counts (e.g., "12345678901234567890j")
     pub const COMMAND_PARSE_MAX_CHARS: usize = 20;
 
-    pub const TEXT_INPUT_CHUNKS: usize = 1024;
+    pub const TEXT_INPUT_CHUNKS: usize = 10_000_000;
 }
 
 // STEM values ensuring reproducibility
@@ -3314,119 +3315,268 @@ pub fn count_lines_in_file(file_path: &Path) -> Result<(usize, u64)> {
     Ok((line_count, last_newline_position))
 }
 
-/// Formats the navigation legend with color-coded keyboard shortcuts
+// TODO, maybe add to buffy
+/// Writes a single hotkey command with color highlighting directly to terminal
 ///
-/// # Purpose
-/// Creates a formatted legend string showing all available keyboard commands
-/// with color highlighting (RED for command keys, YELLOW for descriptions).
+/// ## Memory: ZERO HEAP
+/// Writes hotkey (RED) + description (YELLOW) using buffy_print
 ///
-/// # Returns
-/// * `Ok(String)` - The formatted legend string with ANSI color codes
-/// * `Err(FileFantasticError)` - If string formatting fails (defensive programming)
+/// ## Parameters
+/// - hotkey: The command character(s) to highlight in RED
+/// - description: The rest of the text in YELLOW
 ///
-/// # Color Scheme
-/// - RED: Single letter command keys (q, b, t, d, f, n, s, m, g, v, y, p)
-/// - YELLOW: Command descriptions and separators
-/// - RESET: Applied at end to restore terminal defaults
-///
-/// # Legend Commands
-/// - q: quit the application
-/// - b: navigate back/parent directory
-/// - t: open terminal in current directory
-/// - d: filter to show directories only
-/// - f: filter to show files only
-/// - n: sort by name
-/// - s: sort by size
-/// - m: sort by modified date
-/// - g: get-send file operations
-/// - v,y,p: additional file operations
-/// - str: search functionality
-/// - enter: reset filters/search
-///
-/// # Example
+/// ## Example
 /// ```rust
-/// match format_navigation_legend() {
-///     Ok(legend) => println!("{}", legend),
-///     Err(e) => eprintln!("Failed to format legend: {}", e),
-/// }
+/// write_red_hotkey("q", "uit ")?;  // Outputs: RED"q" + YELLOW"uit "
 /// ```
-fn format_navigation_legend() -> Result<String> {
-    // Pre-allocate string capacity based on expected legend size
-    // Legend is approximately 200 characters plus color codes
-    let mut legend = String::with_capacity(300);
-
-    // // Build the legend string with error handling for format operations
-    // // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
-    // let formatted_legend = format!(
-    //     "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
-    //     // YELLOW, // Overall legend color
-    //     RED,
-    //     YELLOW, // RED q + YELLOW uit
-    //     RED,
-    //     GREEN, // RED b + YELLOW ack
-    //     YELLOW,
-    //     RED,
-    //     YELLOW, // RED b + YELLOW ack
-    //     RED,
-    //     YELLOW, // RED t + YELLOW erm
-    //     RED,
-    //     YELLOW, // RED d + YELLOW ir
-    //     RED,
-    //     YELLOW, // RED f + YELLOW ile
-    //     RED,
-    //     YELLOW, // RED n + YELLOW ame
-    //     RED,
-    //     YELLOW, // RED s + YELLOW ize
-    //     RED,
-    //     YELLOW, // RED m + YELLOW od
-    //     RED,
-    //     YELLOW, // RED m + YELLOW od
-    //     RED,
-    //     YELLOW, // RED g + YELLOW et
-    //     RED,
-    //     YELLOW, // RED v + YELLOW ,
-    //     RED,
-    //     YELLOW, // RED y + YELLOW ,
-    //     RED,
-    //     YELLOW, // RED p + YELLOW ,
-    //     RED,
-    //     YELLOW, // RED str + YELLOW ...
-    //     RED,
-    //     YELLOW,
-    //     RED,
-    //     // YELLOW, // RED enter + YELLOW ...
-    //     GREEN,  // RED b + YELLOW ack
-    //     YELLOW, // RED enter + YELLOW ...
-    //     RED,
-    //     YELLOW, // RED enter + YELLOW ...
-    //     RED,
-    //     YELLOW, // RED enter + YELLOW ...
-    //     RESET
-    // );
-
-    let formatted_legend = stack_format_it(
-        "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+fn write_red_hotkey(hotkey: &str, description: &str) -> io::Result<()> {
+    buffy_print(
+        "{}{}{}{}",
         &[
-            &RED, &YELLOW, &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
-            &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED,
-            &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
-            &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RESET,
+            FormatArg::Str(RED),
+            FormatArg::Str(hotkey),
+            FormatArg::Str(YELLOW),
+            FormatArg::Str(description),
         ],
-        "quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl",
-    );
-    // Check if the formatted string is reasonable
-    // (defensive programming against format! macro issues)
-    if formatted_legend.is_empty() {
-        return Err(LinesError::FormatError(String::from(
-            "Legend formatting produced empty string",
-        )));
-    }
-
-    // TODO (push in smaller segments?)
-    legend.push_str(&formatted_legend);
-
-    Ok(legend)
+    )
 }
+
+// TODO, maybe add to buffy
+/// Writes a two-part hotkey command with color highlighting directly to terminal
+///
+/// ## Memory: ZERO HEAP
+/// Writes hotkey_1 (RED) + hotkey_2 (GREEN) + description (YELLOW) using buffy_print
+///
+/// ## Parameters
+/// - hotkey_1: First part of command to highlight in RED
+/// - hotkey_2: Second part of command to highlight in GREEN
+/// - description: The rest of the text in YELLOW
+///
+/// ## Example
+/// ```rust
+/// write_red_green_hotkey("s", "a", "v ")?;  // Outputs: RED"s" + GREEN"a" + YELLOW"v "
+/// write_red_green_hotkey("/", "/", "/cmnt ")?;  // Outputs: RED"/" + GREEN"/" + YELLOW"/cmnt "
+/// ```
+fn write_red_green_hotkey(hotkey_1: &str, hotkey_2: &str, description: &str) -> io::Result<()> {
+    buffy_print(
+        "{}{}{}{}{}{}",
+        &[
+            FormatArg::Str(RED),
+            FormatArg::Str(hotkey_1),
+            FormatArg::Str(GREEN),
+            FormatArg::Str(hotkey_2),
+            FormatArg::Str(YELLOW),
+            FormatArg::Str(description),
+        ],
+    )
+}
+
+/// Writes the complete navigation legend directly to terminal
+///
+/// ## Project Context
+/// Displays all available keyboard commands for file navigation with
+/// color-coded hotkeys. Each command section written independently for
+/// maintainability - adding/removing commands requires no argument counting.
+///
+/// ## Memory: ZERO HEAP
+/// All output written directly to terminal using buffy functions.
+/// No intermediate String building, no heap allocation.
+///
+/// ## Operation
+/// Writes legend in modular sections:
+/// - Each command written separately via write_red_hotkey()
+/// - Colors applied per-command (RED hotkey, YELLOW description)
+/// - RESET applied at end
+/// - Modular: Add/remove commands without affecting others
+///
+/// ## Safety & Error Handling
+/// - Returns io::Result for write failures
+/// - Each command write is independent
+/// - Failure in one command doesn't affect others structurally
+///
+/// ## Legend Commands
+/// - q: quit application
+/// - sav: save current state (red and green and yellow)
+/// - re: reload/refresh
+/// - undo: undo last operation
+/// - del: delete item
+/// - nrm: normal mode
+/// - ins: insert mode
+/// - vis: visual mode
+/// - hex: hex editor mode
+/// - raw: raw view
+/// - pasty: paste operation
+/// - cvy: copy operation
+/// - wrd,b,end: word navigation
+/// - ///cmnt: comment operations (red and green and yellow)
+/// - []idnt: indent operations
+/// - hjkl: vim-style navigation
+///
+/// ## Example
+/// ```rust
+/// // In main display loop:
+/// write_formatted_navigation_legend_to_tui()?;
+/// ```
+fn write_formatted_navigation_legend_to_tui() -> Result<()> {
+    // File operations group
+    write_red_hotkey("q", "uit ")?;
+    // Three Colour
+    write_red_green_hotkey("s", "a", "v ")?;
+    // Red only
+    write_red_hotkey("re", ",")?;
+    write_red_hotkey("u", "ndo ")?;
+
+    // Mode operations group
+    write_red_hotkey("d", "el|")?;
+    write_red_hotkey("n", "rm ")?;
+    write_red_hotkey("i", "ns ")?;
+    write_red_hotkey("v", "is ")?;
+    write_red_hotkey("hex", " ")?;
+
+    // View operations group
+    write_red_hotkey("r", "aw|")?;
+    write_red_hotkey("p", "asty ")?;
+    write_red_hotkey("cvy", "|")?;
+
+    // Navigation group
+    write_red_hotkey("w", "rd,")?;
+    write_red_hotkey("b", ",")?;
+    write_red_hotkey("e", "nd ")?;
+
+    // Comment/indent group
+    // Three Colour
+    write_red_green_hotkey("/", "/", "/cmnt ")?;
+    // Red only
+    write_red_hotkey("[]", "idnt ")?;
+
+    // Movement group
+    write_red_hotkey("hjkl", "")?;
+
+    // Clear formatting: ANSI color codes are stateful
+    // Make sure NEXT prints
+    // are not also formatted.
+    buffy_print("{}", &[FormatArg::Str(RESET)])?;
+
+    // Complete the line with newline \n
+    buffy_println("", &[])?;
+
+    // Done
+    Ok(())
+}
+
+// /// Formats the navigation legend with color-coded keyboard shortcuts
+// ///
+// /// # Purpose
+// /// Creates a formatted legend string showing all available keyboard commands
+// /// with color highlighting (RED for command keys, YELLOW for descriptions).
+// ///
+// /// # Returns
+// /// * `Ok(String)` - The formatted legend string with ANSI color codes
+// /// * `Err(FileFantasticError)` - If string formatting fails (defensive programming)
+// ///
+// /// # Color Scheme
+// /// - RED: Single letter command keys (q, b, t, d, f, n, s, m, g, v, y, p)
+// /// - YELLOW: Command descriptions and separators
+// /// - RESET: Applied at end to restore terminal defaults
+// ///
+// /// # Legend Commands
+// /// - q: quit the application
+// /// - b: navigate back/parent directory
+// /// - t: open terminal in current directory
+// /// - d: filter to show directories only
+// /// - f: filter to show files only
+// /// - n: sort by name
+// /// - s: sort by size
+// /// - m: sort by modified date
+// /// - g: get-send file operations
+// /// - v,y,p: additional file operations
+// /// - str: search functionality
+// /// - enter: reset filters/search
+// ///
+// /// # Example
+// /// ```rust
+// /// match write_formatted_navigation_legend_to_tui() {
+// ///     Ok(legend) => println!("{}", legend),
+// ///     Err(e) => eprintln!("Failed to format legend: {}", e),
+// /// }
+// /// ```
+// fn write_formatted_navigation_legend_to_tui() -> Result<String> {
+//     // Pre-allocate string capacity based on expected legend size
+//     // Legend is approximately 200 characters plus color codes
+//     let mut legend = String::with_capacity(300);
+
+//     // // Build the legend string with error handling for format operations
+//     // // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
+//     // let formatted_legend = format!(
+//     //     "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+//     //     // YELLOW, // Overall legend color
+//     //     RED,
+//     //     YELLOW, // RED q + YELLOW uit
+//     //     RED,
+//     //     GREEN, // RED b + YELLOW ack
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW, // RED b + YELLOW ack
+//     //     RED,
+//     //     YELLOW, // RED t + YELLOW erm
+//     //     RED,
+//     //     YELLOW, // RED d + YELLOW ir
+//     //     RED,
+//     //     YELLOW, // RED f + YELLOW ile
+//     //     RED,
+//     //     YELLOW, // RED n + YELLOW ame
+//     //     RED,
+//     //     YELLOW, // RED s + YELLOW ize
+//     //     RED,
+//     //     YELLOW, // RED m + YELLOW od
+//     //     RED,
+//     //     YELLOW, // RED m + YELLOW od
+//     //     RED,
+//     //     YELLOW, // RED g + YELLOW et
+//     //     RED,
+//     //     YELLOW, // RED v + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED y + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED p + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED str + YELLOW ...
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     // YELLOW, // RED enter + YELLOW ...
+//     //     GREEN,  // RED b + YELLOW ack
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RED,
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RED,
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RESET
+//     // );
+
+//     let formatted_legend = stack_format_it(
+//         "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+//         &[
+//             &RED, &YELLOW, &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+//             &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED,
+//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+//             &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RESET,
+//         ],
+//         "quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl",
+//     );
+//     // Check if the formatted string is reasonable
+//     // (defensive programming against format! macro issues)
+//     if formatted_legend.is_empty() {
+//         return Err(LinesError::FormatError(String::from(
+//             "Legend formatting produced empty string",
+//         )));
+//     }
+
+//     // TODO (push in smaller segments?)
+//     legend.push_str(&formatted_legend);
+
+//     Ok(legend)
+// }
 
 /// Makes, verifies, or creates a directory path relative to the executable directory location.
 ///
@@ -19063,8 +19213,7 @@ pub fn render_tui_hex(state: &EditorState) -> Result<()> {
     })?;
 
     // === TOP LINE: LEGEND (same as UTF-8 mode) ===
-    let legend = format_navigation_legend()?;
-    println!("{}", legend);
+    let _ = write_formatted_navigation_legend_to_tui()?;
 
     // padding
     for _ in 0..5 {
@@ -19302,8 +19451,7 @@ pub fn render_tui_raw(state: &EditorState) -> Result<()> {
     })?;
 
     // === TOP LINE: LEGEND (same as hex mode) ===
-    let legend = format_navigation_legend()?;
-    println!("{}", legend);
+    let _ = write_formatted_navigation_legend_to_tui()?;
 
     // padding
     for _ in 0..5 {
@@ -19839,8 +19987,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
     })?;
 
     // === TOP LINE: LEGEND ===
-    let legend = format_navigation_legend()?;
-    println!("{}", legend);
+    let _ = write_formatted_navigation_legend_to_tui()?;
 
     // === MIDDLE: FILE CONTENT WITH CURSOR ===
     // // Render each content row
