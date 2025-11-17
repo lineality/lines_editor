@@ -20052,7 +20052,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
                     // Print only content portion of display_str (skip line number)
                     buffy_println("{}", &[FormatArg::Str(&display_str[line_num_width..])])?;
                 }
-                Err(_) => println!("�"),
+                Err(_) => buffy_println("�", &[])?, //println!("�"),
             }
         } else {
             // Show cursor on empty rows if cursor is here
@@ -20068,7 +20068,8 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
 
     // === BOTTOM LINE: INFO BAR ===
     let info_bar = format_info_bar_cafe_normal_visualselect(state)?;
-    print!("{}", info_bar);
+    // print!("{}", info_bar);
+    buffy_print(&info_bar, &[])?;
 
     io::stdout().flush().map_err(|e| {
         LinesError::DisplayError(stack_format_it(
