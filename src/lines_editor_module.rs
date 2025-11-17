@@ -991,7 +991,29 @@ use super::buttons_reversible_edit_changelog_module::{
     read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
 };
 
-use super::buffy_format_write_module::{FormatArg, buffy_print, buffy_println};
+use super::buffy_format_write_module::{
+    BuffyStyles, FormatArg, buffy_print, buffy_println, style_to_ansi,
+};
+
+/// Style for line numbers - green, no bold
+const LINE_NUMBER_STYLE: BuffyStyles = BuffyStyles {
+    fg_color: Some("\x1b[32m"), // GREEN
+    bg_color: None,
+    bold: false,
+    underline: false,
+    italic: true,
+    dim: true,
+};
+
+/// Style for cursor block
+const CURSOR_BLOCK_STYLE: BuffyStyles = BuffyStyles {
+    fg_color: Some("\x1b[31m"), // RED
+    bg_color: Some("\x1b[47m"), // WHITE background
+    bold: true,
+    underline: false,
+    italic: false,
+    dim: false,
+};
 
 /// state.rs - Core editor state management with pre-allocated buffers
 ///
@@ -12387,33 +12409,35 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     );
     // reset for each new fn goto_line_end
     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_length + line_num_width;
-    let this_row = lines_editor_state.cursor.tui_row;
-    let this_col = lines_editor_state.cursor.tui_col;
-    println!(
-        "fn goto_line_end lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
-        this_row, this_col,
-    );
-    println!(
-        "\nfn goto_line_end lines_editor_state.get_row_col_file_position -> {:?}",
-        lines_editor_state.get_row_col_file_position(this_row, this_col)
-    );
-    println!(
-        "\nfn goto_line_end lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
-        lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
-    );
-    println!(
-        "\nfn goto_line_end lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
-        lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
-    );
-    println!(
-        "\nfn goto_line_end lines_editor_state.cursor.tui_row -> {:?}",
-        lines_editor_state.cursor.tui_row
-    );
-    println!(
-        "\nfn goto_line_end windowmap_line_byte_start_end_position_pairs -> {:?}",
-        lines_editor_state.windowmap_line_byte_start_end_position_pairs,
-    );
-
+    #[cfg(debug_assertions)]
+    {
+        let this_row = lines_editor_state.cursor.tui_row;
+        let this_col = lines_editor_state.cursor.tui_col;
+        println!(
+            "fn goto_line_end lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
+            this_row, this_col,
+        );
+        println!(
+            "\nfn goto_line_end lines_editor_state.get_row_col_file_position -> {:?}",
+            lines_editor_state.get_row_col_file_position(this_row, this_col)
+        );
+        println!(
+            "\nfn goto_line_end lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+            lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+        );
+        println!(
+            "\nfn goto_line_end lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+            lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+        );
+        println!(
+            "\nfn goto_line_end lines_editor_state.cursor.tui_row -> {:?}",
+            lines_editor_state.cursor.tui_row
+        );
+        println!(
+            "\nfn goto_line_end windowmap_line_byte_start_end_position_pairs -> {:?}",
+            lines_editor_state.windowmap_line_byte_start_end_position_pairs,
+        );
+    }
     // ========================================================================
     // STEP 3: Convert bytes to characters
     // ========================================================================
@@ -12474,7 +12498,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         }
     }
 
-    // message? 'end of line'?
+    // message? 'end of line'? TODO: How detailed or terse should this be?
     // let _ = lines_editor_state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
     // let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
     let _ = lines_editor_state.set_info_bar_message("end of line");
@@ -19998,18 +20022,46 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
 
             match std::str::from_utf8(row_content) {
                 Ok(row_str) => {
-                    // ADD CURSOR HIGHLIGHTING HERE (was missing!)
+                    // // add formatting and highlighitng here
+                    // let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
+                    // println!("{}", display_str);
+
+                    // // Find where line number ends (first space after digits)
+                    // let mut found_digit = false;
+                    // let mut split_pos = 0;
+
+                    let line_num_width = calculate_line_number_width(
+                        state.line_count_at_top_of_window,
+                        state.cursor.tui_row,
+                        state.effective_rows,
+                    );
+
+                    let line_num_part = &row_str[..line_num_width];
+                    // let content_part = &row_str[line_num_width..];
+
+                    // Print green line number
+                    buffy_print(
+                        "{}",
+                        &[FormatArg::StrStyled(line_num_part, LINE_NUMBER_STYLE)],
+                    )?;
+
+                    // Render JUST content with cursor (cursor.tui_col is still in full row coordinates)
+                    // Pass full row_str so cursor column math works, but only display content
                     let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
-                    println!("{}", display_str);
+
+                    // Print only content portion of display_str (skip line number)
+                    buffy_println("{}", &[FormatArg::Str(&display_str[line_num_width..])])?;
                 }
                 Err(_) => println!("�"),
             }
         } else {
             // Show cursor on empty rows if cursor is here
             if row == state.cursor.tui_row {
-                println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
+                // println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
+                buffy_println("{}", &[FormatArg::CharStyled('█', CURSOR_BLOCK_STYLE)])?;
             } else {
-                println!();
+                // println!();
+                buffy_println("", &[])?;
             }
         }
     }
@@ -20028,6 +20080,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
 
     Ok(())
 }
+
 /// Renders one row of display with both cursor and visual selection highlighting
 ///
 /// # Purpose

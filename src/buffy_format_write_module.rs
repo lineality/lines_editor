@@ -270,7 +270,7 @@ fn format_u32_hex_to_buffer<'a>(value: u32, buf: &'a mut [u8]) -> Option<&'a str
 ///
 /// Memory: should be all stack, no heap
 /// Concatenates ANSI codes directly into buffer.
-fn style_to_ansi<'a>(style: BuffyStyles, buf: &'a mut [u8]) -> Option<&'a str> {
+pub fn style_to_ansi<'a>(style: BuffyStyles, buf: &'a mut [u8]) -> Option<&'a str> {
     let mut pos = 0;
 
     if style.bold {
