@@ -18,7 +18,7 @@ mod source_it_module;
 use source_it_module::{SourcedFile, handle_sourceit_command};
 
 mod buffy_format_write_module;
-use buffy_format_write_module::{FormatArg, buffy_print, buffy_println};
+use buffy_format_write_module::{BuffyFormatArg, buffy_print, buffy_println};
 
 // To make a smaller binary, you can remove source-it.
 /// Source-It: Developer explicitly lists files to embed w/
@@ -276,7 +276,7 @@ fn main() -> Result<(), LinesError> {
         ArgMode::Version => {
             buffy_print(
                 "Lines-Editor Version: {}",
-                &[FormatArg::Str(env!("CARGO_PKG_VERSION"))],
+                &[BuffyFormatArg::Str(env!("CARGO_PKG_VERSION"))],
             )?;
 
             return Ok(());
@@ -284,7 +284,7 @@ fn main() -> Result<(), LinesError> {
         ArgMode::Source => {
             // To make a smaller binary, you can remove source-it.
             match handle_sourceit_command("lines_editor", None, SOURCE_FILES) {
-                Ok(path) => buffy_print("Source extracted to: {}", &[FormatArg::Path(&path)])?,
+                Ok(path) => buffy_print("Source extracted to: {}", &[BuffyFormatArg::Path(&path)])?,
                 Err(e) => eprintln!("Failed to extract source: {}", e),
             }
             return Ok(());
@@ -294,7 +294,7 @@ fn main() -> Result<(), LinesError> {
             if let Some(file_path) = parsed.file_path {
                 buffy_print(
                     "Starting memo mode (append-only) with file: {}",
-                    &[FormatArg::Path(&file_path)],
+                    &[BuffyFormatArg::Path(&file_path)],
                 )?;
 
                 return memo_mode_mini_editor_loop(&file_path);
@@ -352,7 +352,7 @@ fn main() -> Result<(), LinesError> {
             {
                 buffy_print(
                     "Starting memo mode with custom file: {}",
-                    &[FormatArg::Str(&file_path_str)],
+                    &[BuffyFormatArg::Str(&file_path_str)],
                 )?;
 
                 let original_file_path = get_default_filepath(Some(&file_path_str))?;

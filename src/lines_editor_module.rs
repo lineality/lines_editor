@@ -991,9 +991,7 @@ use super::buttons_reversible_edit_changelog_module::{
     read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
 };
 
-use super::buffy_format_write_module::{
-    BuffyStyles, FormatArg, buffy_print, buffy_println, style_to_ansi,
-};
+use super::buffy_format_write_module::{BuffyFormatArg, BuffyStyles, buffy_print, buffy_println};
 
 /// Style for line numbers - green, no bold
 const LINE_NUMBER_STYLE: BuffyStyles = BuffyStyles {
@@ -1083,6 +1081,45 @@ const GREEN: &str = "\x1b[32m";
 // const BOLD: &str = "\x1b[1m";
 // const ITALIC: &str = "\x1b[3m";
 // const UNDERLINE: &str = "\x1b[4m";
+
+/*
+Foreground Colors (Text Color):
+Color -> ANSI Code
+Black -> \x1b[30m
+Red -> \x1b[31m
+Green -> \x1b[32m
+Yellow -> \x1b[33m
+Blue -> \x1b[34m
+Magenta -> \x1b[35m
+Cyan -> \x1b[36m
+White -> \x1b[37m
+Default -> \x1b[39m
+
+
+Background Colors:
+Color -> ANSI Code
+Black -> \x1b[40m
+Red -> \x1b[41m
+Green -> \x1b[42m
+Yellow -> \x1b[43m
+Blue -> \x1b[44m
+Magenta -> \x1b[45m
+Cyan -> \x1b[46m
+White -> \x1b[47m
+Default -> \x1b[49m
+
+text styles:
+Style -> ANSI Code
+Bold -> \x1b[1m
+Dim -> \x1b[2m
+Italic -> \x1b[3m
+Underline -> \x1b[4m
+Blink -> \x1b[5m
+Reverse -> \x1b[7m
+Hidden -> \x1b[8m
+Reset -> \x1b[0m
+
+*/
 
 // ============================================================================
 // ERROR SECTION: ERROR HANDLING SYSTEM (start)
@@ -2207,6 +2244,7 @@ struct FormatSpec {
     width: Option<usize>,
 }
 
+// TODO vec< is heap
 /// Parse format specifiers from template
 /// Returns None if parsing fails or placeholder count doesn't match insert count
 fn parse_format_specs(template: &str, expected_count: usize) -> Option<Vec<FormatSpec>> {
@@ -3355,10 +3393,10 @@ fn write_red_hotkey(hotkey: &str, description: &str) -> io::Result<()> {
     buffy_print(
         "{}{}{}{}",
         &[
-            FormatArg::Str(RED),
-            FormatArg::Str(hotkey),
-            FormatArg::Str(YELLOW),
-            FormatArg::Str(description),
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Str(hotkey),
+            BuffyFormatArg::Str(YELLOW),
+            BuffyFormatArg::Str(description),
         ],
     )
 }
@@ -3383,12 +3421,12 @@ fn write_red_green_hotkey(hotkey_1: &str, hotkey_2: &str, description: &str) -> 
     buffy_print(
         "{}{}{}{}{}{}",
         &[
-            FormatArg::Str(RED),
-            FormatArg::Str(hotkey_1),
-            FormatArg::Str(GREEN),
-            FormatArg::Str(hotkey_2),
-            FormatArg::Str(YELLOW),
-            FormatArg::Str(description),
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Str(hotkey_1),
+            BuffyFormatArg::Str(GREEN),
+            BuffyFormatArg::Str(hotkey_2),
+            BuffyFormatArg::Str(YELLOW),
+            BuffyFormatArg::Str(description),
         ],
     )
 }
@@ -3477,7 +3515,7 @@ fn write_formatted_navigation_legend_to_tui() -> Result<()> {
     // Clear formatting: ANSI color codes are stateful
     // Make sure NEXT prints
     // are not also formatted.
-    buffy_print("{}", &[FormatArg::Str(RESET)])?;
+    buffy_print("{}", &[BuffyFormatArg::Str(RESET)])?;
 
     // Complete the line with newline \n
     buffy_println("", &[])?;
@@ -18269,6 +18307,7 @@ pub fn append_bytes_from_file_to_file(
     Ok(())
 }
 
+// TODO vec< is heap
 /// Reads clipboard directory and returns files sorted by modified time (newest first)
 pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<PathBuf>> {
     if !clipboard_dir.exists() {
@@ -20042,7 +20081,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
                     // Print green line number
                     buffy_print(
                         "{}",
-                        &[FormatArg::StrStyled(line_num_part, LINE_NUMBER_STYLE)],
+                        &[BuffyFormatArg::StrStyled(line_num_part, LINE_NUMBER_STYLE)],
                     )?;
 
                     // Render JUST content with cursor (cursor.tui_col is still in full row coordinates)
@@ -20050,7 +20089,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
                     let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
 
                     // Print only content portion of display_str (skip line number)
-                    buffy_println("{}", &[FormatArg::Str(&display_str[line_num_width..])])?;
+                    buffy_println("{}", &[BuffyFormatArg::Str(&display_str[line_num_width..])])?;
                 }
                 Err(_) => buffy_println("�", &[])?, //println!("�"),
             }
@@ -20058,7 +20097,7 @@ pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
             // Show cursor on empty rows if cursor is here
             if row == state.cursor.tui_row {
                 // println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
-                buffy_println("{}", &[FormatArg::CharStyled('█', CURSOR_BLOCK_STYLE)])?;
+                buffy_println("{}", &[BuffyFormatArg::CharStyled('█', CURSOR_BLOCK_STYLE)])?;
             } else {
                 // println!();
                 buffy_println("", &[])?;
@@ -20119,6 +20158,7 @@ fn render_utf8txt_row_with_cursor(
     const BG_CYAN: &str = "\x1b[46m";
     const RESET: &str = "\x1b[0m";
 
+    // TODO vec< is heap
     let chars: Vec<char> = row_content.chars().collect();
     let mut result = String::with_capacity(row_content.len() + 100);
 

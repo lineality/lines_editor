@@ -4,27 +4,28 @@ Lines is a minimal text editor.
 
 ```
 quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl
-1 # lines_editor
-2
-3 Lines is a minimal text editor.
-4
-5
-6
-7
-8
-9
-10
-11
-12
-13
-14
-15
-16
-17
-18
-19
-21
-NORMAL 1:1 shorty.txt @0  > ⎕
+ 1 ⎕ lines_editor␤
+ 2 ␤
+ 3 Lines is a minimal text editor.␤
+ 4 ␤
+ 5 ␤
+ 6 ␤
+ 7 ␤
+ 8 ␤
+ 9 ␤
+10 ␤
+11 ␤
+12 ␤
+13 ␤
+14 ␤
+15 ␤
+16 ␤
+17 ␤
+18 ␤
+19 ␤
+20 ␤
+21 ␤
+NORMAL 1:1 README.md @0  > ⎕
 ```
 
 
@@ -102,8 +103,8 @@ In 2025 these are all common, yet there is no good way to deal with these.
 - Syntax highlighting
 - File-Fantastic Integration
 
-## ?
-- super-mini directory file manager, for if "lines ." open in dir (list file/dir by number, if select file open in lines, if select dir show fiies, option 1 is back, option)
+### File-Manager Integration
+- ff https://github.com/lineality/ff_file_manager_minimal_rust contains lines and allows Line/FF (It's File Fantastic!) to act as a mult-file single-session ~IDE, while keeping lines itself minimal.
 
 ## Out of Scope:
 - Mouse support

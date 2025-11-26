@@ -43,6 +43,67 @@ use stdout.write_all() writes bytes directly; no format!, no heap-dynamic memory
 ```
 */
 
+/*
+Sample Wrappers
+
+// TODO, maybe add to buffy
+/// Writes a single hotkey command with color highlighting directly to terminal
+///
+/// ## Memory: ZERO HEAP
+/// Writes hotkey (RED) + description (YELLOW) using buffy_print
+///
+/// ## Parameters
+/// - hotkey: The command character(s) to highlight in RED
+/// - description: The rest of the text in YELLOW
+///
+/// ## Example
+/// ```rust
+/// write_red_hotkey("q", "uit ")?;  // Outputs: RED"q" + YELLOW"uit "
+/// ```
+fn write_red_hotkey(hotkey: &str, description: &str) -> io::Result<()> {
+    buffy_print(
+        "{}{}{}{}",
+        &[
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Str(hotkey),
+            BuffyFormatArg::Str(YELLOW),
+            BuffyFormatArg::Str(description),
+        ],
+    )
+}
+
+// TODO, maybe add to buffy
+/// Writes a two-part hotkey command with color highlighting directly to terminal
+///
+/// ## Memory: ZERO HEAP
+/// Writes hotkey_1 (RED) + hotkey_2 (GREEN) + description (YELLOW) using buffy_print
+///
+/// ## Parameters
+/// - hotkey_1: First part of command to highlight in RED
+/// - hotkey_2: Second part of command to highlight in GREEN
+/// - description: The rest of the text in YELLOW
+///
+/// ## Example
+/// ```rust
+/// write_red_green_hotkey("s", "a", "v ")?;  // Outputs: RED"s" + GREEN"a" + YELLOW"v "
+/// write_red_green_hotkey("/", "/", "/cmnt ")?;  // Outputs: RED"/" + GREEN"/" + YELLOW"/cmnt "
+/// ```
+fn write_red_green_hotkey(hotkey_1: &str, hotkey_2: &str, description: &str) -> io::Result<()> {
+    buffy_print(
+        "{}{}{}{}{}{}",
+        &[
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Str(hotkey_1),
+            BuffyFormatArg::Str(GREEN),
+            BuffyFormatArg::Str(hotkey_2),
+            BuffyFormatArg::Str(YELLOW),
+            BuffyFormatArg::Str(description),
+        ],
+    )
+}
+
+*/
+
 // =============================================================================
 // TYPES
 // =============================================================================
@@ -85,7 +146,7 @@ pub struct BuffyStyles {
 /// - Path: File paths (borrowed reference)
 /// - Styled variants: Include ANSI styling
 #[derive(Debug, Clone)]
-pub enum FormatArg<'a> {
+pub enum BuffyFormatArg<'a> {
     // Unsigned integers
     Str(&'a str),
     U8(u8),
@@ -487,7 +548,7 @@ fn apply_alignment<'a>(value: &str, spec: FormatSpec, buf: &'a mut [u8]) -> Opti
 ///
 /// ## Parameters
 /// - template: Format string with {} or {:<N}/{:>N}/{:^N} placeholders
-/// - args: Slice of FormatArg values (max 8)
+/// - args: Slice of BuffyFormatArg values (max 8)
 ///
 /// ## Returns
 /// - Ok(()): Successfully written to stdout
@@ -499,15 +560,15 @@ fn apply_alignment<'a>(value: &str, spec: FormatSpec, buf: &'a mut [u8]) -> Opti
 /// buffy_print("Hello world", &[])?;
 ///
 /// // With number
-/// buffy_print("Count: {}", &[FormatArg::U64(42)])?;
+/// buffy_print("Count: {}", &[BuffyFormatArg::U64(42)])?;
 ///
 /// // With styling
-/// buffy_print("Status: {}", &[FormatArg::StrStyled("OK", BuffyStyles::bold_red())])?;
+/// buffy_print("Status: {}", &[BuffyFormatArg::StrStyled("OK", BuffyStyles::bold_red())])?;
 ///
 /// // With alignment
-/// buffy_print("{:<10} {:>5}", &[FormatArg::Str("Name"), FormatArg::U32(123)])?;
+/// buffy_print("{:<10} {:>5}", &[BuffyFormatArg::Str("Name"), BuffyFormatArg::U32(123)])?;
 /// ```
-pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
+pub fn buffy_print(template: &str, args: &[BuffyFormatArg]) -> io::Result<()> {
     const MAX_ARGS: usize = 8;
 
     if args.len() > MAX_ARGS {
@@ -562,91 +623,91 @@ pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
 
                 // Convert argument to string (on stack)
                 let (value_str, has_style, style) = match &args[arg_index] {
-                    FormatArg::Str(s) => (*s, false, BuffyStyles::default()),
-                    FormatArg::U8(n) => {
+                    BuffyFormatArg::Str(s) => (*s, false, BuffyStyles::default()),
+                    BuffyFormatArg::U8(n) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U16(n) => {
+                    BuffyFormatArg::U16(n) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U32(n) => {
+                    BuffyFormatArg::U32(n) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U64(n) => {
+                    BuffyFormatArg::U64(n) => {
                         let s = format_u64_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::Usize(n) => {
+                    BuffyFormatArg::Usize(n) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::I8(n) => {
+                    BuffyFormatArg::I8(n) => {
                         let s = format_i64_to_buffer(*n as i64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::I16(n) => {
+                    BuffyFormatArg::I16(n) => {
                         let s = format_i64_to_buffer(*n as i64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::I32(n) => {
+                    BuffyFormatArg::I32(n) => {
                         let s = format_i64_to_buffer(*n as i64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::I64(n) => {
+                    BuffyFormatArg::I64(n) => {
                         let s = format_i64_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::Isize(n) => {
+                    BuffyFormatArg::Isize(n) => {
                         let s = format_i64_to_buffer(*n as i64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U8Hex(n) => {
+                    BuffyFormatArg::U8Hex(n) => {
                         let s = format_u8_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U16Hex(n) => {
+                    BuffyFormatArg::U16Hex(n) => {
                         let s = format_u16_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U32Hex(n) => {
+                    BuffyFormatArg::U32Hex(n) => {
                         let s = format_u32_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::Bool(b) => (
+                    BuffyFormatArg::Bool(b) => (
                         if *b { "true" } else { "false" },
                         false,
                         BuffyStyles::default(),
                     ),
-                    FormatArg::Char(c) => {
+                    BuffyFormatArg::Char(c) => {
                         let mut char_buf = [0u8; 4];
                         let char_str = c.encode_utf8(&mut char_buf);
                         let len = char_str.len();
@@ -656,7 +717,7 @@ pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::Path(p) => {
+                    BuffyFormatArg::Path(p) => {
                         let s = p.to_str().ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Path conversion failed")
                         })?;
@@ -664,7 +725,7 @@ pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
                     }
 
                     // Styled variants
-                    FormatArg::CharStyled(c, st) => {
+                    BuffyFormatArg::CharStyled(c, st) => {
                         let mut char_buf = [0u8; 4];
                         let char_str = c.encode_utf8(&mut char_buf);
                         let len = char_str.len();
@@ -674,26 +735,26 @@ pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
                         })?;
                         (s, true, *st)
                     }
-                    FormatArg::StrStyled(s, st) => (*s, true, *st),
-                    FormatArg::U8Styled(n, st) => {
+                    BuffyFormatArg::StrStyled(s, st) => (*s, true, *st),
+                    BuffyFormatArg::U8Styled(n, st) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, true, *st)
                     }
-                    FormatArg::U64Styled(n, st) => {
+                    BuffyFormatArg::U64Styled(n, st) => {
                         let s = format_u64_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, true, *st)
                     }
-                    FormatArg::UsizeStyled(n, st) => {
+                    BuffyFormatArg::UsizeStyled(n, st) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, true, *st)
                     }
-                    FormatArg::U8HexStyled(n, st) => {
+                    BuffyFormatArg::U8HexStyled(n, st) => {
                         let s = format_u8_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
@@ -741,7 +802,7 @@ pub fn buffy_print(template: &str, args: &[FormatArg]) -> io::Result<()> {
 ///
 /// Memory: should be all stack, no heap
 /// Calls buffy_print() then writes newline and flushes.
-pub fn buffy_println(template: &str, args: &[FormatArg]) -> io::Result<()> {
+pub fn buffy_println(template: &str, args: &[BuffyFormatArg]) -> io::Result<()> {
     buffy_print(template, args)?;
     let mut stdout = io::stdout();
     stdout.write_all(b"\n")?;
@@ -755,7 +816,7 @@ pub fn buffy_println(template: &str, args: &[FormatArg]) -> io::Result<()> {
 pub fn buffy_write_basic<W: Write>(
     writer: &mut W,
     template: &str,
-    args: &[FormatArg],
+    args: &[BuffyFormatArg],
 ) -> io::Result<()> {
     const MAX_ARGS: usize = 8;
 
@@ -805,31 +866,31 @@ pub fn buffy_write_basic<W: Write>(
 
                 // Convert argument (same logic as buffy_print)
                 let (value_str, has_style, style) = match &args[arg_index] {
-                    FormatArg::Str(s) => (*s, false, BuffyStyles::default()),
-                    FormatArg::U8(n) => {
+                    BuffyFormatArg::Str(s) => (*s, false, BuffyStyles::default()),
+                    BuffyFormatArg::U8(n) => {
                         let s = format_u64_to_buffer(*n as u64, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U64(n) => {
+                    BuffyFormatArg::U64(n) => {
                         let s = format_u64_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Number conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::U8Hex(n) => {
+                    BuffyFormatArg::U8Hex(n) => {
                         let s = format_u8_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
                         (s, false, BuffyStyles::default())
                     }
-                    FormatArg::Bool(b) => (
+                    BuffyFormatArg::Bool(b) => (
                         if *b { "true" } else { "false" },
                         false,
                         BuffyStyles::default(),
                     ),
-                    FormatArg::Char(c) => {
+                    BuffyFormatArg::Char(c) => {
                         let mut char_buf = [0u8; 4];
                         let char_str = c.encode_utf8(&mut char_buf);
                         let len = char_str.len();
@@ -841,8 +902,8 @@ pub fn buffy_write_basic<W: Write>(
                     }
 
                     // Add other types as needed (same as buffy_print)
-                    FormatArg::StrStyled(s, st) => (*s, true, *st),
-                    FormatArg::U8HexStyled(n, st) => {
+                    BuffyFormatArg::StrStyled(s, st) => (*s, true, *st),
+                    BuffyFormatArg::U8HexStyled(n, st) => {
                         let s = format_u8_hex_to_buffer(*n, &mut num_buf).ok_or_else(|| {
                             io::Error::new(io::ErrorKind::Other, "Hex conversion failed")
                         })?;
@@ -1070,7 +1131,7 @@ mod buffy_format_tests {
 //     // No heap: BOLD and RESET are static &str, written directly
 //     buffy_println(
 //         "{}BUFFY - ZERO HEAP FORMATTING DEMONSTRATION{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 
 //     buffy_repeat(&mut io::stdout(), '=', 70)?;
@@ -1092,28 +1153,28 @@ mod buffy_format_tests {
 // fn demo_basic_types() -> io::Result<()> {
 //     buffy_println(
 //         "{}1. BASIC DATA TYPES{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // String slice - no allocation (borrowing existing data)
-//     buffy_println("  String: {}", &[FormatArg::Str("Hello, world!")])?;
+//     buffy_println("  String: {}", &[BuffyFormatArg::Str("Hello, world!")])?;
 
 //     // Boolean - no allocation (writes "true" or "false" directly)
-//     buffy_println("  Boolean true: {}", &[FormatArg::Bool(true)])?;
-//     buffy_println("  Boolean false: {}", &[FormatArg::Bool(false)])?;
+//     buffy_println("  Boolean true: {}", &[BuffyFormatArg::Bool(true)])?;
+//     buffy_println("  Boolean false: {}", &[BuffyFormatArg::Bool(false)])?;
 
 //     // Character - no allocation (encodes to UTF-8 on stack)
-//     buffy_println("  Character: {}", &[FormatArg::Char('A')])?;
-//     buffy_println("  Unicode char: {}", &[FormatArg::Char('→')])?;
+//     buffy_println("  Character: {}", &[BuffyFormatArg::Char('A')])?;
+//     buffy_println("  Unicode char: {}", &[BuffyFormatArg::Char('→')])?;
 
 //     // Multiple arguments
 //     buffy_println(
 //         "  Multiple: {} + {} = {}",
 //         &[
-//             FormatArg::Str("Hello"),
-//             FormatArg::Char(','),
-//             FormatArg::Str("world"),
+//             BuffyFormatArg::Str("Hello"),
+//             BuffyFormatArg::Char(','),
+//             BuffyFormatArg::Str("world"),
 //         ],
 //     )?;
 
@@ -1125,26 +1186,26 @@ mod buffy_format_tests {
 // fn demo_numbers() -> io::Result<()> {
 //     buffy_println(
 //         "{}2. UNSIGNED INTEGERS{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // All numbers converted to decimal strings on stack, no heap
-//     buffy_println("  U8:    {}", &[FormatArg::U8(255)])?;
-//     buffy_println("  U16:   {}", &[FormatArg::U16(65535)])?;
-//     buffy_println("  U32:   {}", &[FormatArg::U32(4294967295)])?;
-//     buffy_println("  U64:   {}", &[FormatArg::U64(18446744073709551615)])?;
-//     buffy_println("  Usize: {}", &[FormatArg::Usize(123456789)])?;
+//     buffy_println("  U8:    {}", &[BuffyFormatArg::U8(255)])?;
+//     buffy_println("  U16:   {}", &[BuffyFormatArg::U16(65535)])?;
+//     buffy_println("  U32:   {}", &[BuffyFormatArg::U32(4294967295)])?;
+//     buffy_println("  U64:   {}", &[BuffyFormatArg::U64(18446744073709551615)])?;
+//     buffy_println("  Usize: {}", &[BuffyFormatArg::Usize(123456789)])?;
 
 //     // Real-world examples
 //     let file_size: u64 = 1048576;
-//     buffy_println("  File size: {} bytes", &[FormatArg::U64(file_size)])?;
+//     buffy_println("  File size: {} bytes", &[BuffyFormatArg::U64(file_size)])?;
 
 //     let buffer_size: usize = 4096;
 //     let current_pos: usize = 2048;
 //     buffy_println(
 //         "  Position: {} / {}",
-//         &[FormatArg::Usize(current_pos), FormatArg::Usize(buffer_size)],
+//         &[BuffyFormatArg::Usize(current_pos), BuffyFormatArg::Usize(buffer_size)],
 //     )?;
 
 //     buffy_println("", &[])?;
@@ -1155,28 +1216,28 @@ mod buffy_format_tests {
 // fn demo_signed_numbers() -> io::Result<()> {
 //     buffy_println(
 //         "{}3. SIGNED INTEGERS{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // Signed numbers - negative sign handled on stack
-//     buffy_println("  I8 positive:  {}", &[FormatArg::I8(127)])?;
-//     buffy_println("  I8 negative:  {}", &[FormatArg::I8(-128)])?;
-//     buffy_println("  I16 positive: {}", &[FormatArg::I16(32767)])?;
-//     buffy_println("  I16 negative: {}", &[FormatArg::I16(-32768)])?;
-//     buffy_println("  I32 positive: {}", &[FormatArg::I32(2147483647)])?;
-//     buffy_println("  I32 negative: {}", &[FormatArg::I32(-2147483648)])?;
-//     buffy_println("  I64 positive: {}", &[FormatArg::I64(9223372036854775807)])?;
+//     buffy_println("  I8 positive:  {}", &[BuffyFormatArg::I8(127)])?;
+//     buffy_println("  I8 negative:  {}", &[BuffyFormatArg::I8(-128)])?;
+//     buffy_println("  I16 positive: {}", &[BuffyFormatArg::I16(32767)])?;
+//     buffy_println("  I16 negative: {}", &[BuffyFormatArg::I16(-32768)])?;
+//     buffy_println("  I32 positive: {}", &[BuffyFormatArg::I32(2147483647)])?;
+//     buffy_println("  I32 negative: {}", &[BuffyFormatArg::I32(-2147483648)])?;
+//     buffy_println("  I64 positive: {}", &[BuffyFormatArg::I64(9223372036854775807)])?;
 //     buffy_println(
 //         "  I64 negative: {}",
-//         &[FormatArg::I64(-9223372036854775808)],
+//         &[BuffyFormatArg::I64(-9223372036854775808)],
 //     )?;
 
 //     // Real-world: temperature offset
 //     let temperature_offset: i32 = -15;
 //     buffy_println(
 //         "  Temperature offset: {}°C",
-//         &[FormatArg::I32(temperature_offset)],
+//         &[BuffyFormatArg::I32(temperature_offset)],
 //     )?;
 
 //     buffy_println("", &[])?;
@@ -1187,30 +1248,30 @@ mod buffy_format_tests {
 // fn demo_hex_formatting() -> io::Result<()> {
 //     buffy_println(
 //         "{}4. HEXADECIMAL FORMATTING{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // Hex conversion on stack, no heap
-//     buffy_println("  U8 hex:  0x{}", &[FormatArg::U8Hex(0xFF)])?;
-//     buffy_println("  U16 hex: 0x{}", &[FormatArg::U16Hex(0xABCD)])?;
-//     buffy_println("  U32 hex: 0x{}", &[FormatArg::U32Hex(0xDEADBEEF)])?;
+//     buffy_println("  U8 hex:  0x{}", &[BuffyFormatArg::U8Hex(0xFF)])?;
+//     buffy_println("  U16 hex: 0x{}", &[BuffyFormatArg::U16Hex(0xABCD)])?;
+//     buffy_println("  U32 hex: 0x{}", &[BuffyFormatArg::U32Hex(0xDEADBEEF)])?;
 
 //     // Memory dump style (like in hex editor)
 //     buffy_println(
 //         "  Memory bytes: {} {} {} {} {}",
 //         &[
-//             FormatArg::U8Hex(0x48), // 'H'
-//             FormatArg::U8Hex(0x65), // 'e'
-//             FormatArg::U8Hex(0x6C), // 'l'
-//             FormatArg::U8Hex(0x6C), // 'l'
-//             FormatArg::U8Hex(0x6F), // 'o'
+//             BuffyFormatArg::U8Hex(0x48), // 'H'
+//             BuffyFormatArg::U8Hex(0x65), // 'e'
+//             BuffyFormatArg::U8Hex(0x6C), // 'l'
+//             BuffyFormatArg::U8Hex(0x6C), // 'l'
+//             BuffyFormatArg::U8Hex(0x6F), // 'o'
 //         ],
 //     )?;
 
 //     // Address display
 //     let memory_address: u32 = 0x00401000;
-//     buffy_println("  Address: 0x{}", &[FormatArg::U32Hex(memory_address)])?;
+//     buffy_println("  Address: 0x{}", &[BuffyFormatArg::U32Hex(memory_address)])?;
 
 //     buffy_println("", &[])?;
 //     Ok(())
@@ -1220,14 +1281,14 @@ mod buffy_format_tests {
 // fn demo_styled_output() -> io::Result<()> {
 //     buffy_println(
 //         "{}5. STYLED OUTPUT (ANSI COLORS){}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // Styled text - ANSI codes written directly, no string building
 //     buffy_println(
 //         "  Status: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "OK",
 //             BuffyStyles {
 //                 fg_color: Some(GREEN),
@@ -1239,7 +1300,7 @@ mod buffy_format_tests {
 
 //     buffy_println(
 //         "  Status: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "ERROR",
 //             BuffyStyles {
 //                 fg_color: Some(RED),
@@ -1251,7 +1312,7 @@ mod buffy_format_tests {
 
 //     buffy_println(
 //         "  Status: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "WARNING",
 //             BuffyStyles {
 //                 fg_color: Some(YELLOW),
@@ -1265,7 +1326,7 @@ mod buffy_format_tests {
 //     let count: u64 = 42;
 //     buffy_println(
 //         "  Count: {}",
-//         &[FormatArg::U64Styled(
+//         &[BuffyFormatArg::U64Styled(
 //             count,
 //             BuffyStyles {
 //                 fg_color: Some(CYAN),
@@ -1279,7 +1340,7 @@ mod buffy_format_tests {
 //     let highlighted_byte: u8 = 0xFF;
 //     buffy_println(
 //         "  Highlighted byte: {}",
-//         &[FormatArg::U8HexStyled(
+//         &[BuffyFormatArg::U8HexStyled(
 //             highlighted_byte,
 //             BuffyStyles {
 //                 fg_color: Some(RED),
@@ -1298,7 +1359,7 @@ mod buffy_format_tests {
 // fn demo_alignment() -> io::Result<()> {
 //     buffy_println(
 //         "{}6. ALIGNMENT (TABLES & COLUMNS){}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
@@ -1306,9 +1367,9 @@ mod buffy_format_tests {
 //     buffy_println(
 //         "  {:<15} {:>10} {:^8}",
 //         &[
-//             FormatArg::Str("NAME"),
-//             FormatArg::Str("SIZE"),
-//             FormatArg::Str("STATUS"),
+//             BuffyFormatArg::Str("NAME"),
+//             BuffyFormatArg::Str("SIZE"),
+//             BuffyFormatArg::Str("STATUS"),
 //         ],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 35)?;
@@ -1318,27 +1379,27 @@ mod buffy_format_tests {
 //     buffy_println(
 //         "  {:<15} {:>10} {:^8}",
 //         &[
-//             FormatArg::Str("config.txt"),
-//             FormatArg::U64(1024),
-//             FormatArg::Str("OK"),
+//             BuffyFormatArg::Str("config.txt"),
+//             BuffyFormatArg::U64(1024),
+//             BuffyFormatArg::Str("OK"),
 //         ],
 //     )?;
 
 //     buffy_println(
 //         "  {:<15} {:>10} {:^8}",
 //         &[
-//             FormatArg::Str("data.bin"),
-//             FormatArg::U64(524288),
-//             FormatArg::Str("OK"),
+//             BuffyFormatArg::Str("data.bin"),
+//             BuffyFormatArg::U64(524288),
+//             BuffyFormatArg::Str("OK"),
 //         ],
 //     )?;
 
 //     buffy_println(
 //         "  {:<15} {:>10} {:^8}",
 //         &[
-//             FormatArg::Str("large.dat"),
-//             FormatArg::U64(104857600),
-//             FormatArg::Str("OK"),
+//             BuffyFormatArg::Str("large.dat"),
+//             BuffyFormatArg::U64(104857600),
+//             BuffyFormatArg::Str("OK"),
 //         ],
 //     )?;
 
@@ -1346,9 +1407,9 @@ mod buffy_format_tests {
 
 //     // Financial-style right-aligned numbers
 //     buffy_println("  Financial Report:", &[])?;
-//     buffy_println("    Income:  ${:>10}", &[FormatArg::U64(50000)])?;
-//     buffy_println("    Expense: ${:>10}", &[FormatArg::U64(30000)])?;
-//     buffy_println("    Profit:  ${:>10}", &[FormatArg::U64(20000)])?;
+//     buffy_println("    Income:  ${:>10}", &[BuffyFormatArg::U64(50000)])?;
+//     buffy_println("    Expense: ${:>10}", &[BuffyFormatArg::U64(30000)])?;
+//     buffy_println("    Profit:  ${:>10}", &[BuffyFormatArg::U64(20000)])?;
 
 //     buffy_println("", &[])?;
 //     Ok(())
@@ -1358,7 +1419,7 @@ mod buffy_format_tests {
 // fn demo_tui_legend() -> io::Result<()> {
 //     buffy_println(
 //         "{}7. TUI LEGEND/MENU{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
@@ -1371,14 +1432,14 @@ mod buffy_format_tests {
 //     buffy_print(
 //         "{}q{}uit {}s{}ave {}u{}ndo {}d{}el ",
 //         &[
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
 //         ],
 //     )?;
 
@@ -1386,18 +1447,18 @@ mod buffy_format_tests {
 //     buffy_print(
 //         "{}i{}ns {}v{}iew {}h{}ex {}?{}help",
 //         &[
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
-//             FormatArg::Str(RED),
-//             FormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
+//             BuffyFormatArg::Str(RED),
+//             BuffyFormatArg::Str(YELLOW),
 //         ],
 //     )?;
 
-//     buffy_println("{}", &[FormatArg::Str(RESET)])?;
+//     buffy_println("{}", &[BuffyFormatArg::Str(RESET)])?;
 //     buffy_println("", &[])?;
 
 //     Ok(())
@@ -1407,7 +1468,7 @@ mod buffy_format_tests {
 // fn demo_hex_editor_line() -> io::Result<()> {
 //     buffy_println(
 //         "{}8. HEX EDITOR LINE{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
@@ -1416,7 +1477,7 @@ mod buffy_format_tests {
 //     let cursor_position: usize = 4; // Highlight 5th byte
 
 //     // Offset column (styled cyan)
-//     buffy_print("0x{}", &[FormatArg::U32Hex(offset)])?;
+//     buffy_print("0x{}", &[BuffyFormatArg::U32Hex(offset)])?;
 
 //     // // example of alternative to buffy-print
 //     // stdout.write_all(b" | ")?;
@@ -1429,7 +1490,7 @@ mod buffy_format_tests {
 //             // Cursor position - highlighted
 //             buffy_print(
 //                 "{}",
-//                 &[FormatArg::U8HexStyled(
+//                 &[BuffyFormatArg::U8HexStyled(
 //                     *byte,
 //                     BuffyStyles {
 //                         fg_color: Some(RED),
@@ -1441,7 +1502,7 @@ mod buffy_format_tests {
 //             )?;
 //         } else {
 //             // Normal hex byte
-//             buffy_print("{}", &[FormatArg::U8Hex(*byte)])?;
+//             buffy_print("{}", &[BuffyFormatArg::U8Hex(*byte)])?;
 //         }
 //         buffy_print(" ", &[])?;
 //     }
@@ -1460,7 +1521,7 @@ mod buffy_format_tests {
 //             // Cursor position - highlighted
 //             buffy_print(
 //                 "{}",
-//                 &[FormatArg::CharStyled(
+//                 &[BuffyFormatArg::CharStyled(
 //                     // ← Use CharStyled, not U8HexStyled!
 //                     ch, // ← Use ch, not *byte!
 //                     BuffyStyles {
@@ -1472,7 +1533,7 @@ mod buffy_format_tests {
 //                 )],
 //             )?;
 //         } else {
-//             buffy_print("{}", &[FormatArg::Char(ch)])?;
+//             buffy_print("{}", &[BuffyFormatArg::Char(ch)])?;
 //         }
 //     }
 
@@ -1485,7 +1546,7 @@ mod buffy_format_tests {
 // fn demo_incremental_output() -> io::Result<()> {
 //     buffy_println(
 //         "{}9. INCREMENTAL OUTPUT{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
@@ -1498,7 +1559,7 @@ mod buffy_format_tests {
 //     let filename = "config.txt";
 //     buffy_print(
 //         "{}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             filename,
 //             BuffyStyles {
 //                 fg_color: Some(CYAN),
@@ -1512,7 +1573,7 @@ mod buffy_format_tests {
 
 //     // Progress - note: add a flush after each output.
 //     for i in 1..=3 {
-//         buffy_print("{}%", &[FormatArg::U8(i * 33)])?;
+//         buffy_print("{}%", &[BuffyFormatArg::U8(i * 33)])?;
 //         buffy_print(".", &[])?;
 //         stdout.flush()?;
 //         std::thread::sleep(std::time::Duration::from_millis(1000));
@@ -1545,7 +1606,7 @@ mod buffy_format_tests {
 //         stdout.flush()?;
 //         std::thread::sleep(std::time::Duration::from_millis(100));
 //     }
-//     buffy_println("] {}%", &[FormatArg::U8(70)])?;
+//     buffy_println("] {}%", &[BuffyFormatArg::U8(70)])?;
 
 //     buffy_println("", &[])?;
 //     Ok(())
@@ -1555,14 +1616,14 @@ mod buffy_format_tests {
 // fn demo_error_display() -> io::Result<()> {
 //     buffy_println(
 //         "{}10. ERROR MESSAGES{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '-', 70)?;
 //     buffy_println("", &[])?;
 //     // Error with styled prefix
 //     buffy_println(
 //         "  {}: File not found",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "ERROR",
 //             BuffyStyles {
 //                 fg_color: Some(RED),
@@ -1578,7 +1639,7 @@ mod buffy_format_tests {
 //     buffy_println(
 //         "  {}: Invalid syntax at line {} (code: {})",
 //         &[
-//             FormatArg::StrStyled(
+//             BuffyFormatArg::StrStyled(
 //                 "ERROR",
 //                 BuffyStyles {
 //                     fg_color: Some(RED),
@@ -1586,15 +1647,15 @@ mod buffy_format_tests {
 //                     ..Default::default()
 //                 },
 //             ),
-//             FormatArg::U32(line_number),
-//             FormatArg::U32(error_code),
+//             BuffyFormatArg::U32(line_number),
+//             BuffyFormatArg::U32(error_code),
 //         ],
 //     )?;
 
 //     // Warning
 //     buffy_println(
 //         "  {}: Low memory available",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "WARNING",
 //             BuffyStyles {
 //                 fg_color: Some(YELLOW),
@@ -1614,7 +1675,7 @@ mod buffy_format_tests {
 //     buffy_println("", &[])?;
 //     buffy_println(
 //         "{}DEMONSTRATION COMPLETE{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_repeat(&mut io::stdout(), '=', 70)?;
 
@@ -1622,11 +1683,11 @@ mod buffy_format_tests {
 
 //     buffy_println(
 //         "{}Memory Usage Summary:{}",
-//         &[FormatArg::Str(BOLD), FormatArg::Str(RESET)],
+//         &[BuffyFormatArg::Str(BOLD), BuffyFormatArg::Str(RESET)],
 //     )?;
 //     buffy_println(
 //         "  Heap allocations: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "ZERO",
 //             BuffyStyles {
 //                 fg_color: Some(GREEN),
@@ -1637,7 +1698,7 @@ mod buffy_format_tests {
 //     )?;
 //     buffy_println(
 //         "  String objects: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "ZERO",
 //             BuffyStyles {
 //                 fg_color: Some(GREEN),
@@ -1648,7 +1709,7 @@ mod buffy_format_tests {
 //     )?;
 //     buffy_println(
 //         "  Vec allocations: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "ZERO",
 //             BuffyStyles {
 //                 fg_color: Some(GREEN),
@@ -1659,7 +1720,7 @@ mod buffy_format_tests {
 //     )?;
 //     buffy_println(
 //         "  All formatting: {}",
-//         &[FormatArg::StrStyled(
+//         &[BuffyFormatArg::StrStyled(
 //             "STACK ONLY",
 //             BuffyStyles {
 //                 fg_color: Some(GREEN),
