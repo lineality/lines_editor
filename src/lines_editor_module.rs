@@ -4455,7 +4455,7 @@ fn render_pasty_tui(
     print!("\x1b[2J\x1b[H");
 
     // Draw legend (using existing helper)
-    println!("{}", format_pasty_tui_legend()?);
+    let _ = format_pasty_tui_legend();
 
     // // Padding, print 3 lines // under construction...
     // for _ in 0..3 {
@@ -4497,15 +4497,23 @@ fn render_pasty_tui(
     let message_for_infobar =
         std::str::from_utf8(&state.info_bar_message_buffer[..message_len]).unwrap_or(""); // Empty string if invalid UTF-8
 
-    print!(
-        "{}",
-        format_pasty_info_bar(
-            total_count,
-            first_count_visible,
-            last_count_visible,
-            message_for_infobar // Use info_bar_message from state
-        )?
-    );
+    // print!(
+    //     "{}",
+    //     format_pasty_info_bar(
+    //         total_count,
+    //         first_count_visible,
+    //         last_count_visible,
+    //         message_for_infobar // Use info_bar_message from state
+    //     )?
+    // );
+
+    // writes to TUI
+    display_pasty_info_bar(
+        total_count,
+        first_count_visible,
+        last_count_visible,
+        message_for_infobar, // Use info_bar_message from state
+    )?;
 
     io::stdout().flush()?;
 
@@ -5714,124 +5722,11 @@ impl EditorState {
                     io::stdout().flush()?;
 
                     // 2. paste into file-path
+                    // Lets users do N multi-line pastes, works like append-mode
+                    // plus pasty mode
+                    // TODO add to clipboard?
+                    // ok to pass in handle...hopefully ^
                     let _ = pasty_paste_mode(&absolute_path, stdin_handle);
-                    //     {
-                    //         // Pre-allocated buffer for bucket brigade stdin reading
-                    //         const STDIN_CHUNK_SIZE: usize = 64;
-                    //         const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
-
-                    //         let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
-
-                    //         // Open file in append mode once (keeps handle open for session)
-                    //         let mut file = OpenOptions::new()
-                    //             .create(true)
-                    //             .append(true)
-                    //             .open(&absolute_path)?;
-
-                    //         // buffy_print("Paste multiline text here. ", &[])?;
-                    //         io::stdout().flush()?;
-
-                    //         let mut chunk_counter = 0;
-
-                    //         // Main editor loop
-                    //         loop {
-                    //             buffy_print("\x1B[2J\x1B[1;1H", &[])?;
-                    //             io::stdout().flush()?;
-                    //             // buffy_print("Paste multiline text here. ", &[])?;
-                    //             // buffy_print("Paste multiline text here. Type '", &[])?;
-                    //             write_red_hotkey("", "Paste multiline text here. Type '")?;
-                    //             write_red_hotkey("b", "' to go")?;
-                    //             write_red_hotkey(" back", ". Paste here:")?;
-                    //             buffy_print("{} > ", &[BuffyFormatArg::Str(RESET)])?;
-                    //             io::stdout().flush()?;
-
-                    //             // Defensive: prevent infinite loop
-                    //             chunk_counter += 1;
-                    //             if chunk_counter > MAX_CHUNKS {
-                    //                 return Err(io::Error::new(
-                    //                     io::ErrorKind::Other,
-                    //                     "Maximum iteration limit exceeded",
-                    //                 ));
-                    //             }
-
-                    //             // Clear buffer before reading (defensive: prevent data leakage)
-                    //             for i in 0..STDIN_CHUNK_SIZE {
-                    //                 stdin_chunk_buffer[i] = 0;
-                    //             }
-
-                    //             // Read next chunk from stdin
-                    //             let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
-                    //                 Ok(n) => n,
-                    //                 Err(e) => {
-                    //                     eprintln!("Error reading input: {}", e);
-                    //                     continue;
-                    //                 }
-                    //             };
-
-                    //             //    =================================================
-                    //             // // Debug-Assert, Test-Asset, Production-Catch-Handle
-                    //             //    =================================================
-                    //             // This is not included in production builds
-                    //             // assert: only when running in a debug-build: will panic
-                    //             debug_assert!(
-                    //                 bytes_read <= STDIN_CHUNK_SIZE,
-                    //                 "bytes_read ({}) exceeded buffer size ({})",
-                    //                 bytes_read,
-                    //                 STDIN_CHUNK_SIZE
-                    //             );
-                    //             // This is not included in production builds
-                    //             // assert: only when running cargo test: will panic
-                    //             #[cfg(test)]
-                    //             assert!(
-                    //                 bytes_read <= STDIN_CHUNK_SIZE,
-                    //                 "bytes_read ({}) exceeded buffer size ({})",
-                    //                 bytes_read,
-                    //                 STDIN_CHUNK_SIZE
-                    //             );
-                    //             // Catch & Handle without panic in production
-                    //             // This IS included in production to safe-catch
-                    //             if !bytes_read <= STDIN_CHUNK_SIZE {
-                    //                 // state.set_info_bar_message("Config error");
-                    //                 // return Err(LinesError::GeneralAssertionCatchViolation(
-                    //                 //     "bytes_read <= STDIN_CHUNK_SIZE".into(),
-                    //                 // ));
-                    //                 return Err(io::Error::new(
-                    //                     io::ErrorKind::Other,
-                    //                     "bytes_read <= STDIN_CHUNK_SIZE",
-                    //                 ));
-                    //             }
-
-                    //             // Check for exit command before writing to file
-                    //             // Only check if valid UTF-8 (don't fail on binary data)
-                    //             if let Ok(text_input_str) =
-                    //                 std::str::from_utf8(&stdin_chunk_buffer[..bytes_read])
-                    //             {
-                    //                 let trimmed = text_input_str.trim();
-
-                    //                 // Exit commands: q, quit, exit, exit()
-                    //                 if trimmed == "b" || trimmed == "back" || trimmed == "q" {
-                    //                     println!("Exiting editor...");
-                    //                     break;
-                    //                 }
-                    //             }
-
-                    //             // Write chunk directly to file (bucket brigade pattern)
-                    //             let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
-
-                    //             // Defensive assertion: all bytes should be written
-                    //             assert_eq!(
-                    //                 bytes_written, bytes_read,
-                    //                 "File write incomplete: wrote {} of {} bytes",
-                    //                 bytes_written, bytes_read
-                    //             );
-
-                    //             // Flush to disk immediately (durability)
-                    //             file.flush()?;
-                    //         }
-
-                    //         // Final flush before exit
-                    //         file.flush()?;
-                    //     }
 
                     // 3. Insert
 
@@ -8521,6 +8416,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Lets users do N multi-line pastes, works like append-mode
 pub fn pasty_paste_mode<R: BufRead>(absolute_path: &Path, stdin_handle: &mut R) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
     const STDIN_CHUNK_SIZE: usize = 64;
@@ -19216,95 +19112,295 @@ pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<
     Ok(files_with_time.into_iter().map(|(path, _)| path).collect())
 }
 
-/// Formats the Pasty legend with color-coded commands
-fn format_pasty_tui_legend() -> io::Result<String> {
-    // Ok(format!(
-    //     "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
-    //     YELLOW,
-    //     RED,
-    //     YELLOW,
-    //     RED,
-    //     YELLOW,
-    //     RED,
-    //     YELLOW,
-    //     YELLOW,
-    //     RED,
-    //     YELLOW,
-    //     RED,
-    //     RESET,
-    //     RED,
-    //     YELLOW,
-    //     RESET
-    // ))
+/// Writes the complete navigation legend directly to terminal
+///
+/// ## Project Context
+/// Displays all available keyboard commands for file navigation with
+/// color-coded hotkeys. Each command section written independently for
+/// maintainability - adding/removing commands requires no argument counting.
+///
+/// ## Memory: ZERO HEAP
+/// All output written directly to terminal using buffy functions.
+/// No intermediate String building, no heap allocation.
+///
+/// ## Operation
+/// Writes legend in modular sections:
+/// - Each command written separately via write_red_hotkey()
+/// - Colors applied per-command (RED hotkey, YELLOW description)
+/// - RESET applied at end
+/// - Modular: Add/remove commands without affecting others
+///
+/// ## Safety & Error Handling
+/// - Returns io::Result for write failures
+/// - Each command write is independent
+/// - Failure in one command doesn't affect others structurally
+///
+/// ## Legend Commands
+/// - q: quit application
+/// - sav: save current state (red and green and yellow)
+/// - re: reload/refresh
+/// - undo: undo last operation
+/// - del: delete item
+/// - nrm: normal mode
+/// - ins: insert mode
+/// - vis: visual mode
+/// - hex: hex editor mode
+/// - raw: raw view
+/// - pasty: paste operation
+/// - cvy: copy operation
+/// - wrd,b,end: word navigation
+/// - ///cmnt: comment operations (red and green and yellow)
+/// - []idnt: indent operations
+/// - hjkl: vim-style navigation
+///
+/// ## Example
+/// ```rust
+/// // In main display loop:
+/// write_formatted_navigation_legend_to_tui()?;
+/// ```
+fn format_pasty_tui_legend() -> Result<()> {
+    // File operations group
+    write_red_hotkey("", "Have a Pasty!! ")?;
+    // Three Colour
+    // write_red_green_hotkey("s", "a", "v ")?;
+    // Red only
+    write_red_hotkey("b", "ack paste")?;
+    write_red_hotkey("N", " ")?;
 
-    let stack_formatted_legend = stack_format_it(
-        "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
-        &[
-            &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &YELLOW, &RED, &YELLOW, &RED,
-            &RESET, &RED, &YELLOW, &RESET,
-        ],
-        "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
-    );
+    // Mode operations group
+    write_red_hotkey("str", "(any file-path) | ")?;
+    write_red_hotkey("clear", " all | ")?;
+    write_red_green_hotkey("clear", "N", " item ")?;
+    // newline \n
+    buffy_println("", &[])?;
 
-    Ok(stack_formatted_legend)
+    write_red_hotkey("Empty Enter", " Add Freshest Clipboard Item | ")?;
+
+    write_red_hotkey("paste", " multi-line cut and paste")?;
+    // write_red_hotkey("hex", " ")?;
+
+    // // View operations group
+    // write_red_hotkey("r", "aw|")?;
+    // write_red_hotkey("p", "asty ")?;
+    // write_red_hotkey("cvy", "|")?;
+
+    // // Navigation group
+    // write_red_hotkey("w", "rd,")?;
+    // write_red_hotkey("b", ",")?;
+    // write_red_hotkey("e", "nd ")?;
+
+    // // Comment/indent group
+    // // Three Colour
+    // write_red_green_hotkey("/", "/", "/cmnt ")?;
+    // // Red only
+    // write_red_hotkey("[]", "idnt ")?;
+
+    // // Movement group
+    // write_red_hotkey("hjkl", "")?;
+
+    // Clear formatting: ANSI color codes are stateful
+    // Make sure NEXT prints
+    // are not also formatted.
+    buffy_print("{}", &[BuffyFormatArg::Str(RESET)])?;
+
+    // newline \n
+    buffy_println("", &[])?;
+
+    // Done
+    Ok(())
 }
 
-/// Formats the Pasty info bar with count, pagination, and error messages
-fn format_pasty_info_bar(
+// /// Formats the Pasty legend with color-coded commands
+// fn format_pasty_tui_legend2() -> io::Result<String> {
+//     // Ok(format!(
+//     //     "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     RESET,
+//     //     RED,
+//     //     YELLOW,
+//     //     RESET
+//     // ))
+
+//     let stack_formatted_legend = stack_format_it(
+//         "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
+//         &[
+//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &YELLOW, &RED, &YELLOW, &RED,
+//             &RESET, &RED, &YELLOW, &RESET,
+//         ],
+//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+//     );
+
+//     Ok(stack_formatted_legend)
+// }
+
+// /// Formats the Pasty info bar with count, pagination, and error messages
+// fn format_pasty_info_bar(
+//     total_count: usize,
+//     first_count_visible: usize,
+//     last_count_visible: usize,
+//     info_bar_message: &str,
+// ) -> io::Result<String> {
+//     let infobar_message_display = if !info_bar_message.is_empty() {
+//         stack_format_it(" {}", &[&info_bar_message], "")
+//     } else {
+//         String::new()
+//     };
+
+//     // Ok(format!(
+//     //     // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
+//     //     "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
+//     //     RED,
+//     //     total_count,
+//     //     YELLOW,
+//     //     YELLOW,
+//     //     RED,
+//     //     first_count_visible,
+//     //     YELLOW,
+//     //     RED,
+//     //     last_count_visible,
+//     //     YELLOW,
+//     //     infobar_message_display,
+//     //     YELLOW,
+//     //     RESET
+//     // ))
+
+//     let string_totalcount = total_count.to_string();
+//     let string_firstcount_visible = first_count_visible.to_string();
+//     let string_last_count_visible = last_count_visible.to_string();
+
+//     let stack_formatted_infobar = stack_format_it(
+//         "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item #, 'paste', or file-path to paste file text {}> ",
+//         &[
+//             &RED,
+//             &string_totalcount,
+//             &YELLOW,
+//             &YELLOW,
+//             &RED,
+//             &string_firstcount_visible,
+//             &YELLOW,
+//             &RED,
+//             &string_last_count_visible,
+//             &YELLOW,
+//             &infobar_message_display,
+//             &YELLOW,
+//             &RESET,
+//         ],
+//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+//     );
+
+//     Ok(stack_formatted_infobar)
+// }
+
+/// Displays the Pasty info bar with count, pagination, and error messages.
+/// Writes directly to stdout with zero heap allocation.
+///
+/// ## Project Context
+/// Pasty clipboard manager info bar - shows total items, current view range,
+/// navigation hints, and optional error/status messages. Each colored item
+/// has its color code with it (not scattered in previous statements).
+///
+/// ## Memory: ZERO HEAP
+/// All output written directly to terminal using stack-based formatting.
+///
+/// ## Parameters
+/// - total_count: Total number of clipboard items
+/// - first_count_visible: First item number currently displayed
+/// - last_count_visible: Last item number currently displayed
+/// - info_bar_message: Optional status/error message (empty string if none)
+fn display_pasty_info_bar(
     total_count: usize,
     first_count_visible: usize,
     last_count_visible: usize,
     info_bar_message: &str,
-) -> io::Result<String> {
-    let infobar_message_display = if !info_bar_message.is_empty() {
-        stack_format_it(" {}", &[&info_bar_message], "")
-    } else {
-        String::new()
-    };
+) -> io::Result<()> {
+    // =========================================================================
+    // SECTION 1: RED total_count
+    // =========================================================================
+    buffy_print(
+        "{}{}",
+        &[BuffyFormatArg::Str(RED), BuffyFormatArg::Usize(total_count)],
+    )?;
 
-    // Ok(format!(
-    //     // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
-    //     "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
-    //     RED,
-    //     total_count,
-    //     YELLOW,
-    //     YELLOW,
-    //     RED,
-    //     first_count_visible,
-    //     YELLOW,
-    //     RED,
-    //     last_count_visible,
-    //     YELLOW,
-    //     infobar_message_display,
-    //     YELLOW,
-    //     RESET
-    // ))
+    // =========================================================================
+    // SECTION 2: YELLOW " Clipboard Items, "
+    // =========================================================================
+    buffy_print("{} Clipboard Items, ", &[BuffyFormatArg::Str(YELLOW)])?;
 
-    let string_totalcount = total_count.to_string();
-    let string_firstcount_visible = first_count_visible.to_string();
-    let string_last_count_visible = last_count_visible.to_string();
+    // =========================================================================
+    // SECTION 3: YELLOW "Showing"
+    // =========================================================================
+    buffy_print("{}Showing ", &[BuffyFormatArg::Str(YELLOW)])?;
 
-    let stack_formatted_infobar = stack_format_it(
-        "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
+    // =========================================================================
+    // SECTION 4: RED first_count_visible
+    // =========================================================================
+    buffy_print(
+        "{}{}",
         &[
-            &RED,
-            &string_totalcount,
-            &YELLOW,
-            &YELLOW,
-            &RED,
-            &string_firstcount_visible,
-            &YELLOW,
-            &RED,
-            &string_last_count_visible,
-            &YELLOW,
-            &infobar_message_display,
-            &YELLOW,
-            &RESET,
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Usize(first_count_visible),
         ],
-        "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
-    );
+    )?;
 
-    Ok(stack_formatted_infobar)
+    // =========================================================================
+    // SECTION 5: YELLOW "-"
+    // =========================================================================
+    buffy_print("{}-", &[BuffyFormatArg::Str(YELLOW)])?;
+
+    // =========================================================================
+    // SECTION 6: RED last_count_visible
+    // =========================================================================
+    buffy_print(
+        "{}{}",
+        &[
+            BuffyFormatArg::Str(RED),
+            BuffyFormatArg::Usize(last_count_visible),
+        ],
+    )?;
+
+    // =========================================================================
+    // SECTION 7: YELLOW " (Page up/down k/j) "
+    // =========================================================================
+    buffy_print("{} (Page up/down k/j) ", &[BuffyFormatArg::Str(YELLOW)])?;
+
+    // =========================================================================
+    // SECTION 8: YELLOW info_bar_message (if present)
+    // =========================================================================
+    if !info_bar_message.is_empty() {
+        buffy_print(
+            "{}{}",
+            &[
+                BuffyFormatArg::Str(YELLOW),
+                BuffyFormatArg::Str(info_bar_message),
+            ],
+        )?;
+    }
+
+    // =========================================================================
+    // SECTION 9: Newline + prompt text + RESET
+    // =========================================================================
+    buffy_print("\nEnter clipboard item #, 'paste', ", &[])?;
+
+    buffy_print("or file-path to paste file text ", &[])?;
+
+    buffy_print("{}> ", &[BuffyFormatArg::Str(RESET)])?;
+
+    // =========================================================================
+    // FINAL: Flush to ensure prompt appears immediately
+    // =========================================================================
+    io::stdout().flush()?;
+
+    Ok(())
 }
 
 /// Clears all files from clipboard directory
