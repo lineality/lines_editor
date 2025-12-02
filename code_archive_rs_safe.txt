@@ -2403,3 +2403,143 @@ fn stack_format_it1(template: &str, inserts: &[&str], fallback: &str) -> String 
     //     // This is the only condition where we return Ok(true).
     //     Ok(cursor_char_end_byte == end)
     // }
+
+// /// Main editing loop for the lines text editor (pre-allocated buffer version)
+// ///
+// /// # Arguments
+// /// * `original_file_path` - Path to the file being edited
+// ///
+// /// # Returns
+// /// * `io::Result<()>` - Success or error status of the editing session
+// ///
+// /// # Memory Safety
+// /// - Uses pre-allocated 256-byte buffer for stdin chunks
+// /// - Never loads entire file into memory
+// /// - Processes input chunk-by-chunk using bucket brigade pattern
+// ///
+// /// # Behavior
+// /// 1. Creates file with timestamp if it doesn't exist
+// /// 2. Displays TUI with file path and last ~10 lines
+// /// 3. Enters input loop where user can:
+// ///    - Type text and press enter - appended immediately
+// ///    - Enter 'q', 'quit', 'exit', or 'exit()' to close editor
+// /// 4. After each append, refreshes TUI display
+// ///
+// /// # Errors
+// /// Returns error if:
+// /// - Cannot create/access the file
+// /// - Cannot read user input
+// /// - Cannot append to file
+// /// - Cannot display TUI
+// ///
+// /// # Example
+// /// ```no_run
+// /// let path = Path::new("notes.txt");
+// /// memo_mode_mini_editor_loop(&path)?;
+// /// ```
+// pub fn pasty_paste_mode(original_file_path: &Path) -> Result<()> {
+//     // Pre-allocated buffer for bucket brigade stdin reading
+//     const STDIN_CHUNK_SIZE: usize = 64;
+//     const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
+
+//     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
+
+//     let stdin = io::stdin();
+//     let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
+
+//     // Open file in append mode once (keeps handle open for session)
+//     let mut file = OpenOptions::new()
+//         .create(true)
+//         .append(true)
+//         .open(original_file_path)?;
+
+//     // Bootstrap: Display initial TUI
+//     buffy_print("Paste here, 'q' to exit when done > ", &[])?;
+
+//     let mut chunk_counter = 0;
+
+//     // Main editor loop
+//     loop {
+//         // Defensive: prevent infinite loop
+//         chunk_counter += 1;
+//         if chunk_counter > MAX_CHUNKS {
+//             return Err(LinesError::Io(io::Error::new(
+//                 io::ErrorKind::Other,
+//                 "Maximum iteration limit exceeded",
+//             )));
+//         }
+
+//         // Clear buffer before reading (defensive: prevent data leakage)
+//         for i in 0..STDIN_CHUNK_SIZE {
+//             stdin_chunk_buffer[i] = 0;
+//         }
+
+//         // Read next chunk from stdin
+//         let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
+//             Ok(n) => n,
+//             Err(e) => {
+//                 eprintln!("Error reading input: {}", e);
+//                 continue;
+//             }
+//         };
+
+//         //    =================================================
+//         // // Debug-Assert, Test-Asset, Production-Catch-Handle
+//         //    =================================================
+//         // This is not included in production builds
+//         // assert: only when running in a debug-build: will panic
+//         debug_assert!(
+//             bytes_read <= STDIN_CHUNK_SIZE,
+//             "bytes_read ({}) exceeded buffer size ({})",
+//             bytes_read,
+//             STDIN_CHUNK_SIZE
+//         );
+//         // This is not included in production builds
+//         // assert: only when running cargo test: will panic
+//         #[cfg(test)]
+//         assert!(
+//             bytes_read <= STDIN_CHUNK_SIZE,
+//             "bytes_read ({}) exceeded buffer size ({})",
+//             bytes_read,
+//             STDIN_CHUNK_SIZE
+//         );
+//         // Catch & Handle without panic in production
+//         // This IS included in production to safe-catch
+//         if !bytes_read <= STDIN_CHUNK_SIZE {
+//             // state.set_info_bar_message("Config error");
+//             return Err(LinesError::GeneralAssertionCatchViolation(
+//                 "bytes_read <= STDIN_CHUNK_SIZE".into(),
+//             ));
+//         }
+
+//         // Check for exit command before writing to file
+//         // Only check if valid UTF-8 (don't fail on binary data)
+//         if let Ok(text_input_str) = std::str::from_utf8(&stdin_chunk_buffer[..bytes_read]) {
+//             let trimmed = text_input_str.trim();
+
+//             // Exit commands: q, quit, exit, exit()
+//             if trimmed == "q" || trimmed == "quit" || trimmed == "exit" || trimmed == "exit()" {
+//                 println!("Exiting editor...");
+//                 break;
+//             }
+//         }
+
+//         // Write chunk directly to file (bucket brigade pattern)
+//         let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
+
+//         // Defensive assertion: all bytes should be written
+//         assert_eq!(
+//             bytes_written, bytes_read,
+//             "File write incomplete: wrote {} of {} bytes",
+//             bytes_written, bytes_read
+//         );
+
+//         // Flush to disk immediately (durability)
+//         file.flush()?;
+//     }
+
+//     // Final flush before exit
+//     file.flush()?;
+
+//     Ok(())
+// }

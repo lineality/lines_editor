@@ -813,6 +813,204 @@ pub fn buffy_println(template: &str, args: &[BuffyFormatArg]) -> io::Result<()> 
 ///
 /// Memory: should be all stack, no heap
 /// Same direct-write logic as buffy_print() but writes to provided writer.
+///
+/// Writes formatted output to any writer (file, buffer, stream, stderr, etc.) with zero heap allocation.
+///
+/// ## Project Context
+/// Generic output function for writing formatted text to destinations other than stdout.
+/// Used for file logging, buffer building, network streams, or stderr output while
+/// maintaining zero heap allocation guarantee. This is the underlying mechanism that
+/// `buffy_print()` uses internally with stdout.
+///
+/// ## Memory: ZERO HEAP
+/// All conversions use stack buffers. Output written directly to provided writer.
+/// No String objects, no Vec allocations, no intermediate storage.
+///
+/// ## Operation Flow
+/// 1. Parse template string for {} placeholders
+/// 2. For literal text: write directly to writer
+/// 3. For placeholders: convert arg on stack, write result to writer
+/// 4. Apply alignment/styling as specified
+/// 5. Continue until template exhausted
+///
+/// ## Safety & Error Handling
+/// - No panic: Returns io::Error on write or format failure
+/// - Bounded: Max 8 arguments (prevents stack overflow)
+/// - Validates: All conversions checked, returns Err on failure
+/// - Non-critical: Caller can handle error and continue
+/// - Production-safe: No debug info leakage in error messages
+///
+/// ## Parameters
+/// - `writer`: Mutable reference to any type implementing `Write` trait
+///   (File, Vec<u8>, Stderr, TcpStream, BufWriter, etc.)
+/// - `template`: Format string with {} or {:<N}/{:>N}/{:^N} placeholders
+///   - `{}` - default formatting
+///   - `{:<N}` - left-align in N characters
+///   - `{:>N}` - right-align in N characters
+///   - `{:^N}` - center-align in N characters
+/// - `args`: Slice of BuffyFormatArg values (max 8 per call)
+///   - U8, U16, U32, U64, Usize - unsigned integers
+///   - I8, I16, I32, I64, Isize - signed integers
+///   - U8Hex, U16Hex, U32Hex - hexadecimal formatting
+///   - Str - string slices
+///   - Bool - true/false
+///   - Char - single characters
+///   - Path - file paths
+///   - Styled variants - include ANSI color codes
+///
+/// ## Returns
+/// - `Ok(())`: Successfully written to writer
+/// - `Err(io::Error)`: Write failed, format error, or buffer too small
+///
+/// ## When to Use vs `buffy_print()`
+/// - Use `buffy_print()`: Writing to terminal/stdout (most common TUI case)
+/// - Use `buffy_write_basic()`: Writing to files, buffers, stderr, or network streams
+///
+/// ## Limitations
+/// - Max 8 arguments per call (call multiple times if needed)
+/// - Max 64 characters width for alignment
+/// - Template placeholders must match arg count exactly
+/// - Writer must have capacity for output (or return error)
+///
+/// ## Examples
+///
+/// ### File Logging
+/// ```rust
+/// use std::fs::File;
+///
+/// let mut log = File::create("app.log")?;
+/// buffy_write_basic(
+///     &mut log,
+///     "[{}] User {} logged in at {}\n",
+///     &[
+///         BuffyFormatArg::Str("INFO"),
+///         BuffyFormatArg::U32(1001),
+///         BuffyFormatArg::Str("2025-01-15"),
+///     ]
+/// )?;
+/// log.flush()?;
+/// ```
+///
+/// ### Error to Stderr
+/// ```rust
+/// use std::io::stderr;
+///
+/// let mut err = stderr();
+/// buffy_write_basic(
+///     &mut err,
+///     "ERROR: Failed to open file (code: {})\n",
+///     &[BuffyFormatArg::U32(404)]
+/// )?;
+/// ```
+///
+/// ### Building String in Buffer
+/// ```rust
+/// let mut buffer = Vec::<u8>::new();
+/// buffy_write_basic(
+///     &mut buffer,
+///     "Report: {} items processed, {} errors\n",
+///     &[
+///         BuffyFormatArg::U64(1000),
+///         BuffyFormatArg::U32(3),
+///     ]
+/// )?;
+/// let report = String::from_utf8(buffer)?;
+/// ```
+///
+/// ### Hex Dump to File
+/// ```rust
+/// let mut dump = File::create("memory.hex")?;
+/// let bytes: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+///
+/// buffy_write_basic(
+///     &mut dump,
+///     "0x{} 0x{} 0x{} 0x{}\n",
+///     &[
+///         BuffyFormatArg::U8Hex(bytes[0]),
+///         BuffyFormatArg::U8Hex(bytes[1]),
+///         BuffyFormatArg::U8Hex(bytes[2]),
+///         BuffyFormatArg::U8Hex(bytes[3]),
+///     ]
+/// )?;
+/// ```
+///
+/// ### Styled Output to Stderr
+/// ```rust
+/// let mut err = stderr();
+/// buffy_write_basic(
+///     &mut err,
+///     "{}: Operation failed\n",
+///     &[BuffyFormatArg::StrStyled(
+///         "CRITICAL",
+///         BuffyStyles {
+///             fg_color: Some("\x1b[31m"), // RED
+///             bold: true,
+///             ..Default::default()
+///         }
+///     )]
+/// )?;
+/// ```
+///
+/// ### Aligned Table to File
+/// ```rust
+/// let mut table = File::create("report.txt")?;
+///
+/// // Header
+/// buffy_write_basic(
+///     &mut table,
+///     "{:<15} {:>10} {:>10}\n",
+///     &[
+///         BuffyFormatArg::Str("Item"),
+///         BuffyFormatArg::Str("Quantity"),
+///         BuffyFormatArg::Str("Price"),
+///     ]
+/// )?;
+///
+/// // Data row
+/// buffy_write_basic(
+///     &mut table,
+///     "{:<15} {:>10} {:>10}\n",
+///     &[
+///         BuffyFormatArg::Str("Widget"),
+///         BuffyFormatArg::U32(42),
+///         BuffyFormatArg::U32(299),
+///     ]
+/// )?;
+/// ```
+///
+/// ### Network Protocol Message
+/// ```rust
+/// use std::net::TcpStream;
+///
+/// let mut stream = TcpStream::connect("127.0.0.1:8080")?;
+/// buffy_write_basic(
+///     &mut stream,
+///     "MSG {} LEN {} DATA {}\r\n",
+///     &[
+///         BuffyFormatArg::U32(1001),
+///         BuffyFormatArg::U32(payload.len()),
+///         BuffyFormatArg::Str(payload),
+///     ]
+/// )?;
+/// stream.flush()?;
+/// ```
+///
+/// ## Error Handling Pattern
+/// ```rust
+/// match buffy_write_basic(&mut file, "Value: {}\n", &[BuffyFormatArg::U32(x)]) {
+///     Ok(()) => { /* continue */ },
+///     Err(e) => {
+///         // Log to stderr, don't panic production code
+///         let mut err = stderr();
+///         let _ = buffy_write_basic(
+///             &mut err,
+///             "Write failed (recovered)\n",
+///             &[]
+///         );
+///         // Continue with fallback behavior
+///     }
+/// }
+/// ```
 pub fn buffy_write_basic<W: Write>(
     writer: &mut W,
     template: &str,
