@@ -969,6 +969,7 @@ fn main() -> Result<(), LinesError> {
 use std::env;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
+use std::io::BufRead;
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, StdinLock, Write, stdin, stdout};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -5605,7 +5606,7 @@ impl EditorState {
 
         // Pagination state (transient to this Pasty session)
         let mut offset: usize = 0;
-        let items_per_page = self.effective_rows;
+        let items_per_page = self.effective_rows - 1; // double header
 
         // Loop iteration counter (defensive bounds)
         let mut pasty_iteration = 0;
@@ -5713,124 +5714,124 @@ impl EditorState {
                     io::stdout().flush()?;
 
                     // 2. paste into file-path
-                    // let _ = pasty_paste_mode(&absolute_path);
-                    {
-                        // Pre-allocated buffer for bucket brigade stdin reading
-                        const STDIN_CHUNK_SIZE: usize = 64;
-                        const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
+                    let _ = pasty_paste_mode(&absolute_path, stdin_handle);
+                    //     {
+                    //         // Pre-allocated buffer for bucket brigade stdin reading
+                    //         const STDIN_CHUNK_SIZE: usize = 64;
+                    //         const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
 
-                        let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
+                    //         let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
 
-                        // Open file in append mode once (keeps handle open for session)
-                        let mut file = OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&absolute_path)?;
+                    //         // Open file in append mode once (keeps handle open for session)
+                    //         let mut file = OpenOptions::new()
+                    //             .create(true)
+                    //             .append(true)
+                    //             .open(&absolute_path)?;
 
-                        // buffy_print("Paste multiline text here. ", &[])?;
-                        io::stdout().flush()?;
+                    //         // buffy_print("Paste multiline text here. ", &[])?;
+                    //         io::stdout().flush()?;
 
-                        let mut chunk_counter = 0;
+                    //         let mut chunk_counter = 0;
 
-                        // Main editor loop
-                        loop {
-                            buffy_print("\x1B[2J\x1B[1;1H", &[])?;
-                            io::stdout().flush()?;
-                            // buffy_print("Paste multiline text here. ", &[])?;
-                            // buffy_print("Paste multiline text here. Type '", &[])?;
-                            write_red_hotkey("", "Paste multiline text here. Type '")?;
-                            write_red_hotkey("b", "' to go")?;
-                            write_red_hotkey(" back", ". Paste here:")?;
-                            buffy_print("{} > ", &[BuffyFormatArg::Str(RESET)])?;
-                            io::stdout().flush()?;
+                    //         // Main editor loop
+                    //         loop {
+                    //             buffy_print("\x1B[2J\x1B[1;1H", &[])?;
+                    //             io::stdout().flush()?;
+                    //             // buffy_print("Paste multiline text here. ", &[])?;
+                    //             // buffy_print("Paste multiline text here. Type '", &[])?;
+                    //             write_red_hotkey("", "Paste multiline text here. Type '")?;
+                    //             write_red_hotkey("b", "' to go")?;
+                    //             write_red_hotkey(" back", ". Paste here:")?;
+                    //             buffy_print("{} > ", &[BuffyFormatArg::Str(RESET)])?;
+                    //             io::stdout().flush()?;
 
-                            // Defensive: prevent infinite loop
-                            chunk_counter += 1;
-                            if chunk_counter > MAX_CHUNKS {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    "Maximum iteration limit exceeded",
-                                ));
-                            }
+                    //             // Defensive: prevent infinite loop
+                    //             chunk_counter += 1;
+                    //             if chunk_counter > MAX_CHUNKS {
+                    //                 return Err(io::Error::new(
+                    //                     io::ErrorKind::Other,
+                    //                     "Maximum iteration limit exceeded",
+                    //                 ));
+                    //             }
 
-                            // Clear buffer before reading (defensive: prevent data leakage)
-                            for i in 0..STDIN_CHUNK_SIZE {
-                                stdin_chunk_buffer[i] = 0;
-                            }
+                    //             // Clear buffer before reading (defensive: prevent data leakage)
+                    //             for i in 0..STDIN_CHUNK_SIZE {
+                    //                 stdin_chunk_buffer[i] = 0;
+                    //             }
 
-                            // Read next chunk from stdin
-                            let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
-                                Ok(n) => n,
-                                Err(e) => {
-                                    eprintln!("Error reading input: {}", e);
-                                    continue;
-                                }
-                            };
+                    //             // Read next chunk from stdin
+                    //             let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
+                    //                 Ok(n) => n,
+                    //                 Err(e) => {
+                    //                     eprintln!("Error reading input: {}", e);
+                    //                     continue;
+                    //                 }
+                    //             };
 
-                            //    =================================================
-                            // // Debug-Assert, Test-Asset, Production-Catch-Handle
-                            //    =================================================
-                            // This is not included in production builds
-                            // assert: only when running in a debug-build: will panic
-                            debug_assert!(
-                                bytes_read <= STDIN_CHUNK_SIZE,
-                                "bytes_read ({}) exceeded buffer size ({})",
-                                bytes_read,
-                                STDIN_CHUNK_SIZE
-                            );
-                            // This is not included in production builds
-                            // assert: only when running cargo test: will panic
-                            #[cfg(test)]
-                            assert!(
-                                bytes_read <= STDIN_CHUNK_SIZE,
-                                "bytes_read ({}) exceeded buffer size ({})",
-                                bytes_read,
-                                STDIN_CHUNK_SIZE
-                            );
-                            // Catch & Handle without panic in production
-                            // This IS included in production to safe-catch
-                            if !bytes_read <= STDIN_CHUNK_SIZE {
-                                // state.set_info_bar_message("Config error");
-                                // return Err(LinesError::GeneralAssertionCatchViolation(
-                                //     "bytes_read <= STDIN_CHUNK_SIZE".into(),
-                                // ));
-                                return Err(io::Error::new(
-                                    io::ErrorKind::Other,
-                                    "bytes_read <= STDIN_CHUNK_SIZE",
-                                ));
-                            }
+                    //             //    =================================================
+                    //             // // Debug-Assert, Test-Asset, Production-Catch-Handle
+                    //             //    =================================================
+                    //             // This is not included in production builds
+                    //             // assert: only when running in a debug-build: will panic
+                    //             debug_assert!(
+                    //                 bytes_read <= STDIN_CHUNK_SIZE,
+                    //                 "bytes_read ({}) exceeded buffer size ({})",
+                    //                 bytes_read,
+                    //                 STDIN_CHUNK_SIZE
+                    //             );
+                    //             // This is not included in production builds
+                    //             // assert: only when running cargo test: will panic
+                    //             #[cfg(test)]
+                    //             assert!(
+                    //                 bytes_read <= STDIN_CHUNK_SIZE,
+                    //                 "bytes_read ({}) exceeded buffer size ({})",
+                    //                 bytes_read,
+                    //                 STDIN_CHUNK_SIZE
+                    //             );
+                    //             // Catch & Handle without panic in production
+                    //             // This IS included in production to safe-catch
+                    //             if !bytes_read <= STDIN_CHUNK_SIZE {
+                    //                 // state.set_info_bar_message("Config error");
+                    //                 // return Err(LinesError::GeneralAssertionCatchViolation(
+                    //                 //     "bytes_read <= STDIN_CHUNK_SIZE".into(),
+                    //                 // ));
+                    //                 return Err(io::Error::new(
+                    //                     io::ErrorKind::Other,
+                    //                     "bytes_read <= STDIN_CHUNK_SIZE",
+                    //                 ));
+                    //             }
 
-                            // Check for exit command before writing to file
-                            // Only check if valid UTF-8 (don't fail on binary data)
-                            if let Ok(text_input_str) =
-                                std::str::from_utf8(&stdin_chunk_buffer[..bytes_read])
-                            {
-                                let trimmed = text_input_str.trim();
+                    //             // Check for exit command before writing to file
+                    //             // Only check if valid UTF-8 (don't fail on binary data)
+                    //             if let Ok(text_input_str) =
+                    //                 std::str::from_utf8(&stdin_chunk_buffer[..bytes_read])
+                    //             {
+                    //                 let trimmed = text_input_str.trim();
 
-                                // Exit commands: q, quit, exit, exit()
-                                if trimmed == "b" || trimmed == "back" || trimmed == "q" {
-                                    println!("Exiting editor...");
-                                    break;
-                                }
-                            }
+                    //                 // Exit commands: q, quit, exit, exit()
+                    //                 if trimmed == "b" || trimmed == "back" || trimmed == "q" {
+                    //                     println!("Exiting editor...");
+                    //                     break;
+                    //                 }
+                    //             }
 
-                            // Write chunk directly to file (bucket brigade pattern)
-                            let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
+                    //             // Write chunk directly to file (bucket brigade pattern)
+                    //             let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
 
-                            // Defensive assertion: all bytes should be written
-                            assert_eq!(
-                                bytes_written, bytes_read,
-                                "File write incomplete: wrote {} of {} bytes",
-                                bytes_written, bytes_read
-                            );
+                    //             // Defensive assertion: all bytes should be written
+                    //             assert_eq!(
+                    //                 bytes_written, bytes_read,
+                    //                 "File write incomplete: wrote {} of {} bytes",
+                    //                 bytes_written, bytes_read
+                    //             );
 
-                            // Flush to disk immediately (durability)
-                            file.flush()?;
-                        }
+                    //             // Flush to disk immediately (durability)
+                    //             file.flush()?;
+                    //         }
 
-                        // Final flush before exit
-                        file.flush()?;
-                    }
+                    //         // Final flush before exit
+                    //         file.flush()?;
+                    //     }
 
                     // 3. Insert
 
@@ -8512,6 +8513,118 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
 
         // Refresh TUI after append
         build_memo_mode_tui(original_file_path)?;
+    }
+
+    // Final flush before exit
+    file.flush()?;
+
+    Ok(())
+}
+
+pub fn pasty_paste_mode<R: BufRead>(absolute_path: &Path, stdin_handle: &mut R) -> Result<()> {
+    // Pre-allocated buffer for bucket brigade stdin reading
+    const STDIN_CHUNK_SIZE: usize = 64;
+    const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
+
+    let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
+
+    // Open file in append mode once (keeps handle open for session)
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&absolute_path)?;
+
+    // buffy_print("Paste multiline text here. ", &[])?;
+    io::stdout().flush()?;
+
+    let mut chunk_counter = 0;
+
+    // Main editor loop
+    loop {
+        buffy_print("\x1B[2J\x1B[1;1H", &[])?;
+        io::stdout().flush()?;
+        write_red_hotkey("", "Paste multiline text here. Type '")?;
+        write_red_hotkey("b", "' to go")?;
+        write_red_hotkey(" back", ". Paste here:")?;
+        buffy_print("{} > ", &[BuffyFormatArg::Str(RESET)])?;
+        io::stdout().flush()?;
+
+        // Defensive: prevent infinite loop
+        chunk_counter += 1;
+        if chunk_counter > MAX_CHUNKS {
+            return Err(LinesError::Io(io::Error::new(
+                io::ErrorKind::Other,
+                "Maximum iteration limit exceeded",
+            )));
+        }
+
+        // Clear buffer before reading (defensive: prevent data leakage)
+        for i in 0..STDIN_CHUNK_SIZE {
+            stdin_chunk_buffer[i] = 0;
+        }
+
+        // Read next chunk from stdin
+        let bytes_read = match stdin_handle.read(&mut stdin_chunk_buffer) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Error reading input: {}", e);
+                continue;
+            }
+        };
+
+        //    =================================================
+        // // Debug-Assert, Test-Asset, Production-Catch-Handle
+        //    =================================================
+        // This is not included in production builds
+        // assert: only when running in a debug-build: will panic
+        debug_assert!(
+            bytes_read <= STDIN_CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            STDIN_CHUNK_SIZE
+        );
+        // This is not included in production builds
+        // assert: only when running cargo test: will panic
+        #[cfg(test)]
+        assert!(
+            bytes_read <= STDIN_CHUNK_SIZE,
+            "bytes_read ({}) exceeded buffer size ({})",
+            bytes_read,
+            STDIN_CHUNK_SIZE
+        );
+        // Catch & Handle without panic in production
+        // This IS included in production to safe-catch
+        if !bytes_read <= STDIN_CHUNK_SIZE {
+            // state.set_info_bar_message("Config error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "bytes_read <= STDIN_CHUNK_SIZE".into(),
+            ));
+        }
+
+        // Check for exit command before writing to file
+        // Only check if valid UTF-8 (don't fail on binary data)
+        if let Ok(text_input_str) = std::str::from_utf8(&stdin_chunk_buffer[..bytes_read]) {
+            let trimmed = text_input_str.trim();
+
+            // Exit commands: q, quit, exit, exit()
+            if trimmed == "b" || trimmed == "back" || trimmed == "q" {
+                println!("Exiting editor...");
+                break;
+            }
+        }
+
+        // Write chunk directly to file (bucket brigade pattern)
+        let bytes_written = file.write(&stdin_chunk_buffer[..bytes_read])?;
+
+        // Defensive assertion: all bytes should be written
+        assert_eq!(
+            bytes_written, bytes_read,
+            "File write incomplete: wrote {} of {} bytes",
+            bytes_written, bytes_read
+        );
+
+        // Flush to disk immediately (durability)
+        file.flush()?;
     }
 
     // Final flush before exit
