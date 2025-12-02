@@ -3492,10 +3492,11 @@ fn write_formatted_navigation_legend_to_tui() -> Result<()> {
     write_red_hotkey("n", "rm ")?;
     write_red_hotkey("i", "ns ")?;
     write_red_hotkey("v", "is ")?;
-    write_red_hotkey("hex", " ")?;
+    write_red_hotkey("hex", "|")?;
 
     // View operations group
-    write_red_hotkey("r", "aw|")?;
+    // write_red_hotkey("r", "aw|")?;
+    write_red_hotkey("g", "o ")?;
     write_red_hotkey("p", "asty ")?;
     write_red_hotkey("cvy", "|")?;
 
@@ -4496,16 +4497,6 @@ fn render_pasty_tui(
 
     let message_for_infobar =
         std::str::from_utf8(&state.info_bar_message_buffer[..message_len]).unwrap_or(""); // Empty string if invalid UTF-8
-
-    // print!(
-    //     "{}",
-    //     format_pasty_info_bar(
-    //         total_count,
-    //         first_count_visible,
-    //         last_count_visible,
-    //         message_for_infobar // Use info_bar_message from state
-    //     )?
-    // );
 
     // writes to TUI
     display_pasty_info_bar(
@@ -5695,10 +5686,27 @@ impl EditorState {
                     let pasty_paste_path_base: Option<PathBuf> =
                         self.session_directory_path.clone();
 
-                    let extracted_path = match pasty_paste_path_base {
+                    // // 1: Get clipboard directory
+                    // let pasty_paste_path_base = self
+                    //     .session_directory_path
+                    //     .as_ref()
+                    //     .ok_or_else(|| {
+                    //         log_error(
+                    //             "Session directory path is not set",
+                    //             Some("copy_selection_to_clipboardfile"),
+                    //         );
+                    //         LinesError::StateError(
+                    //             "Session directory path is not initialized".into(),
+                    //         )
+                    //     })?
+                    //     .join("clipboard");
+
+                    let extractedpath_base = match pasty_paste_path_base {
                         Some(p) => p,
                         None => PathBuf::from(""),
                     };
+
+                    let extracted_path = extractedpath_base.join("clipboard");
 
                     // https://github.com/lineality/unique_temp_pathname_rust
                     let pasteinput_path =
