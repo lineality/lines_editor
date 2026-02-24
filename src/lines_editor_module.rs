@@ -11395,7 +11395,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 if let Some(new_position) = lines_editor_state
                     .in_row_abs_horizontal_0_index_cursor_position
                     .checked_sub(1)
-                // .checked_sub(count)
+                // increment, not full 'count'
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
@@ -12466,12 +12466,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // let line_num_width = calculate_line_number_width(lines_editor_state.cursor.tui_row);
 
             #[cfg(debug_assertions)]
-            let this_row = lines_editor_state.cursor.tui_row;
-            #[cfg(debug_assertions)]
-            let this_col = lines_editor_state.cursor.tui_col;
-
-            #[cfg(debug_assertions)]
             {
+                let this_row = lines_editor_state.cursor.tui_row;
+                let this_col = lines_editor_state.cursor.tui_col;
+
                 println!(
                     "GotoLineStart lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
                     this_row, this_col,
@@ -12515,6 +12513,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 Err(_e) => {
                     #[cfg(debug_assertions)]
                     eprintln!("Error clearing redo logs: {:?}", _e);
+
+                    // Safe Error
+                    eprintln!("Error clearing redo logs.");
 
                     // Log error and continue (non-fatal)
                     log_error(
@@ -20052,6 +20053,11 @@ pub fn print_help() {
     println!("    Normal Mode: 'd' delete a whole file-line (not just TUI display)");
     println!("    Insert Mode: delete-key for Backspace-Style Delete");
     println!("    Visual Mode  'd' delete a selection inclusive / single char backspace style;");
+    println!("Resize-Tui: (Works with Enter-Key-to-Repeat");
+    println!("    wide+           +1 wider");
+    println!("    wide-           -1 wide");
+    println!("    tall+           +1 taller");
+    println!("    tall-           -1 tall");
     println!("NAVIGATION:");
     println!("    hjkl            Move cursor");
     println!("    5j, 10l         Move with repeat count");
