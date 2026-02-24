@@ -1300,6 +1300,560 @@ mod buffy_format_tests {
     }
 }
 
+// =============================================================================
+// SYNTAX HIGHLIGHTING SUPPORT
+// =============================================================================
+//
+// ## Project Context
+// This module section provides minimal two-category syntax highlighting for
+// a TUI text editor. The design is intentionally minimal:
+//
+//   Category 1 - Syntax symbols (cyan):  ( ) [ ] { } < > = : ; " ' \ & ! # / * , `
+//   Category 2 - Definition words (yellow): fn , def , let , struct , enum ,
+//                class , impl , type , const , static , pub , use , mod
+//
+// The system highlights by DEFAULT and opts OUT for plain-text extensions.
+// This is simpler than trying to enumerate all code file extensions.
+//
+// Plain text extensions that opt OUT of highlighting: .txt  .log
+//
+// ## Design Constraints (No Heap)
+// - No String, no Vec, no dynamic allocation
+// - All matching done against &'static str constants
+// - Extension comparison done on raw bytes
+// - SyntaxHighlight is a stack-only enum
+//
+// ## Integration Point
+// These functions are called from render_utf8txt_row_with_cursor() in the
+// editor rendering pipeline. buffy_is_plain_text_extension() is called once
+// per row before the character loop. buffy_get_syntax_highlight() is called
+// once per character position inside the loop, only when not plain text,
+// and only when the character is not already handled by cursor or selection
+// highlighting (those take priority).
+//
+// ## What This Does NOT Do
+// - No string/comment context detection: keywords inside string literals
+//   will be highlighted (acceptable for minimal system)
+// - No language detection beyond plain-text opt-out
+// - No background highlighting: foreground colour only (word colouring)
+// - No per-token parser: pure positional byte matching
+
+/// Two-category syntax highlight result.
+///
+/// ## Project Context
+/// Returned by buffy_get_syntax_highlight() to indicate what foreground
+/// colour (if any) should be applied to the character at a given position.
+///
+/// ## Variants
+/// - None:           No highlighting. Write character directly.
+/// - SyntaxSymbol:   Single punctuation/operator character. Render in cyan.
+/// - DefinitionWord: Start of a definition keyword (e.g. "fn ", "let ").
+///                   The entire keyword including its trailing space is
+///                   consumed as one logical token. Render in yellow.
+///
+/// ## Memory
+/// Stack-only enum. No heap. Safe to copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxHighlight {
+    /// No highlighting applies. Write the character with no ANSI codes.
+    None,
+
+    /// Character is a syntax punctuation symbol.
+    /// Caller should render it in cyan.
+    /// Applies to: ( ) [ ] { } < > = : ; " ' \ & ! # / * , `
+    SyntaxSymbol,
+
+    /// Character starts a definition keyword (including trailing space).
+    /// Caller should render the entire keyword span in yellow.
+    /// The `keyword_byte_len` field tells the caller how many bytes
+    /// the full keyword token occupies (e.g. "fn " = 3 bytes).
+    /// Caller advances its byte position by this amount after writing.
+    DefinitionWord {
+        /// Number of bytes in the matched keyword including trailing space.
+        /// Example: "fn " -> 3, "struct " -> 7, "static " -> 7
+        keyword_byte_len: usize,
+    },
+}
+
+/// Returns true if the file at the given path has a plain-text extension
+/// that should NOT receive syntax highlighting.
+///
+/// ## Project Context
+/// Called once per rendered row, before the character loop, to decide
+/// whether to attempt syntax highlighting at all. The opt-out list is
+/// intentionally short: only file types that are truly plain prose where
+/// keyword colouring would be distracting or misleading.
+///
+/// Opt-out extensions (no highlighting):
+///   .txt   .log
+///
+/// Everything else (including no extension, or None path) receives
+/// highlighting. This default-highlight approach is simpler than trying
+/// to enumerate every possible code file extension.
+///
+/// ## Behaviour on Edge Cases
+/// - path is None:          returns false  (highlight by default)
+/// - path has no extension: returns false  (highlight by default)
+/// - extension not valid UTF-8: returns false (highlight by default, safe)
+/// - extension is ".TXT" (uppercase): returns false (case-sensitive match,
+///   no heap conversion, conservative: only exact lowercase match opts out)
+///
+/// ## Memory
+/// No heap. Extension slice borrowed from path. Comparison on &[u8] bytes.
+///
+/// ## Arguments
+/// * `path` - Optional reference to the file path from EditorState.
+///            Typically &state.original_file_path (which is Option<PathBuf>).
+///            Pass as path.as_deref() to get Option<&Path>.
+///
+/// ## Returns
+/// * true  - plain text, skip syntax highlighting
+/// * false - not plain text (or unknown), apply syntax highlighting
+pub fn buffy_is_plain_text_extension(path: Option<&Path>) -> bool {
+    // Plain-text extensions that opt OUT of syntax highlighting.
+    // Matched as raw bytes against the file extension.
+    // Case-sensitive: ".txt" matches, ".TXT" does not.
+    // Extend this list conservatively: only add extensions where keyword
+    // colouring would be actively misleading or distracting.
+    const PLAIN_TEXT_EXTENSIONS: &[&[u8]] = &[b"txt", b"log"];
+
+    // Defensive: no path means we cannot determine extension.
+    // Default to highlight (return false = not plain text).
+    let path = match path {
+        Some(p) => p,
+        None => return false,
+    };
+
+    // Extract extension as a str slice (no allocation).
+    // Path::extension() returns Option<&OsStr>.
+    // OsStr::as_encoded_bytes() gives us raw bytes without allocation.
+    let ext_bytes = match path.extension() {
+        Some(ext) => ext.as_encoded_bytes(),
+        None => return false, // No extension: highlight by default
+    };
+
+    // Compare extension bytes against the opt-out list.
+    // Linear scan over a tiny fixed list: no overhead worth optimising.
+    for &plain_ext in PLAIN_TEXT_EXTENSIONS {
+        if ext_bytes == plain_ext {
+            return true; // Plain text: skip highlighting
+        }
+    }
+
+    false // Not in opt-out list: apply highlighting
+}
+
+/// Returns the syntax highlight category for the character at the given
+/// byte position within a row string.
+///
+/// ## Project Context
+/// Called inside the character rendering loop of render_utf8txt_row_with_cursor().
+/// The caller has already handled cursor and visual-selection priority.
+/// This function is only reached for "normal" characters that need
+/// syntax highlight checking.
+///
+/// ## Two-Category System
+///
+/// ### Category 1: SyntaxSymbol (cyan)
+/// Single-character punctuation/operator symbols.
+/// Matched character-by-character. The caller writes one character and
+/// advances by one UTF-8 character (1-4 bytes).
+///
+/// Symbol set:  ( ) [ ] { } < > = : ; " ' \ & ! # / * , `
+///
+/// ### Category 2: DefinitionWord (yellow)
+/// Multi-character keywords, each followed by a space (space is part of
+/// the match and is highlighted together with the keyword). The space is
+/// included because:
+/// - It makes the match unambiguous (avoids matching "type" inside "typeof")
+/// - The space is visually invisible so including it in the coloured span
+///   costs nothing visually
+/// - No need to abstractly separate the space from the keyword
+///
+/// Keyword set (each stored with trailing space as part of the literal):
+///   "fn "  "def "  "let "  "struct "  "enum "  "class "
+///   "impl "  "type "  "const "  "static "  "pub "  "use "  "mod "
+///
+/// When a keyword matches, SyntaxHighlight::DefinitionWord { keyword_byte_len }
+/// is returned. The caller must:
+///   1. Write the entire keyword span (keyword_byte_len bytes) in yellow
+///   2. Advance its byte position by keyword_byte_len
+///   3. Advance its character counter by the number of chars in the keyword
+///      (caller can count these, or use the provided char count - see note)
+///
+/// ## Priority
+/// SyntaxSymbol is checked first. In practice there is no overlap
+/// (no keyword begins with a syntax symbol character), but checking
+/// symbols first is cheaper (single char lookup vs prefix scan).
+///
+/// ## Cursor and Selection Priority
+/// This function does NOT check cursor or selection state. The caller
+/// is responsible for checking those conditions BEFORE calling this
+/// function. If the character is under the cursor or inside a visual
+/// selection, the caller should NOT call this function.
+///
+/// ## Byte Position vs Character Index
+/// `byte_pos` is the byte offset of the current character's first byte
+/// within `row_content`. This is what is needed for prefix matching
+/// (slicing `row_content` from `byte_pos` forward).
+///
+/// The caller tracks the character index (for cursor column comparison)
+/// as a SEPARATE counter that increments once per complete UTF-8 character.
+/// That character index is NOT passed to this function and NOT used here.
+/// See render_utf8txt_row_with_cursor() for the byte-vs-char tracking pattern.
+///
+/// ## Memory
+/// No heap. All keyword literals are &'static str. Matching is byte
+/// comparison via str::starts_with() on a sub-slice.
+///
+/// ## Arguments
+/// * `byte_pos`    - Byte offset of the current character's first byte
+///                   within `row_content`. Must be a valid UTF-8 boundary.
+/// * `row_content` - The full row string being rendered (content portion only,
+///                   line number prefix already excluded by caller).
+///
+/// ## Returns
+/// * SyntaxHighlight::None            - no highlighting, write char normally
+/// * SyntaxHighlight::SyntaxSymbol    - render this char in cyan
+/// * SyntaxHighlight::DefinitionWord { keyword_byte_len }
+///                                    - render keyword_byte_len bytes in yellow,
+///                                      then advance byte_pos by keyword_byte_len
+pub fn buffy_get_syntax_highlight(byte_pos: usize, row_content: &str) -> SyntaxHighlight {
+    // -------------------------------------------------------------------------
+    // BOUNDS CHECK: byte_pos must be within row_content
+    // -------------------------------------------------------------------------
+    // Defensive: if byte_pos is out of range, return None safely.
+    // This should not happen if the caller iterates correctly, but hardware
+    // faults or logic errors must not cause a panic in production.
+    if byte_pos >= row_content.len() {
+        return SyntaxHighlight::None;
+    }
+
+    // -------------------------------------------------------------------------
+    // DEFINITION KEYWORDS (Category 2, yellow)
+    // Checked BEFORE symbol check for one reason: keyword matching requires
+    // reading ahead multiple bytes anyway, and we want to colour the whole
+    // keyword span (not just its first character) as a single token.
+    //
+    // Each entry is the complete match token: keyword + trailing space.
+    // The trailing space is part of the highlighted span.
+    // "fn " = 3 bytes, "struct " = 7 bytes, "static " = 7 bytes, etc.
+    //
+    // Order: longer keywords first where a shorter keyword is a prefix of
+    // a longer one (none exist in this set currently, but "mod" vs nothing
+    // is fine). Order does not otherwise affect correctness.
+    // -------------------------------------------------------------------------
+    const DEFINITION_KEYWORDS: &[&str] = &[
+        "static ", // 7 bytes - before "struct" to avoid any future ambiguity
+        "struct ", // 7 bytes
+        "class ",  // 6 bytes
+        "const ",  // 6 bytes
+        "impl ",   // 5 bytes
+        "type ",   // 5 bytes
+        "enum ",   // 5 bytes
+        "use ",    // 4 bytes
+        "pub ",    // 4 bytes
+        "mod ",    // 4 bytes
+        "let ",    // 4 bytes
+        "def ",    // 4 bytes
+        "fn ",     // 3 bytes
+        // Other
+        "for ",   //
+        "while ", //
+        "if ",    //
+        "loop ",  //
+    ];
+
+    // Slice the row content from the current byte position forward.
+    // No allocation: this is a borrowed sub-slice of the existing &str.
+    let remaining = &row_content[byte_pos..];
+
+    // Scan keyword list. Linear scan over a tiny fixed list.
+    for &keyword in DEFINITION_KEYWORDS {
+        if remaining.starts_with(keyword) {
+            return SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: keyword.len(),
+            };
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SYNTAX SYMBOLS (Category 1, cyan)
+    // Single-character punctuation that makes code structure visible.
+    // Checked after keywords so that the first character of a keyword
+    // (which is always alphabetic) never reaches this check anyway.
+    // In practice: no overlap is possible (no keyword starts with a symbol).
+    //
+    // The character at byte_pos is extracted by getting the first char
+    // of the remaining slice. For ASCII symbols this is always 1 byte.
+    // For safety we use chars().next() which handles UTF-8 correctly.
+    // -------------------------------------------------------------------------
+    const SYNTAX_SYMBOLS: &[char] = &[
+        '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', ';', '"', '\'', '\\', '&', '!', '#', '/',
+        '*', ',', '`',
+    ];
+
+    // Get the first character at this byte position.
+    // chars().next() is safe: we already checked byte_pos < row_content.len()
+    // and remaining is a valid UTF-8 sub-slice.
+    if let Some(ch) = remaining.chars().next() {
+        for &symbol in SYNTAX_SYMBOLS {
+            if ch == symbol {
+                return SyntaxHighlight::SyntaxSymbol;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // No match: plain character, no highlighting.
+    // -------------------------------------------------------------------------
+    SyntaxHighlight::None
+}
+
+// =============================================================================
+// TESTS: Syntax Highlighting
+// =============================================================================
+
+#[cfg(test)]
+mod syntax_highlight_tests {
+    use super::*;
+    use std::path::Path;
+
+    // --- buffy_is_plain_text_extension ---
+
+    #[test]
+    fn test_plain_text_extension_txt_is_plain() {
+        let path = Path::new("readme.txt");
+        assert!(
+            buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: .txt should be plain text"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_log_is_plain() {
+        let path = Path::new("app.log");
+        assert!(
+            buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: .log should be plain text"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_rs_is_not_plain() {
+        let path = Path::new("main.rs");
+        assert!(
+            !buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: .rs should NOT be plain text"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_py_is_not_plain() {
+        let path = Path::new("script.py");
+        assert!(
+            !buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: .py should NOT be plain text"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_none_path_is_not_plain() {
+        assert!(
+            !buffy_is_plain_text_extension(None),
+            "buffy_is_plain_text_extension: None path should default to not plain (highlight)"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_no_extension_is_not_plain() {
+        let path = Path::new("Makefile");
+        assert!(
+            !buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: no extension should default to not plain (highlight)"
+        );
+    }
+
+    #[test]
+    fn test_plain_text_extension_uppercase_txt_is_not_plain() {
+        // Case-sensitive match: .TXT does not opt out (conservative, no heap conversion)
+        let path = Path::new("readme.TXT");
+        assert!(
+            !buffy_is_plain_text_extension(Some(path)),
+            "buffy_is_plain_text_extension: .TXT uppercase should not match (case-sensitive)"
+        );
+    }
+
+    // --- buffy_get_syntax_highlight: SyntaxSymbol ---
+
+    #[test]
+    fn test_syntax_highlight_open_paren_is_symbol() {
+        let row = "foo(bar)";
+        let result = buffy_get_syntax_highlight(3, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::SyntaxSymbol,
+            "buffy_get_syntax_highlight: '(' should be SyntaxSymbol"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_close_brace_is_symbol() {
+        let row = "fn foo() {}";
+        // '}' is at byte index 10
+        let result = buffy_get_syntax_highlight(10, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::SyntaxSymbol,
+            "buffy_get_syntax_highlight: '}}' should be SyntaxSymbol"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_colon_is_symbol() {
+        let row = "x: u32";
+        let result = buffy_get_syntax_highlight(1, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::SyntaxSymbol,
+            "buffy_get_syntax_highlight: ':' should be SyntaxSymbol"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_plain_letter_is_none() {
+        let row = "hello";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::None,
+            "buffy_get_syntax_highlight: plain letter should be None"
+        );
+    }
+
+    // --- buffy_get_syntax_highlight: DefinitionWord ---
+
+    #[test]
+    fn test_syntax_highlight_fn_keyword() {
+        let row = "fn main() {}";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 3
+            },
+            "buffy_get_syntax_highlight: 'fn ' should be DefinitionWord with byte_len 3"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_struct_keyword() {
+        let row = "struct Foo {";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 7
+            },
+            "buffy_get_syntax_highlight: 'struct ' should be DefinitionWord with byte_len 7"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_let_keyword() {
+        let row = "    let x = 5;";
+        // "let " starts at byte 4
+        let result = buffy_get_syntax_highlight(4, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 4
+            },
+            "buffy_get_syntax_highlight: 'let ' should be DefinitionWord with byte_len 4"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_static_keyword() {
+        let row = "static FOO: u32 = 1;";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 7
+            },
+            "buffy_get_syntax_highlight: 'static ' should be DefinitionWord with byte_len 7"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_pub_keyword() {
+        let row = "pub fn foo() {}";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 4
+            },
+            "buffy_get_syntax_highlight: 'pub ' should be DefinitionWord with byte_len 4"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_fn_not_at_start_of_word() {
+        // "fn" appears inside "unfn" - no space before it, but we match from byte_pos
+        // If byte_pos points mid-word, we still match if it starts with "fn "
+        // This is the known limitation: no word-boundary check.
+        // This test documents actual behaviour (not asserting it is wrong,
+        // just documenting that context-free matching is the design).
+        let row = "xfn foo()";
+        // byte_pos=1 points to 'f' of "fn foo()"
+        let result = buffy_get_syntax_highlight(1, row);
+        // "fn " starts at byte 1: this WILL match (no word boundary check by design)
+        assert_eq!(
+            result,
+            SyntaxHighlight::DefinitionWord {
+                keyword_byte_len: 3
+            },
+            "buffy_get_syntax_highlight: known behaviour: no word-boundary check, 'fn ' matches mid-string"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_out_of_bounds_returns_none() {
+        let row = "hi";
+        // byte_pos beyond string length
+        let result = buffy_get_syntax_highlight(99, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::None,
+            "buffy_get_syntax_highlight: out-of-bounds byte_pos should return None safely"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_empty_string_returns_none() {
+        let result = buffy_get_syntax_highlight(0, "");
+        assert_eq!(
+            result,
+            SyntaxHighlight::None,
+            "buffy_get_syntax_highlight: empty string should return None safely"
+        );
+    }
+
+    #[test]
+    fn test_syntax_highlight_multibyte_char_is_none() {
+        // '世' is 3 bytes (E4 B8 96), not a symbol or keyword, should be None
+        let row = "世界";
+        let result = buffy_get_syntax_highlight(0, row);
+        assert_eq!(
+            result,
+            SyntaxHighlight::None,
+            "buffy_get_syntax_highlight: multi-byte non-symbol char should be None"
+        );
+    }
+}
+
 // // main.rs - Demonstration of zero-heap buffy formatting
 
 // // mod buffy;

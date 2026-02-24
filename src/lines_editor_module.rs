@@ -992,7 +992,10 @@ use super::buttons_reversible_edit_changelog_module::{
     read_character_bytes_from_file, read_single_byte_from_file, remove_single_byte_from_file,
 };
 
-use super::buffy_format_write_module::{BuffyFormatArg, BuffyStyles, buffy_print, buffy_println};
+use super::buffy_format_write_module::{
+    BuffyFormatArg, BuffyStyles, SyntaxHighlight, buffy_get_syntax_highlight,
+    buffy_is_plain_text_extension, buffy_print, buffy_println,
+};
 
 /// Style for line numbers - green, no bold
 const LINE_NUMBER_STYLE: BuffyStyles = BuffyStyles {
@@ -1082,6 +1085,27 @@ const GREEN: &str = "\x1b[32m";
 // const BOLD: &str = "\x1b[1m";
 // const ITALIC: &str = "\x1b[3m";
 // const UNDERLINE: &str = "\x1b[4m";
+
+// ===========================================================
+// ANSI ESCAPE CODES — compile-time constants, zero allocation
+// ===========================================================
+const BOLD_U8: &[u8] = b"\x1b[1m";
+const RED_U8: &[u8] = b"\x1b[31m";
+const GREEN_U8: &[u8] = b"\x1b[32m";
+const YELLOW_U8: &[u8] = b"\x1b[33m";
+// const BLUE_U8: &[u8] = b"\x1b[34m";
+const MAGENTA_U8: &[u8] = b"\x1b[35m";
+// const CYAN: &[u8] = b"\x1b[36m";
+const BG_WHITE_U8: &[u8] = b"\x1b[47m";
+const BG_CYAN_U8: &[u8] = b"\x1b[46m";
+const RESET_U8: &[u8] = b"\x1b[0m";
+
+// =======================================
+// Code & Syntax Formatting / Highlighting
+// =======================================
+const DEFAULT_TEXT_COLOUR: &[u8] = GREEN_U8;
+const DEFINITION_COLOUR: &[u8] = YELLOW_U8;
+const SYMBOL_COLOUR: &[u8] = MAGENTA_U8;
 
 /*
 Foreground Colors (Text Color):
@@ -1222,6 +1246,15 @@ pub enum LinesError {
     /// For use with suite of
     /// Debug-Assert, Test-Asset, Production-Catch-Handle
     GeneralAssertionCatchViolation(String),
+
+    /// Lines processed exceeded available display rows.
+    /// Indicates potential state corruption or file processing logic error.
+    /// This should never occur in normal operation; if it does, the file
+    /// or internal state may be malformed.
+    LineCountExceeded {
+        lines_processed: usize,
+        available_rows: usize,
+    },
 }
 
 impl std::fmt::Display for LinesError {
@@ -1233,7 +1266,17 @@ impl std::fmt::Display for LinesError {
             LinesError::Utf8Error(msg) => write!(f, "UTF-8 error: {}", msg),
             LinesError::DisplayError(msg) => write!(f, "Display error: {}", msg),
             LinesError::StateError(msg) => write!(f, "State error: {}", msg),
-            LinesError::GeneralAssertionCatchViolation(msg) => write!(f, "State error: {}", msg),
+            LinesError::GeneralAssertionCatchViolation(msg) => {
+                write!(f, "GeneralAssertionCatchViolation error: {}", msg)
+            }
+            LinesError::LineCountExceeded {
+                lines_processed,
+                available_rows,
+            } => write!(
+                f,
+                "LineCountExceeded error: {} {}",
+                lines_processed, available_rows
+            ),
         }
     }
 }
@@ -9292,10 +9335,22 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     }
 
     // Assertion: Verify our line count makes sense
+    #[cfg(debug_assertions)]
     debug_assert!(
         lines_processed <= state.effective_rows,
         "Processed more lines than display rows available"
     );
+
+    // Validates that the processed line count does not exceed available display rows.
+    // This catch ensures the windowmap construction stayed within bounds.
+    // Returns error if an impossible state is detected (e.g., state corruption,
+    // off-by-one errors in line processing, or file format unexpected behavior).
+    if lines_processed > state.effective_rows {
+        return Err(LinesError::LineCountExceeded {
+            lines_processed,
+            available_rows: state.effective_rows,
+        });
+    }
 
     Ok(lines_processed)
 }
@@ -20990,20 +21045,12 @@ fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
     Ok(info_bar)
 }
 
-/// Renders the complete UTF8-text TUI to terminal: legend + content + info bar
+/// Renders the complete UTF8-text TUI to terminal: legend + content + info bar.
 ///
-/// # Purpose
-/// Displays the minimal 3-section TUI:
-/// 1. Top: Command legend (1 line)
-/// 2. Middle: File content (effective_rows lines)
-/// 3. Bottom: Info bar with command input (1 line)
-///
-/// # Arguments
-/// * `state` - Current editor state with display buffers
-///
-/// # Returns
-/// * `Ok(())` - Successfully rendered
-/// * `Err(LinesError)` - Display operation failed
+/// # Purpose (Project Context)
+/// This is the top-level rendering function for the TUI text editor.
+/// It displays the minimal 3-section interface and is called once per
+/// screen refresh (after each user action or resize event).
 ///
 /// # Layout
 /// ```text
@@ -21015,162 +21062,763 @@ fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
 /// NORMAL line 42, col 7 doc.txt > cmd_         <- Info bar (1 line)
 /// ```
 ///
+/// # Rendering Pipeline
+/// This function orchestrates three distinct output phases:
+///
+/// 1. **Legend** (top line): Static navigation help, written by
+///    write_formatted_navigation_legend_to_tui().
+///
+/// 2. **Content** (middle rows): Each row is rendered in two parts:
+///    - Line number prefix: Written by buffy_print() with LINE_NUMBER_STYLE
+///      (green). This is the "1 ", "2 ", etc. at the start of each line.
+///    - Content portion: Written directly to stdout by
+///      render_utf8txt_row_with_cursor(), which applies cursor highlighting
+///      (PRIORITY 1), visual selection highlighting (PRIORITY 2), syntax
+///      highlighting (PRIORITY 3, if not a plain text file), or no styling
+///      (PRIORITY 4). This function writes bytes directly — no intermediate
+///      String is built or returned.
+///
+/// 3. **Info bar** (bottom line): Mode, position, filename, command input.
+///    Written by format_info_bar_cafe_normal_visualselect().
+///
+/// # Syntax Highlighting Decision
+/// The file extension is checked ONCE before the row loop using
+/// buffy_is_plain_text_extension(). If the file is .txt or .log, syntax
+/// highlighting is skipped entirely for all rows. Otherwise, each character
+/// in each row is checked for symbol/keyword highlighting during rendering.
+///
+/// # Cursor Column Adjustment
+/// state.cursor.tui_col is in full-row coordinates (including line number
+/// prefix characters like "42 "). render_utf8txt_row_with_cursor() receives
+/// only the content portion of each row (prefix stripped), so the cursor
+/// column must be adjusted by subtracting line_num_width. Saturating
+/// subtraction prevents underflow if the cursor is somehow in the prefix area.
+///
+/// # Memory: Zero Heap in Rendering Path
+/// - Line number: Written via buffy_print (stack-only)
+/// - Content: Written via stdout.write_all inside render_utf8txt_row_with_cursor
+///   (no String, no Vec<char>)
+/// - Legend and info bar: Their own rendering functions
+/// - is_plain_text: bool computed once, stack
+///
+/// # Arguments
+/// * `state` - Current editor state with display buffers, cursor position,
+///             mode, window_map, file path, and all rendering state.
+///
+/// # Returns
+/// * `Ok(())` - Successfully rendered all three sections
+/// * `Err(LinesError)` - Display operation failed (write error, window_map
+///                        error, or selection calculation error)
+///
+/// # Error Handling
+/// All errors from sub-functions are propagated via `?`. No silent failures.
+/// If stdout flush fails, the error is wrapped in LinesError::DisplayError
+/// with a unique prefix "render_tui: flush" for tracing.
+///
 /// # Design Goals
-/// - Only 2 non-content lines (legend + info)
+/// - Only 2 non-content lines (legend + info bar)
 /// - No wasted space, no filler lines
-/// - All essential info visible
+/// - All essential info visible at all times
 /// - Clean, minimal aesthetic
+/// - Zero heap allocation in the rendering hot path
 pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
-    // Clear screen
+    // =========================================================================
+    // CLEAR SCREEN
+    // =========================================================================
+    // Move cursor to top-left and clear entire screen.
+    // This is a single write of static bytes — no allocation.
     print!("\x1B[2J\x1B[H");
     io::stdout().flush().map_err(|e| {
         LinesError::DisplayError(stack_format_it(
-            "Failed to flush stdout: {}",
+            "render_tui: flush clear: {}",
             &[&e.to_string()],
-            "Failed to flush stdout",
+            "render_tui: flush clear",
         ))
     })?;
 
-    // === TOP LINE: LEGEND ===
+    // =========================================================================
+    // TOP LINE: NAVIGATION LEGEND
+    // =========================================================================
+    // Static hotkey reference line. Written once per refresh.
     let _ = write_formatted_navigation_legend_to_tui()?;
 
-    // === MIDDLE: FILE CONTENT WITH CURSOR ===
-    // // Render each content row
+    // =========================================================================
+    // SYNTAX HIGHLIGHTING: PLAIN TEXT CHECK (computed once for all rows)
+    // =========================================================================
+    // Check the file extension to decide if syntax highlighting applies.
+    // .txt and .log files are plain text: no keyword/symbol colouring.
+    // Everything else (including unknown/no extension) gets highlighting.
+    //
+    // Computed once here rather than per-row or per-character to avoid
+    // redundant path inspection on every iteration.
+    //
+    // state.original_file_path is Option<PathBuf>.
+    // .as_deref() converts Option<PathBuf> to Option<&Path> (no allocation).
+    let is_plain_text = buffy_is_plain_text_extension(state.original_file_path.as_deref());
+
+    // =========================================================================
+    // MIDDLE: FILE CONTENT WITH CURSOR, SELECTION, AND SYNTAX HIGHLIGHTING
+    // =========================================================================
+    // Each row in the display buffer is rendered in two parts:
+    //
+    //   1. Line number prefix  →  buffy_print with green styling
+    //   2. Content portion     →  render_utf8txt_row_with_cursor (direct write)
+    //
+    // The line number prefix is computed by calculate_line_number_width()
+    // and written BEFORE calling the content renderer. The content renderer
+    // receives only the content portion (prefix stripped) and writes it
+    // directly to stdout. A newline is written after each row.
+    //
+    // Empty rows (display_utf8txt_buffer_lengths[row] == 0) get either:
+    //   - A cursor block character if the cursor is on this row
+    //   - A blank line otherwise
     for row in 0..state.effective_rows {
         if state.display_utf8txt_buffer_lengths[row] > 0 {
+            // =================================================================
+            // NON-EMPTY ROW: Has content in display buffer
+            // =================================================================
             let row_content =
                 &state.utf8_txt_display_buffers[row][..state.display_utf8txt_buffer_lengths[row]];
 
             match std::str::from_utf8(row_content) {
                 Ok(row_str) => {
-                    // // add formatting and highlighitng here
-                    // let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
-                    // println!("{}", display_str);
-
-                    // // Find where line number ends (first space after digits)
-                    // let mut found_digit = false;
-                    // let mut split_pos = 0;
-
+                    // ---------------------------------------------------------
+                    // SPLIT: Line number prefix vs content
+                    // ---------------------------------------------------------
+                    // calculate_line_number_width returns the byte length of
+                    // the line number prefix (e.g. "42 " = 3 bytes).
+                    // All line numbers are ASCII digits + space, so
+                    // byte width == character width for the prefix.
                     let line_num_width = calculate_line_number_width(
                         state.line_count_at_top_of_window,
                         state.cursor.tui_row,
                         state.effective_rows,
                     );
 
-                    let line_num_part = &row_str[..line_num_width];
-                    // let content_part = &row_str[line_num_width..];
+                    // Defensive: ensure line_num_width does not exceed row_str
+                    let line_num_width = line_num_width.min(row_str.len());
 
-                    // Print green line number
+                    let line_num_part = &row_str[..line_num_width];
+                    let content_part = &row_str[line_num_width..];
+
+                    // ---------------------------------------------------------
+                    // WRITE LINE NUMBER PREFIX (green)
+                    // ---------------------------------------------------------
+                    // Written via buffy_print: zero heap, direct to stdout.
                     buffy_print(
                         "{}",
                         &[BuffyFormatArg::StrStyled(line_num_part, LINE_NUMBER_STYLE)],
                     )?;
 
-                    // Render JUST content with cursor (cursor.tui_col is still in full row coordinates)
-                    // Pass full row_str so cursor column math works, but only display content
-                    let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
+                    // ---------------------------------------------------------
+                    // CURSOR COLUMN ADJUSTMENT
+                    // ---------------------------------------------------------
+                    // state.cursor.tui_col is in full-row coordinates
+                    // (including line number prefix characters).
+                    //
+                    // render_utf8txt_row_with_cursor receives the content
+                    // portion only (prefix stripped), so the cursor column
+                    // must be adjusted by subtracting line_num_width.
+                    //
+                    // saturating_sub prevents underflow if cursor.tui_col
+                    // is somehow less than line_num_width (cursor in the
+                    // line number prefix area — should not happen in normal
+                    // operation, but handled defensively).
+                    let content_cursor_col = state.cursor.tui_col.saturating_sub(line_num_width);
 
-                    // Print only content portion of display_str (skip line number)
-                    buffy_println("{}", &[BuffyFormatArg::Str(&display_str[line_num_width..])])?;
+                    // ---------------------------------------------------------
+                    // WRITE CONTENT WITH HIGHLIGHTING (direct to stdout)
+                    // ---------------------------------------------------------
+                    // render_utf8txt_row_with_cursor writes each character
+                    // directly to stdout with appropriate ANSI styling.
+                    // It returns Result<()>, not a String.
+                    //
+                    // Priority order inside the function:
+                    //   1. Cursor (BOLD RED BG_WHITE)
+                    //   2. Visual selection (BOLD YELLOW BG_CYAN)
+                    //   3. Syntax highlighting (cyan symbols, yellow keywords)
+                    //   4. Plain character (no ANSI codes)
+                    render_utf8txt_row_with_cursor(
+                        state,
+                        row,
+                        content_part,
+                        content_cursor_col,
+                        is_plain_text,
+                    )?;
+
+                    // ---------------------------------------------------------
+                    // NEWLINE AFTER ROW
+                    // ---------------------------------------------------------
+                    // render_utf8txt_row_with_cursor does NOT write a newline.
+                    // The caller (here) is responsible for line termination.
+                    // buffy_println with empty template writes just "\n" + flush.
+                    buffy_println("", &[])?;
                 }
-                Err(_) => buffy_println("�", &[])?, //println!("�"),
+                Err(_) => {
+                    // UTF-8 decode failure for this row's display buffer.
+                    // Show replacement character and continue rendering
+                    // remaining rows. Do not halt for one bad row.
+                    buffy_println("�", &[])?;
+                }
             }
         } else {
-            // Show cursor on empty rows if cursor is here
+            // =================================================================
+            // EMPTY ROW: No content in display buffer
+            // =================================================================
+            // If the cursor is on this empty row, show a visible cursor block
+            // so the user knows where they are. Otherwise, blank line.
             if row == state.cursor.tui_row {
-                // println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
                 buffy_println("{}", &[BuffyFormatArg::CharStyled('█', CURSOR_BLOCK_STYLE)])?;
             } else {
-                // println!();
                 buffy_println("", &[])?;
             }
         }
     }
 
-    // === BOTTOM LINE: INFO BAR ===
+    // =========================================================================
+    // BOTTOM LINE: INFO BAR
+    // =========================================================================
+    // Shows current mode, cursor position, filename, and command input.
+    // Written as the final line with no trailing newline (cursor stays on
+    // the info bar for command input visibility).
     let info_bar = format_info_bar_cafe_normal_visualselect(state)?;
-    // print!("{}", info_bar);
     buffy_print(&info_bar, &[])?;
 
+    // =========================================================================
+    // FINAL FLUSH
+    // =========================================================================
+    // Ensure all buffered output reaches the terminal before returning.
+    // Without this flush, the screen may appear partially rendered.
     io::stdout().flush().map_err(|e| {
         LinesError::DisplayError(stack_format_it(
-            "Failed to flush stdout: {}",
+            "render_tui: flush final: {}",
             &[&e.to_string()],
-            "Failed to flush stdout",
+            "render_tui: flush final",
         ))
     })?;
 
     Ok(())
 }
 
-/// Renders one row of display with both cursor and visual selection highlighting
+// // old
+// /// Renders the complete UTF8-text TUI to terminal: legend + content + info bar
+// ///
+// /// # Purpose
+// /// Displays the minimal 3-section TUI:
+// /// 1. Top: Command legend (1 line)
+// /// 2. Middle: File content (effective_rows lines)
+// /// 3. Bottom: Info bar with command input (1 line)
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state with display buffers
+// ///
+// /// # Returns
+// /// * `Ok(())` - Successfully rendered
+// /// * `Err(LinesError)` - Display operation failed
+// ///
+// /// # Layout
+// /// ```text
+// /// quit ins vis save undo hjkl wb /search       <- Legend (1 line)
+// /// 1 First line of file content                 <- Content start
+// /// 2 Second line of file content
+// /// ...
+// /// N Last visible line                          <- Content end
+// /// NORMAL line 42, col 7 doc.txt > cmd_         <- Info bar (1 line)
+// /// ```
+// ///
+// /// # Design Goals
+// /// - Only 2 non-content lines (legend + info)
+// /// - No wasted space, no filler lines
+// /// - All essential info visible
+// /// - Clean, minimal aesthetic
+// pub fn render_tui_utf8txt(state: &EditorState) -> Result<()> {
+//     // Clear screen
+//     print!("\x1B[2J\x1B[H");
+//     io::stdout().flush().map_err(|e| {
+//         LinesError::DisplayError(stack_format_it(
+//             "Failed to flush stdout: {}",
+//             &[&e.to_string()],
+//             "Failed to flush stdout",
+//         ))
+//     })?;
+
+//     // === TOP LINE: LEGEND ===
+//     let _ = write_formatted_navigation_legend_to_tui()?;
+
+//     // === MIDDLE: FILE CONTENT WITH CURSOR ===
+//     // // Render each content row
+//     for row in 0..state.effective_rows {
+//         if state.display_utf8txt_buffer_lengths[row] > 0 {
+//             let row_content =
+//                 &state.utf8_txt_display_buffers[row][..state.display_utf8txt_buffer_lengths[row]];
+
+//             match std::str::from_utf8(row_content) {
+//                 Ok(row_str) => {
+//                     // // add formatting and highlighitng here
+//                     // let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
+//                     // println!("{}", display_str);
+
+//                     // // Find where line number ends (first space after digits)
+//                     // let mut found_digit = false;
+//                     // let mut split_pos = 0;
+
+//                     let line_num_width = calculate_line_number_width(
+//                         state.line_count_at_top_of_window,
+//                         state.cursor.tui_row,
+//                         state.effective_rows,
+//                     );
+
+//                     let line_num_part = &row_str[..line_num_width];
+//                     // let content_part = &row_str[line_num_width..];
+
+//                     // Print green line number
+//                     buffy_print(
+//                         "{}",
+//                         &[BuffyFormatArg::StrStyled(line_num_part, LINE_NUMBER_STYLE)],
+//                     )?;
+
+//                     // Render JUST content with cursor (cursor.tui_col is still in full row coordinates)
+//                     // Pass full row_str so cursor column math works, but only display content
+//                     let display_str = render_utf8txt_row_with_cursor(state, row, row_str)?;
+
+//                     // Print only content portion of display_str (skip line number)
+//                     buffy_println("{}", &[BuffyFormatArg::Str(&display_str[line_num_width..])])?;
+//                 }
+//                 Err(_) => buffy_println("�", &[])?, //println!("�"),
+//             }
+//         } else {
+//             // Show cursor on empty rows if cursor is here
+//             if row == state.cursor.tui_row {
+//                 // println!("{}{}{}█{}", "\x1b[1m", "\x1b[31m", "\x1b[47m", "\x1b[0m");
+//                 buffy_println("{}", &[BuffyFormatArg::CharStyled('█', CURSOR_BLOCK_STYLE)])?;
+//             } else {
+//                 // println!();
+//                 buffy_println("", &[])?;
+//             }
+//         }
+//     }
+
+//     // === BOTTOM LINE: INFO BAR ===
+//     let info_bar = format_info_bar_cafe_normal_visualselect(state)?;
+//     // print!("{}", info_bar);
+//     buffy_print(&info_bar, &[])?;
+
+//     io::stdout().flush().map_err(|e| {
+//         LinesError::DisplayError(stack_format_it(
+//             "Failed to flush stdout: {}",
+//             &[&e.to_string()],
+//             "Failed to flush stdout",
+//         ))
+//     })?;
+
+//     Ok(())
+// }
+
+// // old heap-uses
+// /// Renders one row of display with both cursor and visual selection highlighting
+// ///
+// /// # Purpose
+// /// Takes a display row and adds:
+// /// 1. Cursor highlighting (RED + WHITE_BG) if cursor on this row - PRIORITY 1
+// /// 2. Visual selection highlighting (YELLOW + CYAN_BG) if in visual mode - PRIORITY 2
+// /// 3. Character-by-character highlighting via window_map
+// ///
+// /// # Arguments
+// /// * `state` - Editor state (mode, cursor position, window_map)
+// /// * `row_index` - Display row being rendered (0-indexed)
+// /// * `row_content` - The text content for this row
+// ///
+// /// # Returns
+// /// * `Ok(String)` - Row with highlighting applied
+// /// * `Err(LinesError)` - If window_map lookup fails or selection check fails
+// ///
+// /// # Error Handling
+// /// All failures are propagated - no silent failures.
+// /// Window_map errors, selection calculation errors, all returned as Err.
+// ///
+// /// # Design Notes
+// /// - Window_map provides byte_offset_linear_file_absolute_position for each display position
+// /// - Cursor takes priority over selection highlighting
+// /// - All operations can fail and must be handled by caller
+// fn render_utf8txt_row_with_cursor(
+//     state: &EditorState,
+//     row_index: usize,
+//     row_content: &str,
+// ) -> Result<String> {
+//     const BOLD: &str = "\x1b[1m";
+//     const RED: &str = "\x1b[31m";
+//     const YELLOW: &str = "\x1b[33m";
+//     const BG_WHITE: &str = "\x1b[47m";
+//     const BG_CYAN: &str = "\x1b[46m";
+//     const RESET: &str = "\x1b[0m";
+
+//     // TODO vec< is heap
+//     let chars: Vec<char> = row_content.chars().collect();
+//     let mut result = String::with_capacity(row_content.len() + 100);
+
+//     // Defensive: prevent cursor beyond line length
+//     let cursor_col = state.cursor.tui_col.min(chars.len());
+//     let cursor_on_this_row = row_index == state.cursor.tui_row;
+
+//     // Process each character in the row
+//     for col in 0..chars.len() {
+//         let ch = chars[col];
+//         let ch_string = ch.to_string();
+//         // PRIORITY 1: Cursor highlighting (takes precedence)
+//         if cursor_on_this_row && col == cursor_col {
+//             let formatted_string_1 = stack_format_it(
+//                 "{}{}{}{}{}",
+//                 &[&BOLD, &RED, &BG_WHITE, &ch_string, &RESET],
+//                 "NNNNN",
+//             );
+//             // result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
+//             result.push_str(&formatted_string_1);
+//             continue;
+//         }
+
+//         // PRIORITY 2: Visual selection highlighting
+//         if state.mode == EditorMode::VisualSelectMode {
+//             // Get file position - propagate error if lookup fails
+//             let file_pos_option = state.get_row_col_file_position(row_index, col)?;
+
+//             if let Some(file_pos) = file_pos_option {
+//                 // Check if in selection - propagate error if check fails
+//                 let in_selection = is_in_selection(
+//                     file_pos.byte_offset_linear_file_absolute_position,
+//                     state.file_position_of_vis_select_start,
+//                     state.file_position_of_vis_select_end,
+//                 )?;
+
+//                 if in_selection {
+//                     let formatted_string_2 = stack_format_it(
+//                         "{}{}{}{}{}",
+//                         &[&BOLD, &YELLOW, &BG_CYAN, &ch_string, &RESET],
+//                         "NNNNN",
+//                     );
+//                     // result.push_str(&format!("{}{}{}{}{}", BOLD, YELLOW, BG_CYAN, ch, RESET));
+//                     result.push_str(&formatted_string_2);
+//                     continue;
+//                 }
+//             }
+//         }
+
+//         // PRIORITY 3: Normal character (no highlighting)
+//         result.push(ch);
+//     }
+
+//     // Handle cursor at/past end of line
+//     if cursor_on_this_row && cursor_col >= chars.len() {
+//         // result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
+
+//         result.push_str(&stack_format_it(
+//             "{}{}{}█{}",
+//             &[&BOLD, &RED, &BG_WHITE, &RESET],
+//             "NNN█N",
+//         ));
+//     }
+
+//     Ok(result)
+// }
+
+/// Renders one row of display directly to stdout with cursor, selection,
+/// and syntax highlighting — zero heap allocation.
 ///
-/// # Purpose
-/// Takes a display row and adds:
-/// 1. Cursor highlighting (RED + WHITE_BG) if cursor on this row - PRIORITY 1
-/// 2. Visual selection highlighting (YELLOW + CYAN_BG) if in visual mode - PRIORITY 2
-/// 3. Character-by-character highlighting via window_map
+/// # Purpose (Project Context)
+/// This is the character-by-character rendering function for the TUI editor's
+/// content area. It processes a single display row and writes ANSI-styled
+/// characters directly to stdout as it goes. No intermediate String is built.
+///
+/// The function applies three layers of highlighting with strict priority:
+///   PRIORITY 1: Cursor (BOLD + RED + WHITE_BG) — always wins
+///   PRIORITY 2: Visual selection (BOLD + YELLOW + CYAN_BG) — if in visual mode
+///   PRIORITY 3: Syntax highlighting (cyan for symbols, yellow for keywords)
+///   PRIORITY 4: Plain character — no styling
+///
+/// # Multi-byte UTF-8 and the Byte-vs-Character Index Problem
+///
+/// ## Critical Invariant
+/// `cursor.tui_col` is a CHARACTER column position, not a byte offset.
+/// When we removed Vec<char>, we lost the simple `for col in 0..chars.len()`
+/// iteration where `col` automatically tracked character index.
+///
+/// We now iterate over `row_content` byte-by-byte using UTF-8 boundary
+/// detection and maintain TWO separate counters:
+///
+///   - `byte_pos`:  Byte offset into `row_content`. Used for slicing, for
+///                  syntax highlight prefix matching, and for writing bytes.
+///                  Advances by 1-4 bytes per character.
+///
+///   - `char_index`: Character column position. Increments by exactly 1 per
+///                   complete UTF-8 character, regardless of byte width.
+///                   Compared against `cursor_col` for cursor highlighting.
+///
+/// ## Why This Matters (Concrete Example)
+/// ```text
+/// row_content bytes: [h] [e] [l] [l] [o] [ ] [E4 B8 96] [20]
+///                     0   1   2   3   4   5   6  7   8     9   <- byte_pos
+/// character index:    0   1   2   3   4   5   6              7  <- char_index
+///
+/// cursor_col = 6 → cursor is on '世' (3-byte char at byte_pos 6).
+/// If we compared cursor_col against byte_pos, it would accidentally match
+/// byte 6 here — but on a different line where multi-byte chars appear
+/// earlier, byte_pos and char_index diverge and the cursor would land
+/// on the wrong character.
+/// ```
+///
+/// This is the same byte-vs-character discipline used in
+/// process_line_with_offset() during its skip and write phases.
+///
+/// # Syntax Highlighting Integration
+/// When `is_plain_text` is false (file is not .txt/.log):
+///   - buffy_get_syntax_highlight() is called with `byte_pos` to check
+///     for keyword or symbol matches
+///   - SyntaxSymbol: single character written in cyan
+///   - DefinitionWord: keyword_byte_len bytes written in yellow, then
+///     byte_pos and char_index advance past the entire keyword
+///   - The cursor position is NEVER syntax-highlighted (cursor priority)
+///   - Characters inside the keyword span that overlap the cursor still
+///     get cursor highlighting for that one character
+///
+/// # Direct-Write Pattern (No Heap)
+/// This function writes ANSI escape codes and character bytes directly to
+/// stdout using stdout.write_all(). No String accumulation, no Vec<char>,
+/// no format!() macro. This is the pattern Buffy is designed for.
+///
+/// The caller (render_tui_utf8txt) prints the line number prefix BEFORE
+/// calling this function, then calls buffy_println for the newline AFTER.
+/// This function writes only the content portion of the row.
 ///
 /// # Arguments
-/// * `state` - Editor state (mode, cursor position, window_map)
-/// * `row_index` - Display row being rendered (0-indexed)
-/// * `row_content` - The text content for this row
+/// * `state`          - Editor state (mode, cursor position, window_map)
+/// * `row_index`      - Display row being rendered (0-indexed within window)
+/// * `row_content`    - The text content for this row (content portion only,
+///                      line number prefix already excluded by caller)
+/// * `cursor_col`     - Cursor column adjusted for content portion (caller
+///                      subtracts line_num_width from state.cursor.tui_col)
+/// * `is_plain_text`  - If true, skip syntax highlighting entirely.
+///                      Computed once by caller via buffy_is_plain_text_extension()
 ///
 /// # Returns
-/// * `Ok(String)` - Row with highlighting applied
-/// * `Err(LinesError)` - If window_map lookup fails or selection check fails
+/// * `Ok(())` - Row content written to stdout successfully
+/// * `Err(LinesError)` - If window_map lookup fails, selection check fails,
+///                        or stdout write fails
 ///
 /// # Error Handling
-/// All failures are propagated - no silent failures.
-/// Window_map errors, selection calculation errors, all returned as Err.
-///
-/// # Design Notes
-/// - Window_map provides byte_offset_linear_file_absolute_position for each display position
-/// - Cursor takes priority over selection highlighting
-/// - All operations can fail and must be handled by caller
+/// All write failures and window_map errors are propagated. No silent failures.
+/// stdout.write_all() errors are converted to LinesError::DisplayError.
+/// This function never panics in production.
 fn render_utf8txt_row_with_cursor(
     state: &EditorState,
     row_index: usize,
     row_content: &str,
-) -> Result<String> {
-    const BOLD: &str = "\x1b[1m";
-    const RED: &str = "\x1b[31m";
-    const YELLOW: &str = "\x1b[33m";
-    const BG_WHITE: &str = "\x1b[47m";
-    const BG_CYAN: &str = "\x1b[46m";
-    const RESET: &str = "\x1b[0m";
+    cursor_col: usize,
+    is_plain_text: bool,
+) -> Result<()> {
+    let mut stdout = io::stdout();
+    let row_bytes = row_content.as_bytes();
+    let row_len = row_bytes.len();
 
-    // TODO vec< is heap
-    let chars: Vec<char> = row_content.chars().collect();
-    let mut result = String::with_capacity(row_content.len() + 100);
-
-    // Defensive: prevent cursor beyond line length
-    let cursor_col = state.cursor.tui_col.min(chars.len());
+    // =========================================================================
+    // CURSOR ON THIS ROW?
+    // =========================================================================
     let cursor_on_this_row = row_index == state.cursor.tui_row;
 
-    // Process each character in the row
-    for col in 0..chars.len() {
-        let ch = chars[col];
-        let ch_string = ch.to_string();
-        // PRIORITY 1: Cursor highlighting (takes precedence)
-        if cursor_on_this_row && col == cursor_col {
-            let formatted_string_1 = stack_format_it(
-                "{}{}{}{}{}",
-                &[&BOLD, &RED, &BG_WHITE, &ch_string, &RESET],
-                "NNNNN",
+    // =========================================================================
+    // TOTAL CHARACTER COUNT (for cursor-at-end-of-line detection)
+    // =========================================================================
+    // We need to know the total number of characters in the row to detect
+    // when the cursor is at/past the end. We count characters by scanning
+    // UTF-8 lead bytes. This is O(n) but avoids Vec<char> allocation.
+    // Done once before the main loop.
+    let total_chars = row_content.chars().count();
+
+    // Defensive: prevent cursor beyond line length (same as original)
+    let effective_cursor_col = cursor_col.min(total_chars);
+
+    // =========================================================================
+    // MAIN LOOP: Iterate by UTF-8 character boundaries
+    //
+    // TWO COUNTERS (see doc comment for full explanation):
+    //   byte_pos   — byte offset into row_bytes, advances by char byte length
+    //   char_index — character column, advances by 1 per UTF-8 character
+    //
+    // For cursor comparison: char_index == effective_cursor_col
+    // For syntax matching:   byte_pos passed to buffy_get_syntax_highlight()
+    // For writing bytes:     &row_bytes[byte_pos..byte_pos + char_byte_len]
+    // =========================================================================
+    let mut byte_pos: usize = 0;
+    let mut char_index: usize = 0;
+
+    // Safety bound: prevent infinite loops on malformed input.
+    // row_len is the byte length; we can never have more characters than bytes.
+    let max_iterations = row_len + 1;
+    let mut iterations: usize = 0;
+
+    while byte_pos < row_len {
+        // =====================================================================
+        // ITERATION GUARD
+        // =====================================================================
+        iterations += 1;
+        if iterations > max_iterations {
+            // Defensive: should never happen with well-formed UTF-8.
+            // In production, break and return what we have rather than panic.
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "render_utf8txt_row_with_cursor: iteration limit reached at byte_pos={}, char_index={}",
+                byte_pos, char_index
             );
-            // result.push_str(&format!("{}{}{}{}{}", BOLD, RED, BG_WHITE, ch, RESET));
-            result.push_str(&formatted_string_1);
+            break;
+        }
+
+        // =====================================================================
+        // DETERMINE CHARACTER BYTE LENGTH
+        // =====================================================================
+        // UTF-8 encoding: lead byte tells us how many bytes this character is.
+        //   0xxxxxxx → 1 byte  (ASCII)
+        //   110xxxxx → 2 bytes
+        //   1110xxxx → 3 bytes
+        //   11110xxx → 4 bytes
+        //   Anything else → malformed, treat as 1 byte defensively.
+        let char_byte_len = if byte_pos < row_len {
+            let lead = row_bytes[byte_pos];
+            if lead < 0x80 {
+                1
+            } else if lead < 0xE0 {
+                2
+            } else if lead < 0xF0 {
+                3
+            } else if lead < 0xF8 {
+                4
+            } else {
+                // Malformed lead byte. Advance 1 byte to avoid infinite loop.
+                1
+            }
+        } else {
+            break; // past end, should not reach here due to while condition
+        };
+
+        // Defensive: ensure we do not read past end of row_bytes
+        let char_end = byte_pos + char_byte_len;
+        let char_end = if char_end > row_len {
+            // Incomplete multi-byte character at end of string.
+            // Write a replacement character and break.
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "render_utf8txt_row_with_cursor: incomplete UTF-8 at byte_pos={}, need {} bytes, have {}",
+                byte_pos,
+                char_byte_len,
+                row_len - byte_pos
+            );
+            stdout.write_all("�".as_bytes()).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC write error: {}",
+                    &[&e.to_string()],
+                    "rURWC write error",
+                ))
+            })?;
+            break;
+        } else {
+            char_end
+        };
+
+        let char_bytes = &row_bytes[byte_pos..char_end];
+
+        // =====================================================================
+        // PRIORITY 1: CURSOR HIGHLIGHTING
+        // =====================================================================
+        // cursor.tui_col is a CHARACTER index. We compare against char_index.
+        // If cursor is on this character, write with cursor styling and skip
+        // all other highlighting.
+        if cursor_on_this_row && char_index == effective_cursor_col {
+            stdout.write_all(BOLD_U8).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC cursor write: {}",
+                    &[&e.to_string()],
+                    "rURWC cursor write",
+                ))
+            })?;
+            stdout.write_all(RED_U8).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC cursor write: {}",
+                    &[&e.to_string()],
+                    "rURWC cursor write",
+                ))
+            })?;
+            stdout.write_all(BG_WHITE_U8).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC cursor write: {}",
+                    &[&e.to_string()],
+                    "rURWC cursor write",
+                ))
+            })?;
+            stdout.write_all(char_bytes).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC cursor write: {}",
+                    &[&e.to_string()],
+                    "rURWC cursor write",
+                ))
+            })?;
+            stdout.write_all(RESET_U8).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC cursor write: {}",
+                    &[&e.to_string()],
+                    "rURWC cursor write",
+                ))
+            })?;
+
+            byte_pos = char_end;
+            char_index += 1;
             continue;
         }
 
-        // PRIORITY 2: Visual selection highlighting
+        // =====================================================================
+        // PRIORITY 2: VISUAL SELECTION HIGHLIGHTING
+        // =====================================================================
         if state.mode == EditorMode::VisualSelectMode {
-            // Get file position - propagate error if lookup fails
-            let file_pos_option = state.get_row_col_file_position(row_index, col)?;
+            // get_row_col_file_position uses char_index (column) for lookup.
+            // The window_map was built with character columns, not byte offsets.
+            // We need to add line_num_width back because the window_map was
+            // built with the full row coordinates including line number prefix.
+            //
+            // IMPORTANT: The caller passes us content-only (line number prefix
+            // stripped), and passes cursor_col already adjusted. But the
+            // window_map stores positions in full-row coordinates. We need the
+            // line_num_width to reconstruct the full-row column for the lookup.
+            //
+            // However, looking at the original code: the original function
+            // received the full row_str including line number, and iterated
+            // over all characters. The caller then sliced the OUTPUT string
+            // with [line_num_width..]. Now we receive only the content portion
+            // but must look up positions in the full-row window_map.
+            //
+            // We pass row_index and the FULL column (char_index + line_num_width)
+            // to the window_map lookup. But we do not have line_num_width here.
+            //
+            // SOLUTION: We look up using the char_index offset that the
+            // window_map actually stores. The caller can tell us the column
+            // offset to add. For now, we rely on the fact that the window_map
+            // columns start at col_start (which is the line_num_width).
+            // We need to receive this offset. But to minimise signature changes
+            // in this step, we can compute it from state.
+            //
+            // Actually, reviewing render_tui_utf8txt more carefully:
+            // The original code passed full row_str, and the window_map was
+            // indexed with full-row columns. The caller sliced the RESULT.
+            // Now we need to map char_index back to the window_map column.
+            //
+            // We compute line_num_width the same way the caller does, and
+            // add it to char_index for the window_map lookup.
+
+            let line_num_width = calculate_line_number_width(
+                state.line_count_at_top_of_window,
+                state.cursor.tui_row,
+                state.effective_rows,
+            );
+            let map_col = char_index + line_num_width;
+
+            let file_pos_option = state.get_row_col_file_position(row_index, map_col)?;
 
             if let Some(file_pos) = file_pos_option {
-                // Check if in selection - propagate error if check fails
                 let in_selection = is_in_selection(
                     file_pos.byte_offset_linear_file_absolute_position,
                     state.file_position_of_vis_select_start,
@@ -21178,34 +21826,276 @@ fn render_utf8txt_row_with_cursor(
                 )?;
 
                 if in_selection {
-                    let formatted_string_2 = stack_format_it(
-                        "{}{}{}{}{}",
-                        &[&BOLD, &YELLOW, &BG_CYAN, &ch_string, &RESET],
-                        "NNNNN",
-                    );
-                    // result.push_str(&format!("{}{}{}{}{}", BOLD, YELLOW, BG_CYAN, ch, RESET));
-                    result.push_str(&formatted_string_2);
+                    stdout.write_all(BOLD_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC sel write: {}",
+                            &[&e.to_string()],
+                            "rURWC sel write",
+                        ))
+                    })?;
+                    stdout.write_all(YELLOW_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC sel write: {}",
+                            &[&e.to_string()],
+                            "rURWC sel write",
+                        ))
+                    })?;
+                    stdout.write_all(BG_CYAN_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC sel write: {}",
+                            &[&e.to_string()],
+                            "rURWC sel write",
+                        ))
+                    })?;
+                    stdout.write_all(char_bytes).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC sel write: {}",
+                            &[&e.to_string()],
+                            "rURWC sel write",
+                        ))
+                    })?;
+                    stdout.write_all(RESET_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC sel write: {}",
+                            &[&e.to_string()],
+                            "rURWC sel write",
+                        ))
+                    })?;
+
+                    byte_pos = char_end;
+                    char_index += 1;
                     continue;
                 }
             }
         }
 
-        // PRIORITY 3: Normal character (no highlighting)
-        result.push(ch);
+        // =====================================================================
+        // PRIORITY 3: SYNTAX HIGHLIGHTING
+        // =====================================================================
+        // Only when the file is not plain text (.txt, .log).
+        // buffy_get_syntax_highlight() receives byte_pos because it needs
+        // to do prefix matching (keyword detection) from that position.
+        if !is_plain_text {
+            let highlight = buffy_get_syntax_highlight(byte_pos, row_content);
+
+            match highlight {
+                SyntaxHighlight::SyntaxSymbol => {
+                    // Single character in colour. Write ANSI, char, reset.
+                    stdout.write_all(SYMBOL_COLOUR).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC syn write: {}",
+                            &[&e.to_string()],
+                            "rURWC syn write",
+                        ))
+                    })?;
+                    stdout.write_all(char_bytes).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC syn write: {}",
+                            &[&e.to_string()],
+                            "rURWC syn write",
+                        ))
+                    })?;
+                    stdout.write_all(RESET_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC syn write: {}",
+                            &[&e.to_string()],
+                            "rURWC syn write",
+                        ))
+                    })?;
+
+                    byte_pos = char_end;
+                    char_index += 1;
+                    continue;
+                }
+
+                SyntaxHighlight::DefinitionWord { keyword_byte_len } => {
+                    // Multi-character keyword in yellow.
+                    // Write the entire keyword span as one coloured block,
+                    // BUT: if the cursor is inside this keyword span, we must
+                    // write character-by-character so the cursor character gets
+                    // cursor highlighting instead.
+                    //
+                    // Determine how many CHARACTERS are in the keyword.
+                    // All current keywords are ASCII, so byte_len == char_count.
+                    // But for safety, we count properly.
+                    let keyword_end_byte = byte_pos + keyword_byte_len;
+                    let keyword_end_byte = keyword_end_byte.min(row_len); // bounds safety
+
+                    // Check: does the cursor land inside this keyword span?
+                    // If so, fall through to character-by-character rendering
+                    // so cursor priority is respected.
+                    let cursor_in_keyword = if cursor_on_this_row {
+                        // Count characters in the keyword span to know
+                        // what char_index range it covers.
+                        let keyword_slice = &row_content[byte_pos..keyword_end_byte];
+                        let keyword_char_count = keyword_slice.chars().count();
+                        let keyword_char_end = char_index + keyword_char_count;
+                        effective_cursor_col >= char_index
+                            && effective_cursor_col < keyword_char_end
+                    } else {
+                        false
+                    };
+
+                    if !cursor_in_keyword {
+                        // No cursor conflict: write entire keyword in yellow.
+                        let keyword_bytes = &row_bytes[byte_pos..keyword_end_byte];
+
+                        stdout.write_all(DEFINITION_COLOUR).map_err(|e| {
+                            LinesError::DisplayError(stack_format_it(
+                                "rURWC kw write: {}",
+                                &[&e.to_string()],
+                                "rURWC kw write",
+                            ))
+                        })?;
+                        stdout.write_all(keyword_bytes).map_err(|e| {
+                            LinesError::DisplayError(stack_format_it(
+                                "rURWC kw write: {}",
+                                &[&e.to_string()],
+                                "rURWC kw write",
+                            ))
+                        })?;
+                        stdout.write_all(RESET_U8).map_err(|e| {
+                            LinesError::DisplayError(stack_format_it(
+                                "rURWC kw write: {}",
+                                &[&e.to_string()],
+                                "rURWC kw write",
+                            ))
+                        })?;
+
+                        // Advance byte_pos and char_index past the keyword.
+                        let keyword_slice = &row_content[byte_pos..keyword_end_byte];
+                        let keyword_char_count = keyword_slice.chars().count();
+                        byte_pos = keyword_end_byte;
+                        char_index += keyword_char_count;
+                        continue;
+                    }
+                    // If cursor IS inside keyword, fall through to write
+                    // this single character normally — the next loop iteration
+                    // for the cursor character will hit PRIORITY 1 above.
+                    // For this current character (which is the first char of
+                    // the keyword, and is NOT the cursor), write it in yellow.
+                    stdout.write_all(YELLOW_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC kw partial: {}",
+                            &[&e.to_string()],
+                            "rURWC kw partial",
+                        ))
+                    })?;
+                    stdout.write_all(char_bytes).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC kw partial: {}",
+                            &[&e.to_string()],
+                            "rURWC kw partial",
+                        ))
+                    })?;
+                    stdout.write_all(RESET_U8).map_err(|e| {
+                        LinesError::DisplayError(stack_format_it(
+                            "rURWC kw partial: {}",
+                            &[&e.to_string()],
+                            "rURWC kw partial",
+                        ))
+                    })?;
+
+                    byte_pos = char_end;
+                    char_index += 1;
+                    continue;
+                }
+
+                SyntaxHighlight::None => {
+                    // Fall through to PRIORITY 4 below.
+                }
+            }
+        }
+
+        // // =====================================================================
+        // // PRIORITY 4: PLAIN CHARACTER — no styling
+        // // =====================================================================
+        // stdout.write_all(char_bytes).map_err(|e| {
+        //     LinesError::DisplayError(stack_format_it(
+        //         "rURWC plain write: {}",
+        //         &[&e.to_string()],
+        //         "rURWC plain write",
+        //     ))
+        // })?;
+
+        // =====================================================================
+        // PRIORITY 4: PLAIN CHARACTER — default green text
+        // =====================================================================
+        // Green is the default colour for all unstyled content characters.
+        // Cursor (priority 1), selection (priority 2), and syntax highlighting
+        // (priority 3) each apply their own colours and reset afterwards.
+        // Plain characters get green as the baseline readable colour.
+        stdout.write_all(DEFAULT_TEXT_COLOUR).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC plain write: {}",
+                &[&e.to_string()],
+                "rURWC plain write",
+            ))
+        })?;
+        stdout.write_all(char_bytes).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC plain write: {}",
+                &[&e.to_string()],
+                "rURWC plain write",
+            ))
+        })?;
+        stdout.write_all(RESET_U8).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC plain write: {}",
+                &[&e.to_string()],
+                "rURWC plain write",
+            ))
+        })?;
+
+        byte_pos = char_end;
+        char_index += 1;
     }
 
-    // Handle cursor at/past end of line
-    if cursor_on_this_row && cursor_col >= chars.len() {
-        // result.push_str(&format!("{}{}{}█{}", BOLD, RED, BG_WHITE, RESET));
-
-        result.push_str(&stack_format_it(
-            "{}{}{}█{}",
-            &[&BOLD, &RED, &BG_WHITE, &RESET],
-            "NNN█N",
-        ));
+    // =========================================================================
+    // CURSOR AT/PAST END OF LINE
+    // =========================================================================
+    // When the cursor column is at or beyond the last character, show a
+    // cursor block at the end position. This allows the user to position
+    // the cursor after the last character for appending.
+    if cursor_on_this_row && effective_cursor_col >= total_chars {
+        stdout.write_all(BOLD_U8).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC eol cursor: {}",
+                &[&e.to_string()],
+                "rURWC eol cursor",
+            ))
+        })?;
+        stdout.write_all(RED_U8).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC eol cursor: {}",
+                &[&e.to_string()],
+                "rURWC eol cursor",
+            ))
+        })?;
+        stdout.write_all(BG_WHITE_U8).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC eol cursor: {}",
+                &[&e.to_string()],
+                "rURWC eol cursor",
+            ))
+        })?;
+        stdout.write_all("█".as_bytes()).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC eol cursor: {}",
+                &[&e.to_string()],
+                "rURWC eol cursor",
+            ))
+        })?;
+        stdout.write_all(RESET_U8).map_err(|e| {
+            LinesError::DisplayError(stack_format_it(
+                "rURWC eol cursor: {}",
+                &[&e.to_string()],
+                "rURWC eol cursor",
+            ))
+        })?;
     }
 
-    Ok(result)
+    Ok(())
 }
 
 /// Initializes the session directory structure for this editing session
@@ -21654,7 +22544,7 @@ fn parse_file_with_line(input: &str) -> (String, Option<usize>) {
     }
 }
 */
-/// Recovery-reboot wrapper for lines_fullfileeditor_core
+/// Recovery-reboot wrapper for lines_fullfile_editor_core
 pub fn lines_full_file_editor(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
@@ -21722,7 +22612,7 @@ pub fn lines_full_file_editor(
         }
 
         // Call core with SAME session directory
-        match lines_fullfileeditor_core(
+        match lines_fullfile_editor_core(
             Some(target_path.clone()),
             starting_line,
             Some(session_dir.clone()),
@@ -21778,7 +22668,7 @@ pub fn lines_full_file_editor(
 /// - Creates parent directories if needed
 /// - Initializes new files with timestamp header
 /// - Creates read-copy for safety
-pub fn lines_fullfileeditor_core(
+pub fn lines_fullfile_editor_core(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
     use_this_session: Option<PathBuf>,
