@@ -1560,6 +1560,7 @@ pub fn buffy_get_syntax_highlight(byte_pos: usize, row_content: &str) -> SyntaxH
         // Other
         "for ",   //
         "while ", //
+        "match ", //
         "if ",    //
         "loop ",  //
     ];
@@ -1589,9 +1590,10 @@ pub fn buffy_get_syntax_highlight(byte_pos: usize, row_content: &str) -> SyntaxH
     // For safety we use chars().next() which handles UTF-8 correctly.
     // -------------------------------------------------------------------------
     const SYNTAX_SYMBOLS: &[char] = &[
-        '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', ';', '"', '\'', '\\', '&', '!', '#', '/',
-        '*', ',', '`',
+        '(', ')', '[', ']', '{', '}', '<', '>', '=', ':', ';', '\\', '&', '!', '#', '/', '*', ',',
+        '`',
     ];
+    // maybe/maybe-not: ", '
 
     // Get the first character at this byte position.
     // chars().next() is safe: we already checked byte_pos < row_content.len()
