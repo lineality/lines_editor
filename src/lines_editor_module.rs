@@ -11394,7 +11394,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 // safe subtraction with error handling
                 if let Some(new_position) = lines_editor_state
                     .in_row_abs_horizontal_0_index_cursor_position
-                    .checked_sub(count)
+                    .checked_sub(1)
+                // .checked_sub(count)
                 {
                     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = new_position;
                 } else {
@@ -11433,6 +11434,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     if (lines_editor_state.cursor.tui_row == 0)
                         && ((lines_editor_state.cursor.tui_col - line_num_width) == 0)
                         && !(lines_editor_state.line_count_at_top_of_window == 0)
+                        && (lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0)
                     {
                         // move up, move to end of line.
                         _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
