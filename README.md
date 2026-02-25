@@ -30,27 +30,34 @@ NORMAL 1:1 README.md @0  > ⎕
 
 
 # Abstract
-Lines is a minimal terminal text/hex file-editor, written from scratch in vanilla 2024-Rust (with no third party crates or unsafe code), designed for long term reliability and maintainability, adaptable modularity, memory-footprint minimalism, safety, and security. The scope is intentionally constrained to a few essential uses and file operations such as insert, and delete at the character/byte level. Lines is, by design and policy, not a "fully-featured," "feature-rich," "responsive," full IDE competing with Zed, Helix, vsCode, etc.
+Lines is a minimal terminal text/hex file-editor, written from scratch in vanilla 2024-Rust (with no third party crates or unsafe code), designed for long term reliability and maintainability, adaptable modularity, memory-footprint minimalism, safety, and security. The scope is intentionally constrained to a few essential uses and file operations such as insert, and delete at the character/byte level. Lines is, by design and policy, not a "fully-featured," "feature-rich," "responsive," full IDE competing with Zed, Helix, vsCode, etc. (though with the FF-file navigator and tmux, the combo is surprisingly flexible).
+
+Lines is Modal (having modes) mostly the same as Ex/Vi/Vim or Helix et al. But Lines is different in that it has a +Enter way of operating using an OS-standard input buffer, and it has other features such as Hex-Edit mode a modular file-based clipboard.
 
 
 # Common Use Cases
-In 2025 these are all common, yet there is no good way to deal with these.
+In 2025 these are all common, yet there is no good way to deal some with these:
+
+- the need to make and save a memo file extremely simply and quickly (the original Lines-editor does this well)
+
+- pasting one file into another
+
+- looking at the bytes of a file because there is a file encoding issue or file damage problem (common in data science)
+
+- looking at a plain text file quickly and simply (common)
+
+- looking at a large plain text file (common)
+
+- having a lite-weight module for another cli application to be able to simply view a file natively within that application
+
+(Note: linewrap is pending or out of scope)
 
 - opening a data file to see the header-line wrapped to see all the column names
 
-- opening an 8gb data file to inspect the header and top row (through a window). Data files can have hundreds or thousands of columns, are you going to 'head' that in a terminal? (very common in data science)
-
-- looking at the bytes of a file because there is a file encoding issue or file damage problem (very common in data science)
-
-- looking at a plain text file quickly and simply (very common)
-
-- looking at a large plain text file (very common)
-
-- having a lite-weight module for another cli application to be able to simply view a file natively within that application (very common)
-
 - looking at a file where the formatting is such that "rows" are long (or there are no "rows").
 
-- the need to make and save a memo file extremely simply and quickly (the original Lines-editor does this well)
+- opening an 8gb data file to inspect the header and top row (through a window). Data files can have hundreds or thousands of columns, are you going to 'head' that in a terminal? (common in data science)
+
 
 
 ## In Scope:
@@ -109,7 +116,6 @@ In 2025 these are all common, yet there is no good way to deal with these.
 ## Out of Scope:
 - Mouse support
 - Advanced goto features (e.g. Helix has a massive goto suite menu)
-- Themes/colors beyond basic highlighting
 - Line wrapping toggle
 - relative lines
 
@@ -140,6 +146,6 @@ Here are some of the questions and thought behind, below, and around, the Lines-
 
 
 # Results:
-- Time to write a working MVP of Vi(Vim) in Rust, greenfield: 7 days (1 week)
+- Time it took to write a working MVP of ~"Vi(Vim) (functionality) in Rust," greenfield: 7 days (1 week), half of which was planning.
 
 - Time to build MVP-2, adding: hex editor (classic, in-place edit), raw string (showing escaped characters), select including: cursor, w(word forward) e(end of word forward), b(begining of word backwards), toggle standard comment (line or selected lines), toggle rust docstring (line or selected lines), indent/unident (line or selected lines) (new module for toggle comment / indent), undo, redo, hex-add byte, hex-remove byte, hex-goto-byte, standardized number column indent (v1), clipboard, cut and paste (including new (combined) modules also in github: byte-level-operations, 'buttons' reversible operation logs, paste file from path, boot from(into) existing session(allowing for multiple windows and file-manager file select toggle), byte position display, continuation of cursor from line to line including select, boundaries to keep cursor in text-bounds, no-crash exception handling, save-as (which, strangely, was one of the least-simple to add), Goto (start of line end of line specific line, :boot to line, end of doc, start of doc, specific byte), sync hex-edit cursor and normal edit cursor locations, source-it (command to recreate source-code files ('crate')), help and version commands, version number source from cargo, delete selection, simplified architecture of (fewer) structs, resize-tui (larger, configurable, display), file-manager integration modular session and draft-file handling, revised(simplified) newline handling including showing newlines, gradual replacement of heap-formatting with stack-based formatting, simplified and slimmer set of state fields and constants, safe-default commands for insert-mode (no character input collisions), reboot-recovery loop, etc.: 28 days (4 weeks)
