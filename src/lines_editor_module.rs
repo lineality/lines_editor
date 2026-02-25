@@ -6666,7 +6666,7 @@ impl EditorState {
                 let readcopy_pathclone = read_copy_path.clone();
 
                 if result.is_ok() {
-                    let _ = self.set_info_bar_message("Added Byte");
+                    let _ = self.set_info_bar_message("(Added a Byte)");
 
                     // ==================
                     // Clear Redo Stack
@@ -6795,7 +6795,7 @@ impl EditorState {
             }
 
             // === MODE SWITCHING ===
-            "n" | "\x1b" => {
+            "n" | "\x1b" | "q" | "b" => {
                 // Exit to normal mode
                 keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
             }
@@ -6826,10 +6826,7 @@ impl EditorState {
                 keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
             }
 
-            "q" => {
-                // Quit without saving
-                keep_editor_loop_running = execute_command(self, Command::Quit)?;
-            }
+            // safer to have q return to normal mode
 
             // === NAVIGATION: LEFT/RIGHT (single byte) ===
             "h" => {
@@ -20055,7 +20052,11 @@ pub fn print_help() {
     println!("    Memo Mode:      Run from home directory, Append-only quickie");
     println!("                    Creates dated files in ~/Documents/lines_editor/");
     println!("    Full Editor:    Run from any other directory");
-    println!("    h | hex         Hex editor mode");
+    println!("    n               Normal-Mode (navigation)");
+    println!("    i               Insert-Mode (typing in text)");
+    println!("    v               Visual/Select-Mode (select and act on selections");
+    println!("    hex             Hex Editor Mode");
+    println!("    p | pasty       Clipboard / Paste Mode");
     println!("DELETE: d");
     println!("    Normal Mode: 'd' delete a whole file-line (not just TUI display)");
     println!("    Insert Mode: delete-key for Backspace-Style Delete");
@@ -20066,11 +20067,13 @@ pub fn print_help() {
     println!("    tall+           +1 taller");
     println!("    tall-           -1 tall");
     println!("NAVIGATION:");
+    println!("    Esc | N         Normal Mode");
     println!("    hjkl            Move cursor");
     println!("    5j, 10l         Move with repeat count");
     println!("    [Empty Enter]   Repeat last command (Normal/Visual/ ...?)");
     println!("-n -v -wq -q -s -d  Insert Mode: Flag style commands");
     println!("MOVE CURSOR: Normal-Mode move, Visual-Mode highlight");
+    println!("                    Arrow keys (+ Enter) work too!");
     println!("    j               down");
     println!("    k               up");
     println!("    h               left");
@@ -20080,6 +20083,7 @@ pub fn print_help() {
     println!("    b               go BACK to beginning of this/next word/symbol");
     println!("GOTO:");
     println!("    g[int] =>       go to line number");
+    println!("                     in Hex-Mode: Go To File Byte");
     println!("    gg     =>       go to start of file");
     println!("    ge | G =>       go to last line of file");
     println!("    gh | 0 =>       go to start of file");
@@ -20113,6 +20117,13 @@ pub fn print_help() {
     println!("    clear[int]      delete clipboard item by number");
     println!("    paste           to paste multi-line block from outside lines");
     println!("    b               go BACK");
+    println!("HEX EDIT: Careful, Edit With The Safety!");
+    println!("    hex         Enter hex-edit mode from Normal-Mode");
+    println!("    [NN]            Enter two 'digit' hex number to change current byte");
+    println!("                     this is standard hex-edit funcationality, in place");
+    println!("    [NN]-i          *Insert* New Byte (byte-hex dash i)");
+    println!("    d               Delete/Remove current byte");
+    println!("    g[int]          Go To File Byte");
     println!("Examples in terminal/shell:");
     println!("  lines                Memo mode (if in home)");
     println!("  lines notes.txt      Create/open notes.txt");
@@ -21084,7 +21095,7 @@ fn format_hex_info_bar(lines_editor_state: &EditorState) -> Result<String> {
         + 1;
 
     let info_bar = stack_format_it(
-        "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN {} {}> ",
+        "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN|d {} {}> ",
         &[
             &YELLOW,
             &RED,
