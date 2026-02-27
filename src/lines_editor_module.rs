@@ -20023,6 +20023,8 @@ pub fn print_help() {
     println!("OPTIONS:");
     println!("    --help, -h      Show this help message");
     println!("    --version, -v   Show version information");
+    println!("HELP MENU:");
+    println!("    help            For a help menue with sections.)");
     println!("QUIT & SAVE:");
     println!("                    If you 'quit' without saving, your work is gone.)");
     println!("                    If session ends without 'quit' then a backup exists.");
