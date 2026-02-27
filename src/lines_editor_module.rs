@@ -20041,9 +20041,11 @@ pub fn print_help() {
     println!("    hex             Hex Editor Mode");
     println!("    p | pasty       Clipboard / Paste Mode");
     println!("DELETE: d");
-    println!("    Normal Mode: 'd' delete a whole file-line (not just TUI display)");
+    println!("    Normal Mode: 'd' deletes a WHOLE file-line");
     println!("    Insert Mode: delete-key for Backspace-Style Delete");
-    println!("    Visual Mode  'd' delete a selection inclusive / single char backspace style;");
+    println!("    Visual Mode  'd' delete a selection inclusive");
+    println!("    Visual & Normal: delete-key: deletes a single char backspace-style");
+
     println!("Resize-Tui: (Works with Enter-Key-to-Repeat");
     println!("    wide+           +1 wider");
     println!("    wide-           -1 wide");
@@ -20289,6 +20291,15 @@ const HELP_SECTION_UNDO_REDO_DELETE: &str = r#"
      d               Normal-Mode: like backspace
                      Visual-Mode: removes selection
      delete(key)     Only like backspace, not remove section
+
+Normal Mode:  'd': deletes a WHOLE file-line
+               delete-key: deletes a single char, backspace style
+
+Insert Mode:   delete-key only for Backspace-Style Delete
+
+Visual Mode   'd': deletes a selected-selection inclusive
+               delete-key: deletes a single char, backspace style
+
  UNDO/REDO:
      u               undo
      r               redo
