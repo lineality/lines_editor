@@ -6238,12 +6238,7 @@ impl EditorState {
     ///
     /// | Input | Action | Loop Control |
     /// |-------|--------|--------------|
-    /// | `-n` or `ESC` | Normal mode | Continue |
-    /// | `-i` | Insert mode | Continue |
-    /// | `-s` or `-w` | SaveFileStandard | Continue |
-    /// | `-q` | Quit | **Stop** |
-    /// | `-wq` | SaveAndQuit | **Stop** |
-    ///
+    ///  escape key for normal mode
     /// # Return Value Semantics
     ///
     /// * `Ok(true)` → Keep editor loop running
@@ -6821,7 +6816,7 @@ impl EditorState {
                 keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
             }
 
-            "wq" => {
+            "wq" | "sq" => {
                 // SaveAndQuit
                 keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
             }
@@ -6984,7 +6979,7 @@ impl EditorState {
     /// # Overview
     ///
     /// This method is responsible for ALL insert mode input handling, including:
-    /// 1. **Command detection** - Recognizing special commands (-n, -v, -s, -w, -wq, -q, etc.)
+    /// 1. **Command detection** - Recognizing special commands
     /// 2. **Text insertion** - Inserting user-typed text at cursor position
     /// 3. **Bucket brigade** - Handling large text input that exceeds buffer size
     /// 4. **Newline handling** - Distinguishing between content newlines and stdin delimiters
@@ -7040,9 +7035,6 @@ impl EditorState {
     ///   - Most commands (mode switches, save, empty input)
     ///   - All text insertion
     ///
-    /// * `Ok(false)` → Stop main editor loop (exit editor)
-    ///   - Quit command (-q)
-    ///   - SaveAndQUite (-wq)
     ///
     /// * `Err(e)` → IO error occurred, propagates to main
     ///   - stdin read failure
@@ -7060,13 +7052,8 @@ impl EditorState {
     ///
     /// | Input | Command | Action | Loop Control |
     /// |-------|---------|--------|--------------|
-    /// | `-n` or `ESC` | Enter Normal Mode | Switch to normal mode | Continue |
-    /// | `-v` | Enter Visual Mode | Switch to visual mode | Continue |
-    /// | `-s` or `-w` | SaveFileStandard | Write changes to disk | Continue |
-    /// | `-wq` | SaveAndQuit | SaveAndexit editor | **Stop** |
-    /// | `-q` | Quit | Exit without saving | **Stop** |
+    /// | ESC-key | Enter Normal Mode | Switch to normal mode | Continue |
     /// | `Delete key` | Delete Backspace | Delete character | Continue |
-    /// | `\n` or `\r\n` | Insert Newline | Add new line | Continue |
     /// | Other text | Insert Text | Add text at cursor | Continue |
     ///
     /// # Windowmap Rebuilding
@@ -7262,29 +7249,6 @@ impl EditorState {
         //  ////////////////////////
 
         // // Check for exit insert mode commands
-        // if trimmed == "-n" || trimmed == "\x1b" {
-        //     // \x1b is Esc key
-        //     // Exit insert mode
-        //     keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
-
-        //     // Now we can mutably borrow state
-        //     build_windowmap_nowrap(self, &read_copy)?;
-        // } else if trimmed == "-v" {
-        //     keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
-
-        //     // Now we can mutably borrow state
-        //     build_windowmap_nowrap(self, &read_copy)?;
-        // } else if trimmed == "-s" || trimmed == "-w" {
-        //     // Exit insert mode
-        //     keep_editor_loop_running = execute_command(self, Command::SaveFileStandard)?;
-        // } else if trimmed == "-wq" {
-        //     // Exit insert mode
-        //     keep_editor_loop_running = execute_command(self, Command::SaveAndQuit)?;
-        // } else if trimmed == "-q" {
-        //     // Exit insert mode
-        //     keep_editor_loop_running = execute_command(self, Command::Quit)?;
-
-        // TODO: safer?
         // // Only escape key to leave insert mode
         // possible to turn off all ascii keys
         if trimmed == "\x1b" {
@@ -7569,7 +7533,7 @@ impl EditorState {
         // In insert mode, most keys are text, not commands
         if current_mode == EditorMode::Insert {
             // Check for escape sequences to exit insert mode
-            if trimmed == "\x1b" || trimmed == "ESC" || trimmed == "-n" {
+            if trimmed == "\x1b" {
                 return Command::EnterNormalMode;
             }
 
@@ -7859,9 +7823,9 @@ impl EditorState {
 
                 "i" => Command::EnterInsertMode,
                 "v" => Command::EnterVisualMode,
-                "raw" | "r" => Command::EnterRawMode,
+                "raw" => Command::EnterRawMode,
                 // Multi-character commands
-                "wq" | "ws" => Command::SaveAndQuit,
+                "wq" | "sq" => Command::SaveAndQuit,
                 "s" | "ww" => Command::SaveFileStandard,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
@@ -7904,7 +7868,7 @@ impl EditorState {
                 "c" | "y" => Command::Copyank,
                 "s" | "ww" => Command::SaveFileStandard,
                 "n" | "\x1b" => Command::EnterNormalMode,
-                "wq" | "ws" => Command::SaveAndQuit,
+                "wq" | "sq" => Command::SaveAndQuit,
                 // "d" => Command::DeleteBackspace, // minimal, works
                 "d" => Command::DeleteRange,
                 "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
@@ -8044,6 +8008,10 @@ impl EditorState {
                 None => Command::None, // No previous command
             }
         } else {
+            if trimmed == "help" {
+                display_help_menu_system(stdin_handle)?; // stdin_handle: &mut StdinLock,
+            }
+
             // Normal/Visual mode: Parse this command
             self.parse_commands_for_normal_visualselect_modes(command_str, self.mode)
         };
@@ -12752,6 +12720,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::EnterRawMode => {
             // rebuild may not be needed here, but just in case
             // Rebuild window to show the change from read-copy file
@@ -12777,6 +12746,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::ToggleCommentOneLine(line_number_0number) => {
             // println!("line_number {line_number}");
             toggle_basic_singleline_comment_bytewise(
@@ -12786,6 +12756,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::ToggleDocstringOneLine(line_number_0number) => {
             toggle_rust_docstring_singleline_comment_bytewise(
                 &edit_file_path.display().to_string(),
@@ -12795,6 +12766,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::ToggleBlockcomments(start_row_0number, end_row_0number) => {
             #[cfg(debug_assertions)]
             {
@@ -12849,6 +12821,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::IndentRange => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -12886,6 +12859,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::ToggleRustDocstringRange => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -12923,6 +12897,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::ToggleBasicCommentlinesRange => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -12960,6 +12935,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::UnindentOneLine(line_number) => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -12986,6 +12962,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         Command::IndentOneLine(line_number) => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -13012,6 +12989,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
+
         // =============================
         // Undo Redo Buttons all undone!
         // =============================
@@ -13035,6 +13013,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::RedoButtonsCommand => {
             let redo_path = get_redo_changelog_directory_path(&edit_file_path)?;
             match button_undo_redo_next_inverse_changelog_pop_lifo(&edit_file_path, &redo_path) {
@@ -13063,6 +13042,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
             // SaveFileStandard doesn't need rebuild (no content change in display)
         }
+
         Command::SaveAs(save_as_path) => {
             // Execute save-as operation
             // Note: save_as_path is PathBuf, we need &Path
@@ -13127,6 +13107,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 }
             }
         }
+
         // Command::SaveAs(save_as_path) => {
         //     // 1     original_file_path: &Path, new_file_path_name: &Path,
         //     let saveas_status_message: String =
@@ -20047,7 +20028,7 @@ pub fn print_help() {
     println!("                    If session ends without 'quit' then a backup exists.");
     println!("    q               quit");
     println!("    wq              save and quit (same as 'write and quit')");
-    println!("    w               save / write (same thing)");
+    println!("    s               save / write (same thing), (w alone is 'word' jump)");
     println!("MODES:");
     println!("    Memo Mode:      Run from home directory, Append-only quickie");
     println!("                    Creates dated files in ~/Documents/lines_editor/");
@@ -20071,7 +20052,6 @@ pub fn print_help() {
     println!("    hjkl            Move cursor");
     println!("    5j, 10l         Move with repeat count");
     println!("    [Empty Enter]   Repeat last command (Normal/Visual/ ...?)");
-    println!("-n -v -wq -q -s -d  Insert Mode: Flag style commands");
     println!("MOVE CURSOR: Normal-Mode move, Visual-Mode highlight");
     println!("                    Arrow keys (+ Enter) work too!");
     println!("    j               down");
@@ -20129,6 +20109,494 @@ pub fn print_help() {
     println!("  lines notes.txt      Create/open notes.txt");
     println!("  lines notes.txt:42   Open to line 42");
     println!("  lines mydir/ Create new file in directory");
+}
+
+/// Help section identifiers for menu navigation
+///
+/// Each variant represents a distinct help section that can be displayed
+/// independently to fit within 80x24 terminal constraints.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum HelpSections {
+    QuickStartBlurb,
+    TopbarLegend,
+    Navigation,
+    HelpSectionGoto,
+    HelpSectionCopyPasty,
+    HelpSectionIndentComment,
+    HelpSectionUndoRedo,
+    HelpSectionHexEdit,
+    // Configuration,
+    // TerminalManagement,
+}
+
+/// Main help menu header text
+///
+/// Displayed at the top of the help menu selection screen
+const HELP_MENU_HEADER: &str = r#"
+  ╔═════════════════════════════════════════════════════╗
+  ║   Lines  ->  a modal cli/terminal text/hex editor   ║
+  ╚══════https://github.com/lineality/lines_editor══════╝
+            get source code -> lines --source
+
+   To use lines across multiple files, see File Fantastic
+   https://github.com/lineality/file_fantastic
+ "#;
+
+/// Quick start and examples help section content
+const HELP_SECTION_QUICK_START: &str = r#"
+═══ QUICK START & EXAMPLES ═══     Press Enter to return to help menu
+ USAGE in terminal:      ff [OPTIONS] [DIRECTORY]
+ OPTIONS:
+   -h, --help            Show this help menu
+   --source              Get ff source code, Rust 'crate'
+
+ EXAMPLES for terminal/shell:
+   lines                Memo mode (if in home)
+   lines notes.txt      Create/open notes.txt
+   lines notes.txt:42   Open to line 42
+   lines mydir/ Create new file in directory
+
+ BASIC WORKFLOW:
+   1. Open or create a file:
+    A. Create a new quick-memo file by simply running: lines
+       simply type and press enter to append a line; q to quit
+    B. Make a specific file by adding path: lines THIS/PATH
+   2. Use modes (like vi) and the "+Enter" system to edit files.
+   3. Use 'i'(+Enter) for insert mode to enter text
+   4. Use 'v'(+Enter) to select and act on selections
+   5. copy (c/y), paste & manage clipboard with 'pasty'
+   6. Use hex-editor with 'hex' (in place, or insert or delete bytes)
+   7. 'q' to quit"#;
+
+const HELP_SECTION_TOPBAR_LEGEND: &str = r#"
+"+Enter" Sytem: Press Enter after a command.
+ ═══ THE LEGEND OF TOP-BAR ═══
+quit sav re,undo del|nrm ins vis hex|go pasty cvy|wrd,b,end ///cmnt []idnt hjkl
+
+ quit............. q for quit
+ Save
+     s               save / write (same thing), (w alone is 'word' jump)
+     wq | sq         save and quit (same as 'write and quit')
+     If you 'quit' without saving, your work is gone.)
+ Undo/Redo........ u for undo, r for redo
+ d................ delete with 'd' (also delete-key variation)
+ Modes............ normal (n), insert(i), visual/select(v), hex-editor (hex)
+ go...............'g' for go-to commands (see section for those)
+ pasty,p.......... paste-content options (see section for that)
+                   if already in visual-select mode, 'v' works for paste too
+ wrd,b,end........ standard jump-cursor commands (see section for that)
+ [,].............. standard indent/unindent keys
+ /,//,///......... standard comment/uncomment + blocks (see section for that)
+ h,j,k,l.......... standard movements, arrow keys work too
+
+    Press Enter to return to help menu..."#;
+
+/// Navigation commands help section content
+const HELP_SECTION_NAVIGATION: &str = r#"
+ ═══ NAVIGATION COMMANDS ═══
+
+ NAVIGATION:
+     Esc-key | N         Normal Mode
+     hjkl            Move cursor
+     5j, 10l         Move with repeat count
+     [Empty Enter]   Repeat last command (Normal/Visual/ ...?)
+
+MODES:
+    Memo Mode:      Run from home directory, Append-only quickie
+                    Creates dated files in ~/Documents/lines_editor/
+    Full Editor:    Run from any other directory
+    n               Normal-Mode (navigation)
+    i               Insert-Mode (typing in text)
+    v               Visual/Select-Mode (select and act on selections
+    hex             Hex Editor Mode
+    p | pasty       Clipboard / Paste Mode
+
+  Press Enter to return to help menu..."#;
+
+/// Sorting and filtering help section content
+const HELP_SECTION_GOTO: &str = r#"
+ ═══ Go To ═══
+
+ NORMAL and Visual-Select Modes:
+    g[int] =>       go to line number
+                    in Hex-Mode: Go To File Byte
+    gg     =>       go to start of file
+    ge | G =>       go to last line of file
+    gh | 0 =>       go to start of file
+    gl | $ =>       go to end of this line
+
+ HEX MODE:
+    g[int] =>       in Hex-Mode: Go To File Byte
+
+ OPEN FILE To Line: e.g. Open to line 42
+     lines notes.txt:42
+
+  Press Enter to return to help menu..."#;
+
+/// Search options help section content
+const HELP_SECTION_COPY_PASTY: &str = r#"
+ ═══ COPY PASTE OPTIONS ═══
+
+ Cut/Past/Clipboard: Pasty!!
+     c | y           copy, yank (same thing)
+     v | p | pasty   go to Pasty-Mode (to paste)
+ PASTEY MODE:
+     Enter           paste last copied/yanked item
+     [int]           clipboard items are numbered
+                      that number to past that item)
+     path            path to any other file to paste in
+     clear           clear whole clipboard
+     clear[int]      delete clipboard item by number
+     paste           to paste multi-line block from outside lines
+     b               go BACK
+
+ Press Enter to return to help menu... "#;
+
+/// File operations help section content
+const HELP_SECTION_INDENT_COMMENT: &str = r#"
+ ═══ INDENT & COMMENT ═══
+
+ Mode editor/IDE/Notebook systems use standard
+   (shift +)   [,],/
+ keys for toggle-indent and toggle/comment.
+ Lines uses these (with +Enter instead of shift-key)
+
+ Note: block-commenting with /* */ or """ """ is not toggled
+ because uncomment must include the ~flag symbols.
+
+ Visual-mode can single-line-comment multiple selected lines.
+
+ INDENT/UINDENT :
+     [               Indent
+     ]               Unindent
+ COMMENT/UNCOMMENT:
+     /               Toggle Simple Comment (individual line(s))
+                      normal-mode or blocks in visual-mode)
+     //              Comment/Uncomment Block (visual-mode
+                      include markers for Uncomment)
+     ///             Rust Doc-String Comment
+
+    Press  Enter to return to help menu... "#;
+
+/// Get-Send Mode
+const HELP_SECTION_UNDO_REDO_DELETE: &str = r#"
+ ═══ GET-SEND MODE ═══
+
+ DELETE:
+                     Backspace key does not work with input buffer
+     d               Normal-Mode: like backspace
+                     Visual-Mode: removes selection
+     delete(key)     Only like backspace, not remove section
+ UNDO/REDO:
+     u               undo
+     r               redo
+
+ Press Enter to return to help menu..."#;
+
+/// Get-Send Mode
+const HELP_SECTION_HEX_EDIT: &str = r#"
+  ═══ HEX EDIT ═══
+
+  HEX EDIT: Careful, Edit With The Safety!
+      hex         Enter hex-edit mode from Normal-Mode
+      [NN]            Enter two 'digit' hex number to change current byte
+                       this is standard hex-edit funcationality, in place
+      [NN]-i          *Insert* New Byte (byte-hex dash i)
+      d               Delete/Remove current byte
+      g[int]          Go To File Byte
+
+ Press Enter to return..."#;
+
+// /// Terminal management help section content
+// const HELP_SECTION_TERMINAL: &str = r#"
+//  ═══ TERMINAL & DISPLAY MANAGEMENT ═══  Press Enter to return
+
+//  Your 'current working directory,' where you go, in ff, does not
+//  carry over to your terminal after you exit. But you will want
+//  to keep working where you are in ff:
+//  - you can open a new terminal or split IN your current ff location.
+//  - Note: Run tmux before you run ff to use the tmux splits.
+
+//  TERMINAL OPERATIONS:
+//    t                     Open new terminal in current directory
+//    vsplit                Create vertical tmux split (current directory)
+//    hsplit                Create horizontal tmux split (current directory)
+
+//  DISPLAY RESIZING:       'N' here is whatever number you enter.
+//    tall+N                Increase display height by N rows
+//    tall-N                Decrease display height by N rows
+//    wide+N                Increase display width by N chars
+//    wide-N                Decrease display width by N chars
+
+//  When ff exits, it will tell you where you last were,
+//  and the ~bash line to run to go back there in a terminal.
+//  e.g.   To continue from this location, run:
+//         cd /home/oops/code/ff_file_manager_minimal_rust"#;
+
+// /// Configuration help section content
+// const HELP_SECTION_CONFIGURATION: &str = r#"
+//  ═══ PARTNER PROGRAMS CONFIGURATION ═══
+
+//  You may want to call your own applications or other applications
+//  that are not fully 'installed' on your system. "Partner Programs"
+//  allows you to tell File Fantastic where these binary-executible
+//  files are, wherever they are. Just list each file-path in this file,
+//  which FF will create:
+
+//  CONFIGURATION FILE:
+//    ~/.ff_data/absolute_paths_to_local_partner_fileopening_executables.txt
+
+//  FILE FORMAT:
+//    - One program path per line
+//    - Use absolute paths
+//    - Comments with #, and blank lines, are ignored
+
+//  EXAMPLE CONFIGURATION:
+//    /usr/bin/emacs
+//    # This is a comment
+//    /home/user/bin/custom-editor
+
+//  Press Enter to return to help menu... "#;
+
+/// Wait for user to press Enter key
+///
+/// Simple utility function to pause execution until the user
+/// presses the Enter key. Used between help sections.
+///
+/// # Returns
+/// * `Result<()>` - Ok when Enter pressed, Err on I/O error
+fn wait_for_enter_keypress(stdin_handle: &mut StdinLock) -> Result<()> {
+    let mut buffer = String::new();
+    stdin_handle
+        .read_line(&mut buffer)
+        .map_err(LinesError::Io)?;
+    Ok(())
+}
+
+/// Display the main help menu and handle section selection
+///
+/// This function presents the user with a numbered menu of help sections
+/// and processes their selection. It returns to the caller when the user
+/// chooses to quit.
+///
+/// # Returns
+/// * `Result<()>` - Ok on successful completion, Err on I/O or other errors
+///
+/// # Errors
+/// - I/O errors when reading user input
+/// - Terminal display errors
+pub fn display_help_menu_system(stdin_handle: &mut StdinLock) -> Result<()> {
+    loop {
+        // Clear screen for clean display
+        clear_terminal_screen()?;
+
+        // Display header with colors
+        print!("{}{}", ansi_colors::BOLD, ansi_colors::BRIGHT_WHITE);
+        println!("{}", HELP_MENU_HEADER);
+        print!("{}", ansi_colors::RESET);
+
+        // Quit instructions (...learning from the vim nightmare...)
+        println!(
+            "  {}q.{} Type 'q' & hit Enter to quit help menu / File Fantastic",
+            ansi_colors::YELLOW,
+            ansi_colors::RESET
+        );
+        println!();
+
+        // Display menu options
+        println!(
+            "{} Select a help section:{}",
+            ansi_colors::CYAN,
+            ansi_colors::RESET
+        );
+
+        // Menu items with colored numbers
+        println!(
+            "  {}1.{} Quick Start & Examples",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}2.{} Top Bar Legend Tips",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}3.{} Navigation Commands",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}4.{} Go To (a file-line or start/end of a line)",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}5.{} Copy Paste & Clipboard",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}6.{} Indent & Unident Lines, Comment & Uncomment Lines",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}7.{} Undo / Redo",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        println!(
+            "  {}8.{} Hex-Editor: edit in place, insert, remove raw bytes",
+            ansi_colors::MAGENTA,
+            ansi_colors::RESET
+        );
+        // println!(
+        //     "  {}9.{} Terminal & Display Management",
+        //     ansi_colors::MAGENTA,
+        //     ansi_colors::RESET
+        // );
+        // println!(
+        //     "  {}10.{} 'Partner Programs' Configuration",
+        //     ansi_colors::MAGENTA,
+        //     ansi_colors::RESET
+        // );
+        // println!(
+        //     "  {}11.{} View help menu doc in editor (vi/nano)",
+        //     ansi_colors::GREEN,
+        //     ansi_colors::RESET
+        // );
+        println!();
+        print!(
+            "{}Enter section number (1-10) or 'q' to quit: {}",
+            ansi_colors::BOLD,
+            ansi_colors::RESET
+        );
+
+        // Flush to ensure prompt appears
+        io::stdout().flush().map_err(LinesError::Io)?;
+
+        // // Read user input
+        // let mut input = String::new();
+        // io::stdin().read_line(&mut input).map_err(LinesError::Io)?;
+        // let input = input.trim().to_lowercase();
+
+        // Read user input using the passed-in lock instead of io::stdin()
+        let mut input = String::new();
+        stdin_handle.read_line(&mut input).map_err(LinesError::Io)?;
+        let input = input.trim().to_lowercase();
+
+        // Process user selection
+        match input.as_str() {
+            "1" => display_help_section_content(HelpSections::QuickStartBlurb, stdin_handle)?,
+            "2" => display_help_section_content(HelpSections::TopbarLegend, stdin_handle)?,
+            "3" => display_help_section_content(HelpSections::Navigation, stdin_handle)?,
+            "4" => display_help_section_content(HelpSections::HelpSectionGoto, stdin_handle)?,
+            "5" => display_help_section_content(HelpSections::HelpSectionCopyPasty, stdin_handle)?,
+            "6" => {
+                display_help_section_content(HelpSections::HelpSectionIndentComment, stdin_handle)?
+            }
+            "7" => display_help_section_content(HelpSections::HelpSectionUndoRedo, stdin_handle)?,
+            "8" => display_help_section_content(HelpSections::HelpSectionHexEdit, stdin_handle)?,
+            // "9" => display_help_section_content(HelpSections::TerminalManagement, stdin_handle)?,
+            // "10" => display_help_section_content(HelpSections::Configuration, stdin_handle)?,
+            "q" | "quit" | "exit" => {
+                println!(
+                    "{}Exiting help system...{}",
+                    ansi_colors::GREEN,
+                    ansi_colors::RESET
+                );
+                return Ok(());
+            }
+            _ => {
+                println!(
+                    "{}Try again...Please enter 1-10 or 'q'.{}",
+                    ansi_colors::YELLOW,
+                    ansi_colors::RESET
+                );
+                wait_for_enter_keypress(stdin_handle)?;
+            }
+        }
+    }
+}
+
+/// Clear the terminal screen using ANSI escape codes
+///
+/// This function uses ANSI escape sequences to clear the terminal
+/// and reset the cursor to the top-left position.
+///
+/// # Returns
+/// * `Result<()>` - Ok on success, Err on I/O error
+fn clear_terminal_screen() -> Result<()> {
+    // ANSI escape codes: clear screen and move cursor to top-left
+    print!("\x1b[2J\x1b[1;1H");
+    io::stdout().flush().map_err(LinesError::Io)?;
+    Ok(())
+}
+
+/// ANSI color codes for terminal formatting
+///
+/// These constants provide color and style formatting for terminal output.
+/// Using ANSI escape sequences for maximum compatibility.
+mod ansi_colors {
+    /// Reset all formatting to default
+    pub const RESET: &str = "\x1b[0m";
+
+    /// Bold text for headers
+    pub const BOLD: &str = "\x1b[1m";
+
+    /// Cyan color for commands
+    pub const CYAN: &str = "\x1b[36m";
+
+    /// Green color for examples
+    pub const GREEN: &str = "\x1b[32m";
+
+    /// Yellow color for warnings or important notes
+    pub const YELLOW: &str = "\x1b[33m";
+
+    /// Bright white for emphasis
+    pub const BRIGHT_WHITE: &str = "\x1b[97m";
+
+    /// Magenta for section numbers
+    pub const MAGENTA: &str = "\x1b[35m";
+}
+
+/// Display a specific help section with proper formatting
+///
+/// This function clears the screen and displays the content for the
+/// selected help section, waiting for user input before returning.
+///
+/// # Arguments
+/// * `section` - The help section to display
+///
+/// # Returns
+/// * `Result<()>` - Ok on successful display, Err on I/O errors
+fn display_help_section_content(section: HelpSections, stdin_handle: &mut StdinLock) -> Result<()> {
+    clear_terminal_screen()?;
+
+    // Select and display appropriate section content
+    let content = match section {
+        HelpSections::QuickStartBlurb => HELP_SECTION_QUICK_START,
+        HelpSections::TopbarLegend => HELP_SECTION_TOPBAR_LEGEND,
+        HelpSections::Navigation => HELP_SECTION_NAVIGATION,
+        HelpSections::HelpSectionGoto => HELP_SECTION_GOTO,
+        HelpSections::HelpSectionCopyPasty => HELP_SECTION_COPY_PASTY,
+        HelpSections::HelpSectionIndentComment => HELP_SECTION_INDENT_COMMENT,
+        HelpSections::HelpSectionUndoRedo => HELP_SECTION_UNDO_REDO_DELETE,
+        HelpSections::HelpSectionHexEdit => HELP_SECTION_HEX_EDIT,
+        // HelpSections::TerminalManagement => HELP_SECTION_TERMINAL,
+        // HelpSections::Configuration => HELP_SECTION_CONFIGURATION,
+    };
+
+    // Display with color formatting
+    print!("{}{}", ansi_colors::BOLD, ansi_colors::CYAN);
+    println!("{}", content);
+    print!("{}", ansi_colors::RESET);
+
+    // Wait for user to read
+    wait_for_enter_keypress(stdin_handle)?;
+
+    Ok(())
 }
 
 /// Formats the bottom info bar with current editor state
