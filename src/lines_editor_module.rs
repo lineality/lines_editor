@@ -6802,7 +6802,7 @@ impl EditorState {
 
             "v" => {
                 // Exit to visual mode
-                keep_editor_loop_running = execute_command(self, Command::EnterVisualMode)?;
+                keep_editor_loop_running = execute_command(self, Command::EnterVisualSelectMode)?;
             }
 
             "p" => {
@@ -7822,7 +7822,7 @@ impl EditorState {
                 "wide-" => Command::WideMinus,
 
                 "i" => Command::EnterInsertMode,
-                "v" => Command::EnterVisualMode,
+                "v" => Command::EnterVisualSelectMode,
                 "raw" => Command::EnterRawMode,
                 // Multi-character commands
                 "wq" | "sq" => Command::SaveAndQuit,
@@ -11105,9 +11105,9 @@ pub enum Command {
     GotoLineEnd,
 
     // Mode changes
-    EnterInsertMode, // i
-    EnterVisualMode, // v
-    EnterNormalMode, // n or Esc or ??? -> Ctrl-[
+    EnterInsertMode,       // i
+    EnterVisualSelectMode, // v
+    EnterNormalMode,       // n or Esc or ??? -> Ctrl-[
 
     EnterPastyClipboardMode, // pasty: clipboard et al
     EnterHexEditMode,        // Hex Edith
@@ -12521,20 +12521,37 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 }
             };
 
-            /*   If no block of text is selected,
-             *   i.e. if start and end are the same point
-             *   then use backspace mode,
-             *   otherwise, if there is a block selected
-             *   inclusively delete that block
-             */
-            if lines_editor_state.file_position_of_vis_select_start
-                == lines_editor_state.file_position_of_vis_select_end
-            {
-                // if only one character is selected, use backspace delete
-                backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
-            } else {
-                // if a more than one character is selected, inclusively delete
-                delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+            // v1
+            // /*   If no block of text is selected,
+            //  *   i.e. if start and end are the same point
+            //  *   then use backspace mode,
+            //  *   otherwise, if there is a block selected
+            //  *   inclusively delete that block
+            //  */
+            // if lines_editor_state.file_position_of_vis_select_start
+            //     == lines_editor_state.file_position_of_vis_select_end
+            // {
+            //     // if only one character is selected, use backspace delete
+            //     backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
+            // } else {
+            //     // if a more than one character is selected, inclusively delete
+            //     delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+            // }
+
+            // v2: delete selection and reset selection-range to current location
+            delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+
+            // Set cursor position to file_position_of_vis_select_start
+            // Get current cursor position in FILE
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_col,
+            ) {
+                // Set/Reset BOTH start and end to same position initially
+                lines_editor_state.file_position_of_vis_select_start =
+                    file_pos.byte_offset_linear_file_absolute_position;
+                lines_editor_state.file_position_of_vis_select_end =
+                    file_pos.byte_offset_linear_file_absolute_position;
             }
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
@@ -12652,7 +12669,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
-        Command::EnterVisualMode => {
+        Command::EnterVisualSelectMode => {
             // Must rebuild here, or hexedit changes would not appear until
             // after a next change. Keep in Sync.
 
@@ -20041,9 +20058,11 @@ pub fn print_help() {
     println!("    hex             Hex Editor Mode");
     println!("    p | pasty       Clipboard / Paste Mode");
     println!("DELETE: d");
+    println!("                 All delete operations can be undone/redone at char level");
     println!("    Normal Mode: 'd' deletes a WHOLE file-line");
     println!("    Insert Mode: delete-key for Backspace-Style Delete");
-    println!("    Visual Mode  'd' delete a selection inclusive");
+    println!("    Visual Mode  'd' deletes whole selection, not surrounding spaces/items");
+    println!("                   then the cursor returns to line start, to re-sync");
     println!("    Visual & Normal: delete-key: deletes a single char backspace-style");
 
     println!("Resize-Tui: (Works with Enter-Key-to-Repeat");
@@ -20129,7 +20148,7 @@ enum HelpSections {
     HelpSectionIndentComment,
     HelpSectionUndoRedo,
     HelpSectionHexEdit,
-    // Configuration,
+    HelpSectionDelete,
     // TerminalManagement,
 }
 
@@ -20150,9 +20169,8 @@ const HELP_MENU_HEADER: &str = r#"
 const HELP_SECTION_QUICK_START: &str = r#"
 ═══ QUICK START & EXAMPLES ═══     Press Enter to return to help menu
  USAGE in terminal:      ff [OPTIONS] [DIRECTORY]
- OPTIONS:
-   -h, --help            Show this help menu
-   --source              Get ff source code, Rust 'crate'
+ OPTIONS:   -h, --help            Show this help menu
+            --source              Get ff source code, Rust 'crate'
 
  EXAMPLES for terminal/shell:
    lines                Memo mode (if in home)
@@ -20320,31 +20338,30 @@ const HELP_SECTION_HEX_EDIT: &str = r#"
 
  Press Enter to return..."#;
 
-// /// Terminal management help section content
-// const HELP_SECTION_TERMINAL: &str = r#"
-//  ═══ TERMINAL & DISPLAY MANAGEMENT ═══  Press Enter to return
+/// Terminal management help section content
+const HELP_SECTION_DELETE: &str = r#"
+ ═══ DELETE ═══                  ...Press Enter to return
+All delete operations can be undone/redone at char level.
+'d' character command and 'delete' key commands are options,
+there is no 'backspace-key' option. Backspace only operates
+within the input-buffer (the characters you type BEFORE
++ Enter-key)
 
-//  Your 'current working directory,' where you go, in ff, does not
-//  carry over to your terminal after you exit. But you will want
-//  to keep working where you are in ff:
-//  - you can open a new terminal or split IN your current ff location.
-//  - Note: Run tmux before you run ff to use the tmux splits.
+'d' Character Command:
+    Normal Mode: 'd' deletes a WHOLE file-line
+    Insert Mode: delete-key for Backspace-Style Delete
+    Visual Mode  'd' deletes whole selection,
+                not surrounding spaces/items
+                then the cursor returns to line start, to re-sync
 
-//  TERMINAL OPERATIONS:
-//    t                     Open new terminal in current directory
-//    vsplit                Create vertical tmux split (current directory)
-//    hsplit                Create horizontal tmux split (current directory)
+'delete' Key Command:
+    To delete-back N spaces sequentially, use 'delete' + Enter
+    repeating 'Enter' N times.
+    For Visual-Select-Mode & Normal-Mode:
+    The delete-key command deletes a single char backspace-style.
 
-//  DISPLAY RESIZING:       'N' here is whatever number you enter.
-//    tall+N                Increase display height by N rows
-//    tall-N                Decrease display height by N rows
-//    wide+N                Increase display width by N chars
-//    wide-N                Decrease display width by N chars
-
-//  When ff exits, it will tell you where you last were,
-//  and the ~bash line to run to go back there in a terminal.
-//  e.g.   To continue from this location, run:
-//         cd /home/oops/code/ff_file_manager_minimal_rust"#;
+The 'backspace' key does not work to modify a file. 'backspace'
+does work while you are tying a command, before hitting Enter."#;
 
 // /// Configuration help section content
 // const HELP_SECTION_CONFIGURATION: &str = r#"
@@ -20464,11 +20481,7 @@ pub fn display_help_menu_system(stdin_handle: &mut StdinLock) -> Result<()> {
             ansi_colors::MAGENTA,
             ansi_colors::RESET
         );
-        // println!(
-        //     "  {}9.{} Terminal & Display Management",
-        //     ansi_colors::MAGENTA,
-        //     ansi_colors::RESET
-        // );
+        println!("  {}9.{} Delete", ansi_colors::MAGENTA, ansi_colors::RESET);
         // println!(
         //     "  {}10.{} 'Partner Programs' Configuration",
         //     ansi_colors::MAGENTA,
@@ -20511,7 +20524,7 @@ pub fn display_help_menu_system(stdin_handle: &mut StdinLock) -> Result<()> {
             }
             "7" => display_help_section_content(HelpSections::HelpSectionUndoRedo, stdin_handle)?,
             "8" => display_help_section_content(HelpSections::HelpSectionHexEdit, stdin_handle)?,
-            // "9" => display_help_section_content(HelpSections::TerminalManagement, stdin_handle)?,
+            "9" => display_help_section_content(HelpSections::HelpSectionDelete, stdin_handle)?,
             // "10" => display_help_section_content(HelpSections::Configuration, stdin_handle)?,
             "q" | "quit" | "exit" => {
                 println!(
@@ -20597,7 +20610,7 @@ fn display_help_section_content(section: HelpSections, stdin_handle: &mut StdinL
         HelpSections::HelpSectionIndentComment => HELP_SECTION_INDENT_COMMENT,
         HelpSections::HelpSectionUndoRedo => HELP_SECTION_UNDO_REDO_DELETE,
         HelpSections::HelpSectionHexEdit => HELP_SECTION_HEX_EDIT,
-        // HelpSections::TerminalManagement => HELP_SECTION_TERMINAL,
+        HelpSections::HelpSectionDelete => HELP_SECTION_DELETE,
         // HelpSections::Configuration => HELP_SECTION_CONFIGURATION,
     };
 
