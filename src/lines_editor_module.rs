@@ -9142,8 +9142,11 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
     }
 
     // Assertion: State should have valid dimensions
-    debug_assert!(state.effective_rows > 0, "Effective rows must be positive");
-    debug_assert!(state.effective_cols > 0, "Effective cols must be positive");
+    #[cfg(debug_assertions)]
+    {
+        debug_assert!(state.effective_rows > 0, "Effective rows must be positive");
+        debug_assert!(state.effective_cols > 0, "Effective cols must be positive");
+    }
 
     // Clear existing buffers and map before building
     state.clear_utf8_displaybuffers();
@@ -12585,6 +12588,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
             // =================================================
+            /*
+            Edge case:
+            adding a new-line at the bottom of the TUI
+            */
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
                 Err(_e) => {
@@ -12603,6 +12610,21 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             };
 
             insert_newline_at_cursor_chunked(lines_editor_state, edit_file_path)?;
+
+            // insert_newline_at_cursor_chunked advances cursor.tui_row by 1
+            // but does NOT scroll the window. If the cursor was on the bottom
+            // visible row, tui_row now equals effective_rows (off-screen).
+            // We must either:
+            //   (a) leave tui_row alone if it's still in range, OR
+            //   (b) clamp tui_row to bottom_edge and scroll window down by 1
+            // ─────────────────────────────────────────────────────────────────
+            let bottom_edge = lines_editor_state.effective_rows.saturating_sub(1);
+            if lines_editor_state.cursor.tui_row > bottom_edge {
+                // Cursor went off the bottom — scroll window down to reveal new line
+                let overflow = lines_editor_state.cursor.tui_row - bottom_edge;
+                lines_editor_state.line_count_at_top_of_window += overflow;
+                lines_editor_state.cursor.tui_row = bottom_edge;
+            }
 
             // Rebuild window to show the change
             build_windowmap_nowrap(lines_editor_state, edit_file_path)?;
