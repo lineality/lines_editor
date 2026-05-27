@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 /// Returns `None` if:
 /// - The string contains invalid UTF-8 (shouldn't happen with Rust strings)
 /// - Integer overflow occurs (extremely long strings)
+#[cfg(test)]
 pub fn calculate_display_width(text: &str) -> Option<usize> {
     let mut width = 0usize;
     let mut char_count = 0;
@@ -2817,5 +2818,350 @@ mod byte_utf8_newline_tests {
         // File: "世ab\n" where 世 is at line start
         // Cursor on 世
         // Assert: is_next_byte_newline() = false
+    }
+}
+
+#[cfg(test)]
+mod hex_format_tests {
+    use super::*;
+
+    #[test]
+    fn test_hex_zero_normal() {
+        let mut buf = [0u8; 64];
+        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
+        assert_eq!(result, Some("42 "));
+    }
+
+    #[test]
+    fn test_hex_zero_highlighted() {
+        let mut buf = [0u8; 64];
+        let result = stack_format_hex(0x42, &mut buf, true, "[B]", "[R]", "[W]", "[RST]");
+        assert_eq!(result, Some("[B][R][W]42[RST] "));
+    }
+
+    #[test]
+    fn test_hex_zero_buffer_too_small() {
+        let mut buf = [0u8; 2]; // Too small
+        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_byte_escape_zero_printable() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(b'H', &mut buf), Some("H"));
+    }
+
+    #[test]
+    fn test_byte_escape_zero_special() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(0x0A, &mut buf), Some("\\n"));
+        assert_eq!(stack_format_byte_escape(0x09, &mut buf), Some("\\t"));
+    }
+
+    #[test]
+    fn test_byte_escape_zero_nonprintable() {
+        let mut buf = [0u8; 4];
+        assert_eq!(stack_format_byte_escape(0xFF, &mut buf), Some("\\xFF"));
+    }
+
+    #[test]
+    fn test_byte_escape_zero_buffer_too_small() {
+        let mut buf = [0u8; 1]; // Too small for \xHH
+        let result = stack_format_byte_escape(0xFF, &mut buf);
+        assert_eq!(result, None);
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tempname_tests {
+    use super::*;
+    use std::fs::{self, OpenOptions};
+    use std::thread;
+
+    /// Test basic functionality: can we create a temp file with standard parameters?
+    #[test]
+    fn test_create_temp_file_basic() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "test", 5, 1);
+
+        assert!(result.is_ok(), "Should successfully create temp file");
+
+        let path = result.unwrap();
+        assert!(path.exists(), "Created file should exist");
+        assert!(
+            path.starts_with(&temp_dir),
+            "File should be in temp directory"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(path);
+    }
+
+    /// Test that multiple files created rapidly are unique
+    #[test]
+    fn test_create_multiple_unique_files() {
+        let temp_dir = std::env::temp_dir();
+        let mut paths = Vec::new();
+
+        // Create 5 temp files in rapid succession
+        for _ in 0..5 {
+            let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "multi", 5, 1);
+            assert!(result.is_ok(), "Should create file");
+            paths.push(result.unwrap());
+        }
+
+        // Verify all paths are unique
+        for i in 0..paths.len() {
+            for j in (i + 1)..paths.len() {
+                assert_ne!(paths[i], paths[j], "Paths should be unique");
+            }
+        }
+
+        // Verify all files exist
+        for path in &paths {
+            assert!(path.exists(), "File should exist");
+        }
+
+        // Cleanup
+        for path in paths {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test that function returns error for non-existent directory
+    #[test]
+    fn test_nonexistent_directory() {
+        let bad_path = Path::new("/this/path/definitely/does/not/exist/nowhere/12345");
+
+        let result = create_unique_temp_name_and_file_filepathbuf(bad_path, "test", 3, 1);
+
+        assert!(result.is_err(), "Should fail for non-existent directory");
+    }
+
+    /// Test filename format contains expected components
+    #[test]
+    fn test_filename_format() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "prefix", 5, 1);
+        assert!(result.is_ok(), "Should create file");
+
+        let path = result.unwrap();
+        let filename = path.file_name().unwrap().to_str().unwrap();
+
+        // Verify filename contains prefix
+        assert!(
+            filename.starts_with("prefix_"),
+            "Filename should start with prefix"
+        );
+
+        // Verify filename ends with .tmp
+        assert!(filename.ends_with(".tmp"), "Filename should end with .tmp");
+
+        // Verify filename contains underscores (pid_threadid_timestamp structure)
+        assert!(
+            filename.matches('_').count() >= 3,
+            "Filename should have at least 3 underscores"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(path);
+    }
+
+    /// Test with zero attempts parameter (should return error immediately)
+    #[test]
+    fn test_zero_attempts() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "zero", 0, 1);
+
+        assert!(result.is_err(), "Should fail with zero attempts");
+
+        if let Err(e) = result {
+            let error_msg = format!("{}", e);
+            assert!(error_msg.contains("CUTF"), "Error should have CUTF prefix");
+            assert!(
+                error_msg.contains("greater than zero") || error_msg.contains("number_of_attempts"),
+                "Error should mention invalid attempt count"
+            );
+        }
+    }
+
+    /// Test with single attempt (should work in low-contention)
+    #[test]
+    fn test_single_attempt() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "single", 1, 1);
+
+        assert!(
+            result.is_ok(),
+            "Should succeed with single attempt in low contention"
+        );
+
+        if let Ok(path) = result {
+            assert!(path.exists(), "File should exist");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test with different delay values (ensures parameter is used)
+    #[test]
+    fn test_different_delays() {
+        let temp_dir = std::env::temp_dir();
+
+        // Test with zero delay
+        let result1 = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "delay0", 3, 0);
+        assert!(result1.is_ok(), "Should work with zero delay");
+        if let Ok(path) = result1 {
+            let _ = fs::remove_file(path);
+        }
+
+        // Test with larger delay
+        let result2 = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "delay100", 3, 100);
+        assert!(result2.is_ok(), "Should work with 100ms delay");
+        if let Ok(path) = result2 {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test with high number of attempts (stress test)
+    #[test]
+    fn test_many_attempts() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "many", 20, 1);
+
+        assert!(result.is_ok(), "Should work with many attempts");
+
+        if let Ok(path) = result {
+            assert!(path.exists(), "File should exist");
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test prefix with special characters (edge case)
+    #[test]
+    fn test_prefix_with_special_chars() {
+        let temp_dir = std::env::temp_dir();
+
+        // Test with prefix containing hyphens and underscores
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "my-app_v2", 5, 1);
+
+        assert!(result.is_ok(), "Should handle prefix with special chars");
+
+        if let Ok(path) = result {
+            let filename = path.file_name().unwrap().to_str().unwrap();
+            assert!(
+                filename.starts_with("my-app_v2_"),
+                "Filename should preserve prefix"
+            );
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test that created file is actually writable
+    #[test]
+    fn test_file_is_writable() {
+        let temp_dir = std::env::temp_dir();
+
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "writable", 5, 1);
+        assert!(result.is_ok(), "Should create file");
+
+        let path = result.unwrap();
+
+        // Try to open and write to the file
+        let write_result = OpenOptions::new().write(true).open(&path);
+
+        assert!(
+            write_result.is_ok(),
+            "Should be able to open file for writing"
+        );
+
+        // Cleanup
+        let _ = fs::remove_file(path);
+    }
+
+    /// Test concurrent creation from multiple threads
+    #[test]
+    fn test_concurrent_creation() {
+        use std::sync::Arc;
+
+        let temp_dir = Arc::new(std::env::temp_dir());
+        let mut handles = vec![];
+
+        // Spawn 5 threads that each create 2 files
+        for thread_num in 0..5 {
+            let temp_dir_clone = Arc::clone(&temp_dir);
+
+            let handle = thread::spawn(move || {
+                let mut created_paths = Vec::new();
+
+                for file_num in 0..2 {
+                    let prefix = format!("concurrent_t{}_f{}", thread_num, file_num);
+                    let result = create_unique_temp_name_and_file_filepathbuf(
+                        &temp_dir_clone,
+                        &prefix,
+                        10,
+                        5,
+                    );
+
+                    assert!(result.is_ok(), "Should create file from thread");
+                    created_paths.push(result.unwrap());
+                }
+
+                created_paths
+            });
+
+            handles.push(handle);
+        }
+
+        // Collect all created paths
+        let mut all_paths = Vec::new();
+        for handle in handles {
+            let paths = handle.join().expect("Thread should complete");
+            all_paths.extend(paths);
+        }
+
+        // Verify all paths are unique
+        for i in 0..all_paths.len() {
+            for j in (i + 1)..all_paths.len() {
+                assert_ne!(
+                    all_paths[i], all_paths[j],
+                    "All paths from all threads should be unique"
+                );
+            }
+        }
+
+        // Verify all files exist
+        for path in &all_paths {
+            assert!(path.exists(), "All created files should exist");
+        }
+
+        // Cleanup
+        for path in all_paths {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    /// Test error message format for debugging
+    #[test]
+    fn test_error_messages_have_cutf_prefix() {
+        let temp_dir = std::env::temp_dir();
+
+        // Test zero attempts error
+        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "test", 0, 1);
+        if let Err(e) = result {
+            assert!(
+                format!("{}", e).contains("CUTF"),
+                "Error should have CUTF prefix"
+            );
+        }
     }
 }

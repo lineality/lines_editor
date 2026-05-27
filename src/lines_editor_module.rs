@@ -1,5 +1,6 @@
-// lines is minimal text editor
-// test files in: src/tests.rs
+//! lines_editor_module.rs
+//! lines is minimal text editor
+//! test files in: src/tests.rs
 
 /*
 See: "diagnostic" flag for debugging inspection
@@ -1232,8 +1233,6 @@ pub enum LinesError {
     /// Invalid user input or argument
     InvalidInput(String),
 
-    // /// String formatting or display error
-    // FormatError(String),
     /// UTF-8 encoding/decoding error
     Utf8Error(String),
 
@@ -1383,21 +1382,6 @@ pub fn log_error(error_msg: &str, context: Option<&str>) {
         }
     }
 }
-
-// /// Gets the path to today's error log file
-// fn get_error_log_path() -> io::Result<PathBuf> {
-//     let home = get_home_directory()?;
-//     let timestamp = get_short_underscore_timestamp()?;
-
-//     let mut log_path = home;
-//     log_path.push("Documents");
-//     log_path.push("lines_editor");
-//     log_path.push("lines_data");
-//     log_path.push("error_logs");
-//     log_path.push(format!("{}.log", timestamp));
-
-//     Ok(log_path)
-// }
 
 /// Gets the path to today's error log file
 ///
@@ -2046,57 +2030,6 @@ pub fn stack_format_byte_escape<'a>(byte: u8, buf: &'a mut [u8]) -> Option<&'a s
 
     // Return slice (guaranteed valid UTF-8 - we only write ASCII)
     std::str::from_utf8(&buf[..len]).ok()
-}
-#[cfg(test)]
-mod hex_format_tests {
-    use super::*;
-
-    #[test]
-    fn test_hex_zero_normal() {
-        let mut buf = [0u8; 64];
-        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
-        assert_eq!(result, Some("42 "));
-    }
-
-    #[test]
-    fn test_hex_zero_highlighted() {
-        let mut buf = [0u8; 64];
-        let result = stack_format_hex(0x42, &mut buf, true, "[B]", "[R]", "[W]", "[RST]");
-        assert_eq!(result, Some("[B][R][W]42[RST] "));
-    }
-
-    #[test]
-    fn test_hex_zero_buffer_too_small() {
-        let mut buf = [0u8; 2]; // Too small
-        let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_byte_escape_zero_printable() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(b'H', &mut buf), Some("H"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_special() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(0x0A, &mut buf), Some("\\n"));
-        assert_eq!(stack_format_byte_escape(0x09, &mut buf), Some("\\t"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_nonprintable() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(0xFF, &mut buf), Some("\\xFF"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_buffer_too_small() {
-        let mut buf = [0u8; 1]; // Too small for \xHH
-        let result = stack_format_byte_escape(0xFF, &mut buf);
-        assert_eq!(result, None);
-    }
 }
 
 /// Formats a message with placeholders supporting alignment and width specifiers.
@@ -3778,412 +3711,6 @@ pub fn create_unique_temp_name_and_file_filepathbuf(
     ))
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
-#[cfg(test)]
-mod tempname_tests {
-    use super::*;
-    use std::fs;
-
-    /// Test basic functionality: can we create a temp file with standard parameters?
-    #[test]
-    fn test_create_temp_file_basic() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "test", 5, 1);
-
-        assert!(result.is_ok(), "Should successfully create temp file");
-
-        let path = result.unwrap();
-        assert!(path.exists(), "Created file should exist");
-        assert!(
-            path.starts_with(&temp_dir),
-            "File should be in temp directory"
-        );
-
-        // Cleanup
-        let _ = fs::remove_file(path);
-    }
-
-    /// Test that multiple files created rapidly are unique
-    #[test]
-    fn test_create_multiple_unique_files() {
-        let temp_dir = std::env::temp_dir();
-        let mut paths = Vec::new();
-
-        // Create 5 temp files in rapid succession
-        for _ in 0..5 {
-            let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "multi", 5, 1);
-            assert!(result.is_ok(), "Should create file");
-            paths.push(result.unwrap());
-        }
-
-        // Verify all paths are unique
-        for i in 0..paths.len() {
-            for j in (i + 1)..paths.len() {
-                assert_ne!(paths[i], paths[j], "Paths should be unique");
-            }
-        }
-
-        // Verify all files exist
-        for path in &paths {
-            assert!(path.exists(), "File should exist");
-        }
-
-        // Cleanup
-        for path in paths {
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test that function returns error for non-existent directory
-    #[test]
-    fn test_nonexistent_directory() {
-        let bad_path = Path::new("/this/path/definitely/does/not/exist/nowhere/12345");
-
-        let result = create_unique_temp_name_and_file_filepathbuf(bad_path, "test", 3, 1);
-
-        assert!(result.is_err(), "Should fail for non-existent directory");
-    }
-
-    /// Test filename format contains expected components
-    #[test]
-    fn test_filename_format() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "prefix", 5, 1);
-        assert!(result.is_ok(), "Should create file");
-
-        let path = result.unwrap();
-        let filename = path.file_name().unwrap().to_str().unwrap();
-
-        // Verify filename contains prefix
-        assert!(
-            filename.starts_with("prefix_"),
-            "Filename should start with prefix"
-        );
-
-        // Verify filename ends with .tmp
-        assert!(filename.ends_with(".tmp"), "Filename should end with .tmp");
-
-        // Verify filename contains underscores (pid_threadid_timestamp structure)
-        assert!(
-            filename.matches('_').count() >= 3,
-            "Filename should have at least 3 underscores"
-        );
-
-        // Cleanup
-        let _ = fs::remove_file(path);
-    }
-
-    /// Test with zero attempts parameter (should return error immediately)
-    #[test]
-    fn test_zero_attempts() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "zero", 0, 1);
-
-        assert!(result.is_err(), "Should fail with zero attempts");
-
-        if let Err(e) = result {
-            let error_msg = format!("{}", e);
-            assert!(error_msg.contains("CUTF"), "Error should have CUTF prefix");
-            assert!(
-                error_msg.contains("greater than zero") || error_msg.contains("number_of_attempts"),
-                "Error should mention invalid attempt count"
-            );
-        }
-    }
-
-    /// Test with single attempt (should work in low-contention)
-    #[test]
-    fn test_single_attempt() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "single", 1, 1);
-
-        assert!(
-            result.is_ok(),
-            "Should succeed with single attempt in low contention"
-        );
-
-        if let Ok(path) = result {
-            assert!(path.exists(), "File should exist");
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test with different delay values (ensures parameter is used)
-    #[test]
-    fn test_different_delays() {
-        let temp_dir = std::env::temp_dir();
-
-        // Test with zero delay
-        let result1 = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "delay0", 3, 0);
-        assert!(result1.is_ok(), "Should work with zero delay");
-        if let Ok(path) = result1 {
-            let _ = fs::remove_file(path);
-        }
-
-        // Test with larger delay
-        let result2 = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "delay100", 3, 100);
-        assert!(result2.is_ok(), "Should work with 100ms delay");
-        if let Ok(path) = result2 {
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test with high number of attempts (stress test)
-    #[test]
-    fn test_many_attempts() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "many", 20, 1);
-
-        assert!(result.is_ok(), "Should work with many attempts");
-
-        if let Ok(path) = result {
-            assert!(path.exists(), "File should exist");
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test prefix with special characters (edge case)
-    #[test]
-    fn test_prefix_with_special_chars() {
-        let temp_dir = std::env::temp_dir();
-
-        // Test with prefix containing hyphens and underscores
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "my-app_v2", 5, 1);
-
-        assert!(result.is_ok(), "Should handle prefix with special chars");
-
-        if let Ok(path) = result {
-            let filename = path.file_name().unwrap().to_str().unwrap();
-            assert!(
-                filename.starts_with("my-app_v2_"),
-                "Filename should preserve prefix"
-            );
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test that created file is actually writable
-    #[test]
-    fn test_file_is_writable() {
-        let temp_dir = std::env::temp_dir();
-
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "writable", 5, 1);
-        assert!(result.is_ok(), "Should create file");
-
-        let path = result.unwrap();
-
-        // Try to open and write to the file
-        let write_result = OpenOptions::new().write(true).open(&path);
-
-        assert!(
-            write_result.is_ok(),
-            "Should be able to open file for writing"
-        );
-
-        // Cleanup
-        let _ = fs::remove_file(path);
-    }
-
-    /// Test concurrent creation from multiple threads
-    #[test]
-    fn test_concurrent_creation() {
-        use std::sync::Arc;
-
-        let temp_dir = Arc::new(std::env::temp_dir());
-        let mut handles = vec![];
-
-        // Spawn 5 threads that each create 2 files
-        for thread_num in 0..5 {
-            let temp_dir_clone = Arc::clone(&temp_dir);
-
-            let handle = thread::spawn(move || {
-                let mut created_paths = Vec::new();
-
-                for file_num in 0..2 {
-                    let prefix = format!("concurrent_t{}_f{}", thread_num, file_num);
-                    let result = create_unique_temp_name_and_file_filepathbuf(
-                        &temp_dir_clone,
-                        &prefix,
-                        10,
-                        5,
-                    );
-
-                    assert!(result.is_ok(), "Should create file from thread");
-                    created_paths.push(result.unwrap());
-                }
-
-                created_paths
-            });
-
-            handles.push(handle);
-        }
-
-        // Collect all created paths
-        let mut all_paths = Vec::new();
-        for handle in handles {
-            let paths = handle.join().expect("Thread should complete");
-            all_paths.extend(paths);
-        }
-
-        // Verify all paths are unique
-        for i in 0..all_paths.len() {
-            for j in (i + 1)..all_paths.len() {
-                assert_ne!(
-                    all_paths[i], all_paths[j],
-                    "All paths from all threads should be unique"
-                );
-            }
-        }
-
-        // Verify all files exist
-        for path in &all_paths {
-            assert!(path.exists(), "All created files should exist");
-        }
-
-        // Cleanup
-        for path in all_paths {
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    /// Test error message format for debugging
-    #[test]
-    fn test_error_messages_have_cutf_prefix() {
-        let temp_dir = std::env::temp_dir();
-
-        // Test zero attempts error
-        let result = create_unique_temp_name_and_file_filepathbuf(&temp_dir, "test", 0, 1);
-        if let Err(e) = result {
-            assert!(
-                format!("{}", e).contains("CUTF"),
-                "Error should have CUTF prefix"
-            );
-        }
-    }
-}
-
-// /// Formats the navigation legend with color-coded keyboard shortcuts
-// ///
-// /// # Purpose
-// /// Creates a formatted legend string showing all available keyboard commands
-// /// with color highlighting (RED for command keys, YELLOW for descriptions).
-// ///
-// /// # Returns
-// /// * `Ok(String)` - The formatted legend string with ANSI color codes
-// /// * `Err(FileFantasticError)` - If string formatting fails (defensive programming)
-// ///
-// /// # Color Scheme
-// /// - RED: Single letter command keys (q, b, t, d, f, n, s, m, g, v, y, p)
-// /// - YELLOW: Command descriptions and separators
-// /// - RESET: Applied at end to restore terminal defaults
-// ///
-// /// # Legend Commands
-// /// - q: quit the application
-// /// - b: navigate back/parent directory
-// /// - t: open terminal in current directory
-// /// - d: filter to show directories only
-// /// - f: filter to show files only
-// /// - n: sort by name
-// /// - s: sort by size
-// /// - m: sort by modified date
-// /// - g: get-send file operations
-// /// - v,y,p: additional file operations
-// /// - str: search functionality
-// /// - enter: reset filters/search
-// ///
-// /// # Example
-// /// ```rust
-// /// match write_formatted_navigation_legend_to_tui() {
-// ///     Ok(legend) => println!("{}", legend),
-// ///     Err(e) => eprintln!("Failed to format legend: {}", e),
-// /// }
-// /// ```
-// fn write_formatted_navigation_legend_to_tui() -> Result<String> {
-//     // Pre-allocate string capacity based on expected legend size
-//     // Legend is approximately 200 characters plus color codes
-//     let mut legend = String::with_capacity(300);
-
-//     // // Build the legend string with error handling for format operations
-//     // // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
-//     // let formatted_legend = format!(
-//     //     "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
-//     //     // YELLOW, // Overall legend color
-//     //     RED,
-//     //     YELLOW, // RED q + YELLOW uit
-//     //     RED,
-//     //     GREEN, // RED b + YELLOW ack
-//     //     YELLOW,
-//     //     RED,
-//     //     YELLOW, // RED b + YELLOW ack
-//     //     RED,
-//     //     YELLOW, // RED t + YELLOW erm
-//     //     RED,
-//     //     YELLOW, // RED d + YELLOW ir
-//     //     RED,
-//     //     YELLOW, // RED f + YELLOW ile
-//     //     RED,
-//     //     YELLOW, // RED n + YELLOW ame
-//     //     RED,
-//     //     YELLOW, // RED s + YELLOW ize
-//     //     RED,
-//     //     YELLOW, // RED m + YELLOW od
-//     //     RED,
-//     //     YELLOW, // RED m + YELLOW od
-//     //     RED,
-//     //     YELLOW, // RED g + YELLOW et
-//     //     RED,
-//     //     YELLOW, // RED v + YELLOW ,
-//     //     RED,
-//     //     YELLOW, // RED y + YELLOW ,
-//     //     RED,
-//     //     YELLOW, // RED p + YELLOW ,
-//     //     RED,
-//     //     YELLOW, // RED str + YELLOW ...
-//     //     RED,
-//     //     YELLOW,
-//     //     RED,
-//     //     // YELLOW, // RED enter + YELLOW ...
-//     //     GREEN,  // RED b + YELLOW ack
-//     //     YELLOW, // RED enter + YELLOW ...
-//     //     RED,
-//     //     YELLOW, // RED enter + YELLOW ...
-//     //     RED,
-//     //     YELLOW, // RED enter + YELLOW ...
-//     //     RESET
-//     // );
-
-//     let formatted_legend = stack_format_it(
-//         "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
-//         &[
-//             &RED, &YELLOW, &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
-//             &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED,
-//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
-//             &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RESET,
-//         ],
-//         "quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl",
-//     );
-//     // Check if the formatted string is reasonable
-//     // (defensive programming against format! macro issues)
-//     if formatted_legend.is_empty() {
-//         return Err(LinesError::FormatError(String::from(
-//             "Legend formatting produced empty string",
-//         )));
-//     }
-
-//     // TODO (push in smaller segments?)
-//     legend.push_str(&formatted_legend);
-
-//     Ok(legend)
-// }
-
 /// Makes, verifies, or creates a directory path relative to the executable directory location.
 ///
 /// This function performs the following sequential steps:
@@ -4422,17 +3949,6 @@ pub enum EditorMode {
     HexMode,
     RawMode,
 }
-
-// /// Line wrap mode setting
-// #[derive(Debug, Clone, Copy, PartialEq)]
-// pub enum WrapMode {
-//     /// Lines wrap at terminal width
-//     Wrap,
-//     /// Lines extend beyond terminal width (horizontal scroll)
-//     NoWrap,
-// }
-
-// const TOFILE_INSERTBUFFER_CHUNK_SIZE: usize = 256;// not used
 
 /// Represents valid user input commands and selections in Pasty mode
 ///
@@ -8026,15 +7542,6 @@ impl EditorState {
 
         Ok(keep_editor_loop_running)
     }
-
-    // /// Gets the first valid text column for cursor's current row
-    // ///
-    // /// # Returns
-    // /// * Column position where text starts (after line number)
-    // pub fn get_text_start_column(&self) -> usize {
-    //     let line_number = self.line_count_at_top_of_window + self.cursor.tui_row;
-    //     calculate_line_number_width(line_number + 1, self.effective_rows) // +1 for 1-indexed display
-    // }
 
     /// Writes a message into the info bar message buffer
     ///
@@ -19293,97 +18800,6 @@ fn format_pasty_tui_legend() -> Result<()> {
     Ok(())
 }
 
-// /// Formats the Pasty legend with color-coded commands
-// fn format_pasty_tui_legend2() -> io::Result<String> {
-//     // Ok(format!(
-//     //     "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
-//     //     YELLOW,
-//     //     RED,
-//     //     YELLOW,
-//     //     RED,
-//     //     YELLOW,
-//     //     RED,
-//     //     YELLOW,
-//     //     YELLOW,
-//     //     RED,
-//     //     YELLOW,
-//     //     RED,
-//     //     RESET,
-//     //     RED,
-//     //     YELLOW,
-//     //     RESET
-//     // ))
-
-//     let stack_formatted_legend = stack_format_it(
-//         "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
-//         &[
-//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &YELLOW, &RED, &YELLOW, &RED,
-//             &RESET, &RED, &YELLOW, &RESET,
-//         ],
-//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
-//     );
-
-//     Ok(stack_formatted_legend)
-// }
-
-// /// Formats the Pasty info bar with count, pagination, and error messages
-// fn format_pasty_info_bar(
-//     total_count: usize,
-//     first_count_visible: usize,
-//     last_count_visible: usize,
-//     info_bar_message: &str,
-// ) -> io::Result<String> {
-//     let infobar_message_display = if !info_bar_message.is_empty() {
-//         stack_format_it(" {}", &[&info_bar_message], "")
-//     } else {
-//         String::new()
-//     };
-
-//     // Ok(format!(
-//     //     // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
-//     //     "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
-//     //     RED,
-//     //     total_count,
-//     //     YELLOW,
-//     //     YELLOW,
-//     //     RED,
-//     //     first_count_visible,
-//     //     YELLOW,
-//     //     RED,
-//     //     last_count_visible,
-//     //     YELLOW,
-//     //     infobar_message_display,
-//     //     YELLOW,
-//     //     RESET
-//     // ))
-
-//     let string_totalcount = total_count.to_string();
-//     let string_firstcount_visible = first_count_visible.to_string();
-//     let string_last_count_visible = last_count_visible.to_string();
-
-//     let stack_formatted_infobar = stack_format_it(
-//         "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item #, 'paste', or file-path to paste file text {}> ",
-//         &[
-//             &RED,
-//             &string_totalcount,
-//             &YELLOW,
-//             &YELLOW,
-//             &RED,
-//             &string_firstcount_visible,
-//             &YELLOW,
-//             &RED,
-//             &string_last_count_visible,
-//             &YELLOW,
-//             &infobar_message_display,
-//             &YELLOW,
-//             &RESET,
-//         ],
-//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
-//     );
-
-//     Ok(stack_formatted_infobar)
-// }
-
 /// Displays the Pasty info bar with count, pagination, and error messages.
 /// Writes directly to stdout with zero heap allocation.
 ///
@@ -20385,29 +19801,27 @@ within the input-buffer (the characters you type BEFORE
 The 'backspace' key does not work to modify a file. 'backspace'
 does work while you are tying a command, before hitting Enter."#;
 
-// /// Configuration help section content
-// const HELP_SECTION_CONFIGURATION: &str = r#"
 //  ═══ PARTNER PROGRAMS CONFIGURATION ═══
-
+//
 //  You may want to call your own applications or other applications
 //  that are not fully 'installed' on your system. "Partner Programs"
 //  allows you to tell File Fantastic where these binary-executible
 //  files are, wherever they are. Just list each file-path in this file,
 //  which FF will create:
-
+//
 //  CONFIGURATION FILE:
 //    ~/.ff_data/absolute_paths_to_local_partner_fileopening_executables.txt
-
+//
 //  FILE FORMAT:
 //    - One program path per line
 //    - Use absolute paths
 //    - Comments with #, and blank lines, are ignored
-
+//
 //  EXAMPLE CONFIGURATION:
 //    /usr/bin/emacs
 //    # This is a comment
 //    /home/user/bin/custom-editor
-
+//
 //  Press Enter to return to help menu... "#;
 
 /// Wait for user to press Enter key

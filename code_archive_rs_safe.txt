@@ -2766,3 +2766,208 @@ fn stack_format_it1(template: &str, inserts: &[&str], fallback: &str) -> String 
 
 //     Ok(())
 // }
+
+// /// Formats the navigation legend with color-coded keyboard shortcuts
+// ///
+// /// # Purpose
+// /// Creates a formatted legend string showing all available keyboard commands
+// /// with color highlighting (RED for command keys, YELLOW for descriptions).
+// ///
+// /// # Returns
+// /// * `Ok(String)` - The formatted legend string with ANSI color codes
+// /// * `Err(FileFantasticError)` - If string formatting fails (defensive programming)
+// ///
+// /// # Color Scheme
+// /// - RED: Single letter command keys (q, b, t, d, f, n, s, m, g, v, y, p)
+// /// - YELLOW: Command descriptions and separators
+// /// - RESET: Applied at end to restore terminal defaults
+// ///
+// /// # Legend Commands
+// /// - q: quit the application
+// /// - b: navigate back/parent directory
+// /// - t: open terminal in current directory
+// /// - d: filter to show directories only
+// /// - f: filter to show files only
+// /// - n: sort by name
+// /// - s: sort by size
+// /// - m: sort by modified date
+// /// - g: get-send file operations
+// /// - v,y,p: additional file operations
+// /// - str: search functionality
+// /// - enter: reset filters/search
+// ///
+// /// # Example
+// /// ```rust
+// /// match write_formatted_navigation_legend_to_tui() {
+// ///     Ok(legend) => println!("{}", legend),
+// ///     Err(e) => eprintln!("Failed to format legend: {}", e),
+// /// }
+// /// ```
+// fn write_formatted_navigation_legend_to_tui() -> Result<String> {
+//     // Pre-allocate string capacity based on expected legend size
+//     // Legend is approximately 200 characters plus color codes
+//     let mut legend = String::with_capacity(300);
+
+//     // // Build the legend string with error handling for format operations
+//     // // quit save undo norm ins vis del wrap relative raw byt wrd,b,end /commnt hjkl
+//     // let formatted_legend = format!(
+//     //     "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+//     //     // YELLOW, // Overall legend color
+//     //     RED,
+//     //     YELLOW, // RED q + YELLOW uit
+//     //     RED,
+//     //     GREEN, // RED b + YELLOW ack
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW, // RED b + YELLOW ack
+//     //     RED,
+//     //     YELLOW, // RED t + YELLOW erm
+//     //     RED,
+//     //     YELLOW, // RED d + YELLOW ir
+//     //     RED,
+//     //     YELLOW, // RED f + YELLOW ile
+//     //     RED,
+//     //     YELLOW, // RED n + YELLOW ame
+//     //     RED,
+//     //     YELLOW, // RED s + YELLOW ize
+//     //     RED,
+//     //     YELLOW, // RED m + YELLOW od
+//     //     RED,
+//     //     YELLOW, // RED m + YELLOW od
+//     //     RED,
+//     //     YELLOW, // RED g + YELLOW et
+//     //     RED,
+//     //     YELLOW, // RED v + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED y + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED p + YELLOW ,
+//     //     RED,
+//     //     YELLOW, // RED str + YELLOW ...
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     // YELLOW, // RED enter + YELLOW ...
+//     //     GREEN,  // RED b + YELLOW ack
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RED,
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RED,
+//     //     YELLOW, // RED enter + YELLOW ...
+//     //     RESET
+//     // );
+
+//     let formatted_legend = stack_format_it(
+//         "{}q{}uit {}s{}a{}v {}re{},{}u{}ndo {}d{}el|{}n{}rm {}i{}ns {}v{}is {}hex{}{}{}{} r{}aw|{}p{}asty {}cvy{}|{}w{}rd,{}b{},{}e{}nd {}/{}/{}/cmnt {}[]{}idnt {}hjkl{}{}",
+//         &[
+//             &RED, &YELLOW, &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+//             &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED,
+//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW,
+//             &RED, &GREEN, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RESET,
+//         ],
+//         "quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl",
+//     );
+//     // Check if the formatted string is reasonable
+//     // (defensive programming against format! macro issues)
+//     if formatted_legend.is_empty() {
+//         return Err(LinesError::FormatError(String::from(
+//             "Legend formatting produced empty string",
+//         )));
+//     }
+
+//     // TODO (push in smaller segments?)
+//     legend.push_str(&formatted_legend);
+
+//     Ok(legend)
+// }
+
+// /// Formats the Pasty legend with color-coded commands
+// fn format_pasty_tui_legend2() -> io::Result<String> {
+//     // Ok(format!(
+//     //     "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     YELLOW,
+//     //     RED,
+//     //     YELLOW,
+//     //     RED,
+//     //     RESET,
+//     //     RED,
+//     //     YELLOW,
+//     //     RESET
+//     // ))
+
+//     let stack_formatted_legend = stack_format_it(
+//         "{}Have a Pasty!! {}b{}ack paste{}N{} {}str{}{}(any file) {}clear{}all|{}clear{}N {}Empty{}(Add Freshest!){}",
+//         &[
+//             &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &RED, &YELLOW, &YELLOW, &RED, &YELLOW, &RED,
+//             &RESET, &RED, &YELLOW, &RESET,
+//         ],
+//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+//     );
+
+//     Ok(stack_formatted_legend)
+// }
+
+// /// Formats the Pasty info bar with count, pagination, and error messages
+// fn format_pasty_info_bar(
+//     total_count: usize,
+//     first_count_visible: usize,
+//     last_count_visible: usize,
+//     info_bar_message: &str,
+// ) -> io::Result<String> {
+//     let infobar_message_display = if !info_bar_message.is_empty() {
+//         stack_format_it(" {}", &[&info_bar_message], "")
+//     } else {
+//         String::new()
+//     };
+
+//     // Ok(format!(
+//     //     // "{}{}{}Total, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{} >{} ",  // minimal
+//     //     "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item # to paste, or a file-path to paste file text {}> ",
+//     //     RED,
+//     //     total_count,
+//     //     YELLOW,
+//     //     YELLOW,
+//     //     RED,
+//     //     first_count_visible,
+//     //     YELLOW,
+//     //     RED,
+//     //     last_count_visible,
+//     //     YELLOW,
+//     //     infobar_message_display,
+//     //     YELLOW,
+//     //     RESET
+//     // ))
+
+//     let string_totalcount = total_count.to_string();
+//     let string_firstcount_visible = first_count_visible.to_string();
+//     let string_last_count_visible = last_count_visible.to_string();
+
+//     let stack_formatted_infobar = stack_format_it(
+//         "{}{}{} Clipboard Items, {}Showing{} {}{}-{}{}{} (Page up/down k/j) {}{}\nEnter clipboard item #, 'paste', or file-path to paste file text {}> ",
+//         &[
+//             &RED,
+//             &string_totalcount,
+//             &YELLOW,
+//             &YELLOW,
+//             &RED,
+//             &string_firstcount_visible,
+//             &YELLOW,
+//             &RED,
+//             &string_last_count_visible,
+//             &YELLOW,
+//             &infobar_message_display,
+//             &YELLOW,
+//             &RESET,
+//         ],
+//         "Have a Pasty!! back pasteN str(any file) clearall|clearN Empty(Add Freshest!)",
+//     );
+
+//     Ok(stack_formatted_infobar)
+// }
