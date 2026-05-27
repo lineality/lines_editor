@@ -1,4 +1,4 @@
-//! buffy.rs - Zero-heap formatting for TUI applications
+//! buffy_format_write_module.rs - Zero-heap formatting for TUI applications
 //! https://github.com/lineality/buffy_stack_format_write_module
 //!
 //! ## HEAP ALLOCATION: NONE
