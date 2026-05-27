@@ -23150,9 +23150,9 @@ pub fn lines_fullfile_editor_core(
     let (session_time_stamp1, session_time_stamp2) =
         match split_timestamp_no_heap(&session_time_base) {
             Ok((ts4, ts5)) => (ts4, ts5),
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(debug_assertions)]
-                eprintln!("lines_fullfile_editor_core: split_timestamp failed: {}", e);
+                eprintln!("lines_fullfile_editor_core: split_timestamp failed: {}", _e);
 
                 // safe log
                 eprintln!("lines_fullfile_editor_core: split_timestamp failed");
