@@ -23009,6 +23009,63 @@ pub fn lines_full_file_editor(
     return Ok(());
 }
 
+/// Ensures a file is in a state the line editor can open for editing.
+///
+/// # Purpose / Project Context
+/// The line editor's loading logic cannot correctly open a completely
+/// empty (zero-byte) file (e.g. one created by `touch`). To handle this
+/// edge case without changing the editor's loading invariants, any
+/// existing zero-byte regular file has a single newline appended so it
+/// contains exactly one (empty) line.
+///
+/// # Arguments
+/// * `target_path` - Absolute path to the file to normalize.
+///
+/// # Returns
+/// * `Ok(true)`  - File existed and was empty; a newline was written.
+/// * `Ok(false)` - No action required (file missing, not a regular file,
+///                 or non-empty).
+/// * `Err(_)`    - File existed and was empty, but the newline could not
+///                 be written or flushed. The caller must decide whether
+///                 to proceed.
+///
+/// # Notes
+/// - No action is taken for non-existent files; file creation is the
+///   responsibility of the caller.
+/// - A small TOCTOU window exists between the size check and the append;
+///   concurrent external writers are not expected for editor targets.
+fn ensure_file_is_editor_ready(target_path: &Path) -> Result<bool> {
+    // Existence + file-type guard (defensive: do not append to a directory).
+    let metadata = match fs::metadata(target_path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            // Cannot determine state; surface so caller can react.
+            return Err(LinesError::Io(e));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+    if metadata.len() != 0 {
+        return Ok(false);
+    }
+
+    // Known-empty regular file: append exactly one newline.
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(target_path)
+        .map_err(|e| {
+            // EFER = Ensure File Editor-Ready (unique per-function prefix)
+            io::Error::new(e.kind(), "EFER: cannot open empty file for normalization")
+        })?;
+    file.write_all(b"\n")
+        .map_err(|e| io::Error::new(e.kind(), "EFER: newline write failed"))?;
+    file.flush()
+        .map_err(|e| io::Error::new(e.kind(), "EFER: flush failed"))?;
+    Ok(true)
+}
+
 /// Line-Editor, Full-Mode for editing files
 ///
 /// # Purpose
@@ -23033,6 +23090,12 @@ pub fn lines_full_file_editor(
 /// - Creates parent directories if needed
 /// - Initializes new files with timestamp header
 /// - Creates read-copy for safety
+///
+/// # Edge Cases
+/// - Zero-byte existing files (e.g. created by `touch`) are normalized
+///   to contain a single newline before opening, because the line-loader
+///   cannot correctly open a truly empty file.
+///
 pub fn lines_fullfile_editor_core(
     original_file_path: Option<PathBuf>,
     starting_line: Option<usize>,
@@ -23044,9 +23107,29 @@ pub fn lines_fullfile_editor_core(
 
     // Resolve target file path (all path handling logic extracted)
     let target_path = resolve_target_file_path(original_file_path)?;
-    // // Diagnostic
-    // println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
-    // println!("File: {}", target_path.display());
+
+    #[cfg(debug_assertions)]
+    {
+        println!("\n=== Opening Lines Editor ===");
+        println!("File: {}", target_path.display());
+    }
+
+    // Normalize zero-byte files so the editor's loader can open them.
+    // See ensure_file_is_editor_ready for project-context rationale.
+    match ensure_file_is_editor_ready(&target_path) {
+        Ok(_) => {} // No action, or newline successfully appended.
+        Err(_e) => {
+            // Could not normalize an existing empty file; log terse
+            // diagnostic in debug builds only (no path leaked in prod).
+            #[cfg(debug_assertions)]
+            eprintln!("lines_fullfile_editor_core: normalization skipped: {}", _e);
+            // Continue: the subsequent open may still succeed, and if it
+            // fails the editor's normal error path will report it.
+
+            // safe log
+            eprintln!("lines_fullfile_editor_core: normalization skipped");
+        }
+    }
 
     // Create file if it doesn't exist
     if !target_path.exists() {
@@ -23068,7 +23151,12 @@ pub fn lines_fullfile_editor_core(
         match split_timestamp_no_heap(&session_time_base) {
             Ok((ts4, ts5)) => (ts4, ts5),
             Err(e) => {
-                eprintln!("Error: {}", e);
+                #[cfg(debug_assertions)]
+                eprintln!("lines_fullfile_editor_core: split_timestamp failed: {}", e);
+
+                // safe log
+                eprintln!("lines_fullfile_editor_core: split_timestamp failed");
+
                 // Create two empty FixedSize32Timestamp structs as defaults
                 let empty =
                     FixedSize32Timestamp::from_str("err01_01_01_01_01").unwrap_or_else(|_| {
