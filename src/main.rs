@@ -20,6 +20,8 @@ use source_it_module::{SourcedFile, handle_sourceit_command};
 mod buffy_format_write_module;
 use buffy_format_write_module::{BuffyFormatArg, buffy_print, buffy_println};
 
+mod raw_terminal_x86_module;
+
 // To make a smaller binary, you can remove source-it.
 /// Source-It: Developer explicitly lists files to embed w/
 const SOURCE_FILES: &[SourcedFile] = &[

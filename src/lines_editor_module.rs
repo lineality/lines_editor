@@ -998,6 +998,31 @@ use super::buffy_format_write_module::{
     buffy_is_plain_text_extension, buffy_print, buffy_println,
 };
 
+// ============================================================================
+// RAW TERMINAL IMPORT (for KeystrokeInputMode only)
+// ============================================================================
+//
+// ## Project Context
+//
+// This is the FIRST and ONLY use of raw-terminal mode in the entire lines
+// editor. Every other editor mode (Normal, Insert, VisualSelect, Pasty, Hex,
+// the existing "RawMode" which is unrelated to terminal raw mode) reads from a
+// cooked/canonical StdinLock acquired once in lines_fullfile_editor_core.
+//
+// IMPORTANT NAMING NOTE FOR FUTURE DEVS:
+//   - EditorMode::RawMode is NOT terminal-raw-mode. It is a legacy name that
+//     refers to a string-representation view (like Python's r"raw" strings).
+//   - RawTerminal (imported here) IS Linux termios raw mode (no line buffering,
+//     no echo, byte-by-byte input). These two unrelated concepts share the
+//     word "raw" by historical accident. Do not conflate them.
+//
+// RawTerminal is owned transiently inside handle_keystroke_input_session().
+// It is NEVER stored in EditorState (minimal-state rule) and NEVER created at
+// the main-loop level (that would break all the cooked-input modes). Its Drop
+// implementation restores the terminal on every exit path, including panic.
+// ============================================================================
+use crate::raw_terminal_x86_module::RawTerminal;
+
 /// Style for line numbers - green, no bold
 const LINE_NUMBER_STYLE: BuffyStyles = BuffyStyles {
     fg_color: Some("\x1b[32m"), // GREEN
@@ -3948,6 +3973,32 @@ pub enum EditorMode {
     /// Hex Edict!
     HexMode,
     RawMode,
+
+    /// Keystroke-input mode: byte-by-byte ASCII input via Linux termios raw
+    /// terminal (NOT the same as the legacy `RawMode` above).
+    ///
+    /// # Project Context
+    /// This mode is the only place in the editor that uses a real raw terminal
+    /// (`RawTerminal`). It functions like Insert mode (immediate cursor updates,
+    /// per-character undo logging, display refresh after each edit) but reads
+    /// individual keystroke bytes instead of cooked/Enter-terminated lines.
+    ///
+    /// # Entry / Exit
+    /// - Entered via the `ki` command from Normal mode.
+    /// - Exited by pressing ESC (0x1B), which routes through
+    ///   `Command::EnterNormalMode` and flips this back to `Normal`. The session
+    ///   loop watches `self.mode == KeystrokeInputMode` and exits when it flips.
+    /// - Also exited (defensively, set back to Normal) on terminal EOF or read
+    ///   error inside the session loop.
+    ///
+    /// # Accepted Input
+    /// - Printable ASCII (0x20..=0x7E): inserted as a single byte.
+    /// - Backspace (0x08) and DEL (0x7F): backspace-style delete.
+    /// - LF (0x0A) and CR (0x0D): insert a single '\n'.
+    /// - ESC (0x1B): exit to Normal mode.
+    /// - Everything else (arrow keys, Tab 0x09, Ctrl/Alt/Fn combos, multibyte
+    ///   escape-sequence fragments): silently ignored.
+    KeystrokeInputMode,
 }
 
 /// Represents valid user input commands and selections in Pasty mode
@@ -6490,6 +6541,322 @@ impl EditorState {
         Ok(keep_editor_loop_running)
     }
 
+    /// Runs one keystroke-input session: owns the raw terminal and the read loop.
+    ///
+    /// # Project Context
+    ///
+    /// This is the ONLY place in the entire editor that creates and owns a
+    /// `RawTerminal` (Linux termios raw mode: no line buffering, no echo,
+    /// byte-by-byte input). It is the raw-terminal analogue of the cooked-mode
+    /// `handle_utf8txt_insert_mode_input`.
+    ///
+    /// ## Why RawTerminal Is Owned Here (and nowhere else)
+    ///
+    /// The main loop (`lines_fullfile_editor_core`) acquires a single
+    /// `StdinLock` for the whole session, and every OTHER mode reads cooked,
+    /// Enter-terminated, echoed lines from it. If the terminal were put into raw
+    /// mode at the main-loop level, all those cooked-input modes would break.
+    ///
+    /// Owning `RawTerminal` here means:
+    ///   - Raw mode is active ONLY for the duration of one keystroke session.
+    ///   - `RawTerminal`'s `Drop` restores the original terminal settings on
+    ///     EVERY exit path — clean exit, EOF, read error, propagated error, and
+    ///     even panic. This is exactly what the `#[must_use]` + `Drop` design is
+    ///     built for.
+    ///   - No `RawTerminal` is stored in `EditorState` (minimal-state rule). The
+    ///     handle is a transient local.
+    ///
+    /// ## The Cooked-Render / Raw-Read Cycle (staircase fix)
+    ///
+    /// PROBLEM (the "staircase"):
+    /// `render_tui_utf8txt` writes a bare `\n` (line feed) at the end of each
+    /// display row. In a COOKED terminal the kernel's `OPOST` output flag is on,
+    /// so the driver automatically expands every `\n` into `\r\n` (line feed +
+    /// carriage return); the carriage return is what returns the cursor to
+    /// column 0 at the start of each new line.
+    ///
+    /// In RAW mode `OPOST` is OFF (see `RawTerminal`/`make_raw` docs). A bare
+    /// `\n` then moves the cursor DOWN one line but does NOT return it to
+    /// column 0. Each rendered row therefore starts further to the right than
+    /// the last — a diagonal "staircase" — and the whole frame is geometrically
+    /// corrupted.
+    ///
+    /// SOLUTION (this method):
+    /// We render INSIDE a brief cooked window. Every loop iteration:
+    ///   1. `suspend_raw_mode()` — restore the ORIGINAL (cooked) terminal, so
+    ///      `OPOST` is on and `\n` → `\r\n` again.
+    ///   2. `render_tui_utf8txt(self)` — runs in the same cooked terminal state
+    ///      that Normal/Insert/Visual/Pasty modes render in, so the output is
+    ///      byte-for-byte identical to those modes. No staircase.
+    ///   3. `activate_raw_mode()` — return to raw mode (byte-by-byte, no echo)
+    ///      for the keystroke read. `activate_raw_mode` also re-verifies that
+    ///      ICANON/ECHO are cleared and VMIN is non-zero, giving a per-keystroke
+    ///      correctness check on the terminal state.
+    ///   4. `term.read(one byte)` — blocking single-byte read (VMIN=1, VTIME=0).
+    ///   5. dispatch the byte.
+    ///
+    /// This is the documented suspend/activate pattern the raw-terminal module
+    /// was designed for (the module's `run_subprocess_demo` uses the same cycle
+    /// to hand a cooked terminal to a subprocess and then reclaim raw mode).
+    ///
+    /// COST: two extra ioctl syscalls per keystroke (suspend = 1 write;
+    /// activate = 1 write + 1 read-back verify). At human typing speed this is
+    /// imperceptible. We accept it in exchange for reusing the UNCHANGED shared
+    /// renderer instead of forking a `\r\n` variant.
+    ///
+    /// WHY NOT change `render_tui_utf8txt` to write `\r\n`:
+    /// That function is shared by all the cooked modes. In cooked mode `OPOST`
+    /// would expand a literal `\r\n` into `\r\r\n` (double carriage return), and
+    /// we would be altering a working, shared function. Keeping the renderer
+    /// untouched and toggling the terminal here is the smaller, lower-risk change.
+    ///
+    /// ## Session Loop Shape
+    ///
+    /// ```text
+    /// create RawTerminal (on failure: log, set Normal, return Ok(true))
+    /// loop while self.mode == KeystrokeInputMode:
+    ///     term.suspend_raw_mode()             // -> cooked terminal
+    ///     render_tui_utf8txt(self)            // renders like every other mode
+    ///     term.activate_raw_mode()            // -> raw terminal (verified)
+    ///     n = term.read(&mut [0u8; 1])
+    ///     match n:
+    ///         Ok(0)  -> EOF: break, set Normal
+    ///         Ok(_)  -> handle_keystroke_input_mode(self, byte, &read_copy)
+    ///         Err(_) -> break, set Normal
+    /// (RawTerminal drops here -> terminal restored)
+    /// return Ok(true)
+    /// ```
+    ///
+    /// ## Termination / Recovery (the satellite must not fall out of the sky)
+    ///
+    /// The inner loop ends, and this method returns to the main loop, on any of:
+    ///
+    ///   1. ESC byte: the dispatcher routes it through `EnterNormalMode`, which
+    ///      sets `self.mode = Normal`. The `while self.mode == KeystrokeInputMode`
+    ///      condition then fails -> clean exit.
+    ///
+    ///   2. `term.read` returns `Ok(0)` (EOF): the input source vanished. We
+    ///      MUST break — otherwise the loop would spin forever calling read on a
+    ///      dead terminal, getting Ok(0) every time, never advancing, never
+    ///      exiting. (RawTerminal's docs warn explicitly: "A return of Ok(0)
+    ///      means EOF... Callers MUST check the returned count.") After breaking
+    ///      we explicitly set `self.mode = Normal` so the editor lands in a
+    ///      known-good state.
+    ///
+    ///   3. `term.read` returns `Err`: same treatment — break, set Normal.
+    ///
+    ///   4. `RawTerminal::new()` fails at entry: log terse, set `self.mode =
+    ///      Normal`, set info-bar message, return `Ok(true)`. We do NOT crash and
+    ///      do NOT propagate as the only exit; the editor recovers to Normal mode
+    ///      and the main loop continues.
+    ///
+    /// In every exit path this method returns `Ok(true)` (keep the main editor
+    /// loop running). It never returns `Ok(false)`: keystroke-input mode has no
+    /// quit command. ESC goes to Normal; quitting is done from Normal mode.
+    ///
+    /// ## Suspend / Activate Failure Handling
+    ///
+    /// `suspend_raw_mode` and `activate_raw_mode` can fail (kernel/driver error,
+    /// a transient termios glitch, bit-flip). We handle each failure rather than
+    /// crash:
+    ///   - If `suspend_raw_mode` fails, we still attempt the render. Worst case
+    ///     this single frame staircases; the next iteration retries the suspend.
+    ///   - If `activate_raw_mode` fails, raw mode may not be (re)established. A
+    ///     read in cooked mode would block for a whole line instead of one byte,
+    ///     which would silently break byte-by-byte input. Rather than risk that
+    ///     confusing failure mode, we recover to Normal mode and exit the session
+    ///     cleanly. (RawTerminal::Drop still restores the terminal on the way out.)
+    /// Both failures are logged terse (no PII) in production; debug builds get
+    /// detail.
+    ///
+    /// ## Render Inside the Loop (not just once)
+    ///
+    /// The main loop renders once per outer iteration. But this session stays
+    /// inside its own inner loop across MANY keystrokes without returning to the
+    /// main loop. Therefore it must render itself, once per keystroke, at the top
+    /// of the loop. We use `render_tui_utf8txt` — the same renderer the main loop
+    /// uses for normal text modes — because keystroke-input mode displays normal
+    /// UTF-8 text. The edit functions own their own `build_windowmap_nowrap`
+    /// rebuilds; this method only renders.
+    ///
+    /// ## Bounded vs Always-Loop (Power of 10, Rule 2)
+    ///
+    /// The inner loop is unbounded by design (it waits on external user input),
+    /// but it has clear, multiple exit conditions (ESC, EOF, read error,
+    /// activate failure, mode flip) and never busy-spins: every iteration blocks
+    /// on `term.read` (VMIN=1, VTIME=0), and EOF/Err break immediately rather
+    /// than looping. The failsafe layer is `RawTerminal::Drop`, which restores
+    /// the terminal even if this loop exits abnormally.
+    ///
+    /// # Arguments
+    ///
+    /// * `read_copy_path` - borrow of the read-copy file path. The CALLER (the
+    ///   main loop) owns the clone and passes a borrow. This method passes that
+    ///   same borrow down to `handle_keystroke_input_mode` for every keystroke,
+    ///   so the path is cloned exactly once per session (in the main loop), not
+    ///   once per keystroke.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)`  - keep the main editor loop running (always, in this mode)
+    /// * `Err(LinesError)` - an unrecoverable error propagated from rendering or
+    ///   from a keystroke action. On the way out, `RawTerminal::Drop` still
+    ///   restores the terminal. The main loop will surface the error.
+    ///
+    /// # Defensive Notes
+    ///
+    /// - No `unwrap` / no panic.
+    /// - Single-byte read buffer `[0u8; 1]` (VMIN=1 delivers one byte at a time).
+    /// - EOF, read errors, and activate-raw failures are handled, not ignored,
+    ///   and always leave the editor in Normal mode.
+    fn handle_keystroke_input_session(&mut self, read_copy_path: &Path) -> Result<bool> {
+        // ---------------------------------------------------------------------
+        // Step 1: Enter raw terminal mode (RAII).
+        // ---------------------------------------------------------------------
+        // On failure we recover to Normal mode rather than crashing. The most
+        // common failure is "no controlling terminal" (e.g. stdin redirected or
+        // running headless), in which case keystroke-input mode simply cannot
+        // function and we fall back to Normal mode.
+        let mut term = match RawTerminal::new() {
+            Ok(t) => t,
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("hkis: RawTerminal::new failed: {:?}", _e);
+
+                // Terse, no-PII production log.
+                log_error(
+                    "raw terminal unavailable",
+                    Some("handle_keystroke_input_session:new"),
+                );
+
+                // Recover to a known-good mode and inform the user.
+                self.mode = EditorMode::Normal;
+                let _ = self.set_info_bar_message("ki unavailable (no tty)");
+
+                // Keep the editor running; the main loop continues in Normal mode.
+                return Ok(true);
+            }
+        };
+
+        // ---------------------------------------------------------------------
+        // Step 2: Keystroke read loop (cooked-render / raw-read cycle).
+        // ---------------------------------------------------------------------
+        // Single-byte buffer: raw mode is configured VMIN=1, VTIME=0, so read
+        // blocks until exactly one byte is available, then returns it.
+        let mut byte_buffer = [0u8; 1];
+
+        // Loop while we remain in keystroke-input mode. ESC flips the mode to
+        // Normal (via the dispatcher), which ends this loop.
+        while self.mode == EditorMode::KeystrokeInputMode {
+            // -----------------------------------------------------------------
+            // (a) Suspend raw mode -> cooked terminal for rendering.
+            // -----------------------------------------------------------------
+            // Restores the ORIGINAL terminal (OPOST on), so render_tui_utf8txt's
+            // bare '\n' is expanded to '\r\n' by the driver, exactly as in every
+            // other editor mode. This is the staircase fix.
+            //
+            // If suspend fails, we still render (worst case: one staircased
+            // frame); the next iteration retries. We do not abort on suspend
+            // failure because a single bad frame is recoverable.
+            if let Err(_e) = term.suspend_raw_mode() {
+                #[cfg(debug_assertions)]
+                eprintln!("hkis: suspend_raw_mode failed: {:?}", _e);
+
+                log_error(
+                    "ki suspend failed",
+                    Some("handle_keystroke_input_session:suspend"),
+                );
+                // Continue: attempt the render anyway.
+            }
+
+            // -----------------------------------------------------------------
+            // (b) Render the TUI for the current model state (cooked terminal).
+            // -----------------------------------------------------------------
+            // Unconditional, once per keystroke. The edit functions rebuilt the
+            // windowmap; here we only paint it. Errors propagate (RawTerminal
+            // Drop will still restore the terminal on the way out).
+            render_tui_utf8txt(self)?;
+
+            // -----------------------------------------------------------------
+            // (c) Re-activate raw mode -> raw terminal for byte-by-byte read.
+            // -----------------------------------------------------------------
+            // activate_raw_mode re-applies raw settings derived from the saved
+            // original AND verifies ICANON/ECHO/VMIN. If it fails, raw mode may
+            // not be established; a subsequent read could block for a whole line
+            // instead of one byte (a confusing silent failure). To avoid that,
+            // we recover to Normal mode and exit the session cleanly. Drop still
+            // restores the terminal.
+            if let Err(_e) = term.activate_raw_mode() {
+                #[cfg(debug_assertions)]
+                eprintln!("hkis: activate_raw_mode failed: {:?}; exiting ki mode", _e);
+
+                log_error(
+                    "ki activate failed",
+                    Some("handle_keystroke_input_session:activate"),
+                );
+
+                self.mode = EditorMode::Normal;
+                break;
+            }
+
+            // -----------------------------------------------------------------
+            // (d) Read exactly one byte from the raw terminal.
+            // -----------------------------------------------------------------
+            match term.read(&mut byte_buffer) {
+                // EOF: input source vanished. Break and recover to Normal mode.
+                // We MUST NOT continue looping on Ok(0): read would keep
+                // returning Ok(0) forever (a dead-tty spin). Break immediately.
+                Ok(0) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("hkis: read returned Ok(0) (EOF); exiting ki mode");
+
+                    // Recover to a known-good mode.
+                    self.mode = EditorMode::Normal;
+                    break;
+                }
+
+                // Got a byte: dispatch it. The dispatcher maps it to the right
+                // action (or silently ignores it). ESC will flip self.mode to
+                // Normal inside the dispatcher, ending this loop next iteration.
+                Ok(_n) => {
+                    let keystroke = byte_buffer[0];
+
+                    // The dispatcher returns Ok(true) to keep running. It only
+                    // returns Err on a genuinely unrecoverable I/O failure from
+                    // an edit; we propagate that (terminal still restored on
+                    // Drop). It never returns Ok(false) in this mode.
+                    let _keep_running =
+                        handle_keystroke_input_mode(self, keystroke, read_copy_path)?;
+
+                    // _keep_running is always true here; the loop exit is driven
+                    // by self.mode (set to Normal by ESC), not by this value.
+                }
+
+                // Read error: the terminal became unavailable. Break and recover.
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!("hkis: read error: {:?}; exiting ki mode", _e);
+
+                    // Terse, no-PII production log.
+                    log_error("ki read error", Some("handle_keystroke_input_session:read"));
+
+                    // Recover to a known-good mode.
+                    self.mode = EditorMode::Normal;
+                    break;
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // Step 3: Leave the session.
+        // ---------------------------------------------------------------------
+        // `term` (RawTerminal) drops here, restoring the original (cooked)
+        // terminal settings. We return Ok(true) so the main editor loop
+        // continues; by now self.mode is Normal (set by ESC, EOF, error, or
+        // activate-raw failure).
+        Ok(true)
+    }
+
     /// Handles all input when the editor is in Insert mode.
     ///
     /// # Overview
@@ -7338,6 +7705,10 @@ impl EditorState {
                 "wide-" => Command::WideMinus,
 
                 "i" => Command::EnterInsertMode,
+                // Keystroke-input mode: byte-by-byte ASCII via raw terminal.
+                // Distinct from "i" (cooked insert mode). See
+                // Command::EnterKeystrokeInputMode and EditorMode::KeystrokeInputMode.
+                "ki" => Command::EnterKeystrokeInputMode,
                 "v" => Command::EnterVisualSelectMode,
                 "raw" => Command::EnterRawMode,
                 // Multi-character commands
@@ -7402,6 +7773,7 @@ impl EditorState {
             }
         }
     }
+
     /// Handles input when in Normal or Visual mode: a wrapper for parse_commands_for_normal_visualselect_modes()
     ///
     /// Reads a command from stdin, parses it, executes it, and stores it for repeat.
@@ -10623,6 +10995,20 @@ pub enum Command {
     EnterHexEditMode,        // Hex Edith
     EnterRawMode,
 
+    /// Enter keystroke-input mode (the `ki` command).
+    ///
+    /// # Project Context
+    /// Switches the editor into `EditorMode::KeystrokeInputMode`, where input is
+    /// read byte-by-byte from a Linux termios raw terminal. This is the only
+    /// command that leads to real raw-terminal input in the editor.
+    ///
+    /// # Why a Separate Command from `EnterInsertMode`
+    /// Insert mode uses cooked/canonical StdinLock (Enter-terminated lines).
+    /// Keystroke-input mode uses a transient `RawTerminal`. They are different
+    /// input pipelines, so they get different mode variants and different
+    /// commands. The `ki` command is distinct from the `i` command on purpose.
+    EnterKeystrokeInputMode,
+
     // Text editing
     InsertNewline(char), // Insert single \n at cursor's file-position
     // DeleteChar,          // Delete character at cursor // legacy?
@@ -10670,6 +11056,7 @@ pub enum Command {
     // No operation
     None,
 }
+
 /// Cleans up the specific draft copy file used in this editing session
 ///
 /// # Purpose
@@ -12233,6 +12620,24 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
+        Command::EnterKeystrokeInputMode => {
+            // Rebuild the windowmap before switching modes, for the same reason
+            // EnterInsertMode/EnterHexEditMode do: any pending edits (e.g. from a
+            // prior hex edit) must be reflected on screen before we hand control
+            // to the keystroke-input session. Without this, stale display could
+            // persist until the next edit.
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+
+            lines_editor_state.mode = EditorMode::KeystrokeInputMode;
+
+            // Terse hint, in the same style as EnterInsertMode's hint.
+            // Non-critical: if setting the message fails, mode switch still
+            // succeeded, so we discard the result.
+            let _ = lines_editor_state.set_info_bar_message("ki: Esc>normal  type ascii");
+
+            Ok(true)
+        }
+
         Command::EnterPastyClipboardMode => {
             // rebuild may not be needed here, but just in case
             // Rebuild window to show the change from read-copy file
@@ -12905,6 +13310,232 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
     let _ = lines_editor_state.set_info_bar_message("end of line");
     Ok(())
+}
+
+/// Dispatches a single keystroke byte to the correct editor action.
+///
+/// # Project Context
+///
+/// This is the per-byte dispatcher for `EditorMode::KeystrokeInputMode`. It is
+/// called once per byte by `handle_keystroke_input_session`, which owns the
+/// `RawTerminal` and the read loop. This function does NOT read input, does NOT
+/// own the terminal, and does NOT render — it only maps one byte to one action.
+///
+/// Separation of concerns:
+/// - `handle_keystroke_input_session` : owns RawTerminal, reads bytes, renders,
+///   handles EOF / read-error / mode-flag termination.
+/// - `handle_keystroke_input_mode`    : maps a single byte to a single action
+///   (this function).
+///
+/// # Byte Dispatch Table
+///
+/// | Byte (hex)     | Meaning           | Action                                      |
+/// |----------------|-------------------|---------------------------------------------|
+/// | `0x1B`         | ESC               | `execute_command(.., EnterNormalMode)` — flips mode to Normal; this is the signal the session loop watches to exit |
+/// | `0x08`, `0x7F` | Backspace, DEL    | `execute_command(.., DeleteBackspace)` (DEL treated as backspace) |
+/// | `0x0A`, `0x0D` | LF, CR            | `execute_command(.., InsertNewline('\n'))` (CR treated as newline) |
+/// | `0x20..=0x7E`  | printable ASCII   | clear redo logs, then `insert_text_chunk_at_cursor_position(.., &[byte])` |
+/// | everything else| arrows, Tab(0x09), Ctrl/Alt/Fn, multibyte fragments | silently ignored: no edit, no redo-clear, no rebuild |
+///
+/// # Why the Printable Path Differs from Backspace/Newline (redo-clear)
+///
+/// In the editor, `button_safe_clear_all_redo_logs` is called by the CALLER of
+/// the edit, not by the edit function itself:
+///
+/// - `Command::DeleteBackspace` and `Command::InsertNewline` arms inside
+///   `execute_command` ALREADY call `button_safe_clear_all_redo_logs`
+///   internally. So routing backspace and newline through `execute_command`
+///   gives correct redo-clear automatically. We must NOT clear again here, or
+///   we would double-clear (harmless but wasteful and misleading).
+///
+/// - `insert_text_chunk_at_cursor_position` does NOT clear redo logs itself.
+///   Insert mode (`handle_utf8txt_insert_mode_input`) wraps it with
+///   `button_safe_clear_all_redo_logs` before calling it. We replicate that
+///   wrapping here for the printable-byte path. (Deliberate duplication of the
+///   3-attempt retry pattern from insert mode — duplication is preferred over
+///   abstraction-for-its-own-sake in this codebase.)
+///
+/// There is intentionally no `Command` variant that inserts a single arbitrary
+/// printable byte via the chunk path; arbitrary-text insertion is done by
+/// calling `insert_text_chunk_at_cursor_position` directly (as insert mode
+/// does). That is why the printable path here does not go through
+/// `execute_command`.
+///
+/// # Why One ASCII Byte == One Chunk Insert Is Correct
+///
+/// A printable-ASCII byte (0x20..=0x7E) is, by definition, a complete and valid
+/// single-byte UTF-8 character. Passing `&[byte]` (a one-byte slice) to
+/// `insert_text_chunk_at_cursor_position` therefore:
+///   - produces exactly ONE `AddCharacter` undo entry,
+///   - advances the cursor by exactly one column,
+///   - handles right-edge horizontal scroll,
+/// matching insert mode precisely. This satisfies both the "make an undo-redo
+/// log for that one byte" requirement and the "clear redo logs before each
+/// edit" requirement.
+///
+/// # Rebuild / Render Policy
+///
+/// This function does NOT call `build_windowmap_nowrap` in the common path.
+/// The edit functions own their own rebuilds:
+///   - `insert_text_chunk_at_cursor_position` rebuilds on right-edge scroll.
+///   - the `execute_command` arms for DeleteBackspace / InsertNewline rebuild
+///     after the edit.
+/// The session loop renders unconditionally at the top of its next iteration,
+/// so whatever the model now holds gets painted. Ignored keys cause no edit and
+/// no rebuild, which is correct: nothing changed.
+///
+/// # Arguments
+///
+/// * `lines_editor_state` - mutable editor state (mode, cursor, buffers, etc.)
+/// * `keystroke`          - the single raw byte read from the terminal
+/// * `read_copy_path`     - borrow of the read-copy file path. The session owns
+///                          the clone of `read_copy_path` and passes a borrow
+///                          here, so this function never re-clones per keystroke.
+///
+/// # Returns
+///
+/// * `Ok(true)`  - editor loop should keep running (always, in this mode)
+/// * `Err(LinesError)` - a propagated error from an edit or command. Edit
+///                       functions are written to handle their own non-critical
+///                       failures internally (logging, info-bar) and return Ok;
+///                       a returned Err here is a genuinely unrecoverable I/O
+///                       failure and is propagated to the session, which will
+///                       restore the terminal (RawTerminal Drop) on the way out.
+///
+/// # Defensive Notes
+///
+/// - No `unwrap` / no panic.
+/// - Unknown bytes are silently ignored (handle-and-move-on): no edit, no log,
+///   no state change. This is the correct behavior for arrow keys, Tab, and
+///   stray escape-sequence fragments delivered one byte at a time in raw mode.
+fn handle_keystroke_input_mode(
+    lines_editor_state: &mut EditorState,
+    keystroke: u8,
+    read_copy_path: &Path,
+) -> Result<bool> {
+    match keystroke {
+        // ---------------------------------------------------------------------
+        // ESC (0x1B): exit to Normal mode.
+        // ---------------------------------------------------------------------
+        // EnterNormalMode sets lines_editor_state.mode = Normal and rebuilds the
+        // windowmap. The session loop's `while self.mode == KeystrokeInputMode`
+        // condition then fails, so the loop exits cleanly and RawTerminal drops.
+        0x1B => {
+            // EnterNormalMode returns Ok(true) (keep running). We forward that.
+            execute_command(lines_editor_state, Command::EnterNormalMode)
+        }
+
+        // ---------------------------------------------------------------------
+        // Backspace (0x08) or DEL (0x7F): backspace-style delete.
+        // ---------------------------------------------------------------------
+        // DEL is treated as backspace per spec. DeleteBackspace's execute_command
+        // arm clears redo logs internally and rebuilds the windowmap, so we do
+        // NOT clear redo logs here (no double-clear).
+        0x08 | 0x7F => execute_command(lines_editor_state, Command::DeleteBackspace),
+
+        // ---------------------------------------------------------------------
+        // LF (0x0A) or CR (0x0D): insert a single newline.
+        // ---------------------------------------------------------------------
+        // CR is treated as newline per spec. InsertNewline's execute_command arm
+        // clears redo logs internally and rebuilds the windowmap, so we do NOT
+        // clear redo logs here (no double-clear).
+        0x0A | 0x0D => execute_command(lines_editor_state, Command::InsertNewline('\n')),
+
+        // ---------------------------------------------------------------------
+        // Printable ASCII (0x20 space .. 0x7E tilde): insert one byte.
+        // ---------------------------------------------------------------------
+        // This path does its OWN redo-clear (matching insert mode), because
+        // insert_text_chunk_at_cursor_position does not clear redo logs itself.
+        0x20..=0x7E => {
+            // =================================================
+            // Clear Redo Stack Before Editing (printable path)
+            // =================================================
+            // Same 3-attempt retry pattern insert mode uses. Redo-clear failure
+            // is non-critical: the insert still proceeds, undo/redo may be in a
+            // degraded state, and we surface a terse info-bar note. We never
+            // abort the keystroke because of a redo-clear failure.
+            let mut redo_clear_success = false;
+            for attempt in 0..3 {
+                match button_safe_clear_all_redo_logs(read_copy_path) {
+                    Ok(_) => {
+                        redo_clear_success = true;
+                        break;
+                    }
+                    Err(_e) => {
+                        #[cfg(debug_assertions)]
+                        eprintln!("hkim: redo clear attempt {} failed: {:?}", attempt, _e);
+
+                        if attempt < 2 {
+                            thread::sleep(Duration::from_millis(100));
+                        }
+                    }
+                }
+            }
+
+            if !redo_clear_success {
+                // Terse, no-PII log + info-bar note. Non-fatal.
+                log_error(
+                    "Cannot clear redo logs",
+                    Some("handle_keystroke_input_mode:printable"),
+                );
+                let _ = lines_editor_state.set_info_bar_message("redo clear failed");
+            }
+
+            // Insert the single byte as a one-character chunk.
+            // One printable-ASCII byte is one valid UTF-8 character, so this
+            // produces exactly one AddCharacter undo entry, advances the cursor,
+            // and handles right-edge scroll (with its own rebuild) — matching
+            // insert mode.
+            // Insert the single byte as a one-character chunk.
+            // One printable-ASCII byte is one valid UTF-8 character, so this
+            // produces exactly one AddCharacter undo entry, advances the cursor,
+            // and handles right-edge scroll — matching insert mode.
+            let byte_slice = [keystroke];
+            insert_text_chunk_at_cursor_position(lines_editor_state, read_copy_path, &byte_slice)?;
+
+            // -----------------------------------------------------------------
+            // Rebuild the windowmap after the insert (REQUIRED).
+            // -----------------------------------------------------------------
+            // insert_text_chunk_at_cursor_position only rebuilds the windowmap
+            // CONDITIONALLY — solely when the cursor crosses the right edge and
+            // the window must scroll horizontally. In the common case (typing
+            // within the visible width), it updates cursor.tui_col and writes the
+            // byte to the file, but does NOT rebuild the display model. Without a
+            // rebuild here, the display buffers still hold the pre-insert text:
+            // the cursor would move but the typed character would be invisible
+            // until some OTHER action (newline, backspace) triggered a rebuild.
+            //
+            // This mirrors EXACTLY what cooked insert mode does: its caller
+            // (handle_utf8txt_insert_mode_input) calls build_windowmap_nowrap
+            // immediately after each insert_text_chunk_at_cursor_position. We are
+            // the caller in ki-mode, so we carry the same responsibility.
+            //
+            // Backspace (0x08/0x7F) and newline (0x0A/0x0D) do NOT need a rebuild
+            // here because they route through execute_command, whose
+            // DeleteBackspace / InsertNewline arms already rebuild internally.
+            // Adding a rebuild there would double-rebuild. Only this printable
+            // path, which calls the chunk function directly, needs this rebuild.
+            //
+            // If the insert failed gracefully (invalid cursor at end-of-line —
+            // a PRE-EXISTING shared bug also present in insert mode), the file
+            // is unchanged and this rebuild simply repaints the current model.
+            // That is harmless: rebuild is idempotent with respect to an
+            // unchanged file.
+            build_windowmap_nowrap(lines_editor_state, read_copy_path)?;
+
+            Ok(true)
+        }
+
+        // ---------------------------------------------------------------------
+        // Everything else: silently ignore.
+        // ---------------------------------------------------------------------
+        // This includes Tab (0x09), all C0 control codes not handled above,
+        // and the individual bytes of multibyte escape sequences (arrow keys,
+        // Home/End, Page Up/Down, function keys) which arrive one byte at a time
+        // in raw mode. No edit, no redo-clear, no rebuild, no state change.
+        // Handle-and-move-on: keep the editor running.
+        _ => Ok(true),
+    }
 }
 
 /// Deletes the character before cursor WITHOUT loading whole file
@@ -20094,6 +20725,7 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
     let mode_str = match lines_editor_state.mode {
         EditorMode::Normal => "NORMAL",
         EditorMode::Insert => "INSERT",
+        EditorMode::KeystrokeInputMode => "KEY-INSRT",
         EditorMode::VisualSelectMode => "VISUAL",
         EditorMode::PastyMode => "PASTY",
         EditorMode::HexMode => "HEX",
@@ -22789,6 +23421,20 @@ pub fn lines_fullfile_editor_core(
             //  ===========
             keep_editor_loop_running = lines_editor_state
                 .handle_utf8txt_insert_mode_input(&mut stdin_handle, &mut text_buffer)?;
+        } else if lines_editor_state.mode == EditorMode::KeystrokeInputMode {
+            //  ====================
+            //  Keystroke Input Mode
+            //  ====================
+            // The ONLY raw-terminal path in the editor. The session method owns
+            // the RawTerminal for its entire (RAII) lifetime, runs its own read
+            // loop, renders inside that loop, and recovers to Normal mode on ESC,
+            // EOF, or read error. It returns Ok(true) so the main loop continues
+            // (keystroke-input mode has no quit command).
+            //
+            // `read_copy` is cloned once at main-loop setup; we pass a borrow so
+            // the path is not re-cloned per keystroke.
+            keep_editor_loop_running =
+                lines_editor_state.handle_keystroke_input_session(&read_copy)?;
         } else if lines_editor_state.mode == EditorMode::PastyMode {
             //  ==========
             //  Pasty Mode
