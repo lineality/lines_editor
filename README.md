@@ -3,7 +3,7 @@
 Lines is a minimal text editor.
 
 ```
-quit sav re,undo del|nrm ins vis hex raw|pasty cvy|wrd,b,end ///cmnt []idnt hjkl
+quit sav re,undo del|nrm kins vis hex|go pasty cvy|wrd,b,end ///cmnt []idnt hjkl
  1 ⎕ lines_editor␤
  2 ␤
  3 Lines is a minimal text editor.␤
@@ -89,16 +89,18 @@ In 2025 these are all common, yet there is no good way to deal some with these:
 - save-as
 - Undo (optional, with constrained history buffers)
 - Redo
+- toggle indent/unindent
+- toggle comment-line (e.g. # or //)
+- File-Fantastic Integration
+- Syntax highlighting
+- keyboard input mode: ascii keyboard event input on x86 ('ki' mode)
 
 ## Future/Probably Scope:
 - Multi-cursor/ctrl+d functionality
-- Character encoding awareness
-- Encoding conversion (write in different encodings)
+- Find/replace,
 - Search,
 - fuzzy search,
 - regex search,
-- some Extended goto commands
-- Configuration files
 - build .rs for --version
 - extract line
 - extract header
@@ -106,20 +108,22 @@ In 2025 these are all common, yet there is no good way to deal some with these:
 --1. ctrl+d superpower
 --2. search for selection
 --3. maybe crawl-count selection in file (though not all shown...)
-- Find/replace
-- Syntax highlighting
-- File-Fantastic Integration
+- Character encoding awareness
+- Encoding conversion (write in different encodings)
+- linewrap (maybe)
+
+## Maybe:
+- go to function/definition
+- features from function_finder https://github.com/lineality/function_finder
 
 ### File-Manager Integration
 - ff https://github.com/lineality/ff_file_manager_minimal_rust contains lines and allows Line/FF (It's File Fantastic!) to act as a mult-file single-session ~IDE, while keeping lines itself minimal.
 
 ## Out of Scope:
-- Mouse support
-- Advanced goto features (e.g. Helix has a massive goto suite menu)
-- Line wrapping toggle
-- relative lines
-
-
+- Mouse support (not planned)
+- relative lines (maybe?)
+- Super-Advanced goto features (e.g. Helix has a massive goto suite menu)
+- Configuration files
 
 # Questions:
 
