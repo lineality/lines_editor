@@ -3491,7 +3491,8 @@ fn write_formatted_navigation_legend_to_tui() -> Result<()> {
     // Mode operations group
     write_red_hotkey("d", "el|")?;
     write_red_hotkey("n", "rm ")?;
-    write_red_hotkey("i", "ns ")?;
+    // write_red_hotkey("i", "ns ")?;
+    write_red_green_hotkey("k", "i", "ns ")?;
     write_red_hotkey("v", "is ")?;
     write_red_hotkey("hex", "|")?;
 
@@ -7253,8 +7254,8 @@ impl EditorState {
                 5. There is also the hex-write system, by which characters are hex-edited in
                 onto blank spaces, which is odd, unless the file is huge then it makes sense.
 
-
-
+                Update:
+                See the pasty paste-in section: "paste multi-line cut and paste"
                 */
 
                 // Find next newline
@@ -12532,7 +12533,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::Insert;
-            let _ = lines_editor_state.set_info_bar_message("Esc > exit, delete > backspace");
+            let _ = lines_editor_state.set_info_bar_message("ESC>exit DEL>bckspc ki>key-ins");
             Ok(true)
         }
 
