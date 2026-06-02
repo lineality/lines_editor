@@ -61,7 +61,7 @@ In 2025 these are all common, yet there is no good way to deal some with these:
 
 
 ## In Scope:
-- modular structure (lines IS a module)
+- Modular structure (lines IS a module)
 - Opening files (creating new, opening existing)
 - Viewing file contents in a "sliding window" (80×24 default, up to 320×96)
 - Navigation (hjkl, word boundaries, goto line)
@@ -73,48 +73,48 @@ In 2025 these are all common, yet there is no good way to deal some with these:
 - Line numbers (absolute/relative)
 ~ "Plugin" architecture: modular system for commands
 - 'Memo' Mode: (quick-start exists in original Lines)
-- open to line
-- go to end of file
+- Open to line
+- Go to end of file
 - Hex editor dual-view
 - Byte viewing mode
 - Byte editing
-- help menu
-- source-it (see File Fantastic)
+- Help menu
+- Source-it (see File Fantastic)
 - Pasty: copy(yank) paste
-- modular clipboard
-- insert file into file with file-path insert
-- empty-enter repeat last action
+- Modular clipboard
+- Insert file into file with file-path insert
+- Empty-enter repeat last action
 - N-moves
-- end of line, end of file, insertions.
-- save-as
+- End of line, end of file, insertions.
+- Save-As
 - Undo (optional, with constrained history buffers)
 - Redo
-- toggle indent/unindent
-- toggle comment-line (e.g. # or //)
+- Toggle indent/unindent (shift '[',']')
+- Toggle comment-line (e.g. # or //) (shift '/')
 - File-Fantastic Integration
 - Syntax highlighting
-- keyboard input mode: ascii keyboard event input on x86 ('ki' mode)
+- Keyboard-Event/Keystroke input mode: ascii keyboard event input on x86 ('ki' mode)
 
 ## Future/Probably Scope:
 - Multi-cursor/ctrl+d functionality
 - Find/replace,
 - Search,
-- fuzzy search,
-- regex search,
-- build .rs for --version
-- extract line
-- extract header
+- Fuzzy search,
+- Regex search,
+- Linewrap (maybe)
+- Extract line (-el? --extract-line {int})
+- Extract header
 - Select:
 --1. ctrl+d superpower
 --2. search for selection
 --3. maybe crawl-count selection in file (though not all shown...)
 - Character encoding awareness
 - Encoding conversion (write in different encodings)
-- linewrap (maybe)
 
 ## Maybe:
 - go to function/definition
 - features from function_finder https://github.com/lineality/function_finder
+- Build .rs for --version
 
 ### File-Manager Integration
 - ff https://github.com/lineality/ff_file_manager_minimal_rust contains lines and allows Line/FF (It's File Fantastic!) to act as a mult-file single-session ~IDE, while keeping lines itself minimal.
@@ -162,10 +162,14 @@ Here are some of the questions and thought behind, below, and around, the Lines-
     cargo run --profile release-small
     cargo test --profile release-small --timings
     cargo build --profile release-small
+    cargo check --profile release-small --message-format=json
+    cargo check --profile release-small --message-format=json | jq 'select(.level == "error" or .level == "warning")'
 ```
 #### For more optimal performance (~17 mb)
 ```bash
     cargo run --profile release-performance
     cargo test --profile release-performance --timings
     cargo build --profile release-performance
+    cargo check --profile release-performance --message-format=json
+    cargo check --profile release-performance --message-format=json | jq 'select(.level == "error" or .level == "warning")'
 ```
