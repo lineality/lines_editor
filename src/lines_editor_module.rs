@@ -5,6 +5,9 @@
 /*
 See: "diagnostic" flag for debugging inspection
 
+// TODO: use/reuse general 256 buffer?
+// or have buffers in-function and remove 'general' buffers from state?
+
 # Abstract
 Lines is a minimal terminal text/hex file-editor,
 written from scratch in vanilla 2024-Rust with no third party crates or unsafe code,
@@ -252,6 +255,30 @@ Any code that violates the roles and policies is wrong or placeholder-code.
 - Byte viewing mode
 - Byte editing
 - some way to 'view raw characters' e.g. so that escape characters are shown and ideally entered to
+
+// ========================================================================
+// Get file position from cursor (defensive)
+// ========================================================================
+
+let current_file_pos = match lines_editor_state
+    .get_row_col_file_position(lines_editor_state.cursor.tui_row, lines_editor_state.cursor.tui_col)
+{
+    Ok(Some(pos)) => pos,
+    Ok(None) => {
+        // handling None case
+        let _ = lines_editor_state.set_info_bar_message("gh cursor position unavailable");
+        return Ok(());
+    }
+    Err(e) => {
+        let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
+        log_error(
+            &format!("goto_line_start window_map error: {}", e),
+            Some("goto_line_start"),
+        );
+        return Ok(());
+    }
+};
+let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
 
 */
 
@@ -6619,10 +6646,14 @@ impl EditorState {
     ///     term.suspend_raw_mode()             // -> cooked terminal
     ///     render_tui_utf8txt(self)            // renders like every other mode
     ///     term.activate_raw_mode()            // -> raw terminal (verified)
-    ///     n = term.read(&mut [0u8; 1])
+    ///     n = term.read(&mut [0u8; 3])         // VMIN=1: returns 1..=3 bytes
     ///     match n:
     ///         Ok(0)  -> EOF: break, set Normal
-    ///         Ok(_)  -> handle_keystroke_input_mode(self, byte, &read_copy)
+    ///         Ok(k)  -> if classify_arrow_bytes(&buf[0..k]) == Some(dir):
+    ///                       handle_arrow_key_input_mode(self, dir)   // checked
+    ///                   else:
+    ///                       for byte in &buf[0..k]:                  // A2, no drop
+    ///                           handle_single_byte_keystroke_input_mode(self, byte, &read_copy)  // checked
     ///         Err(_) -> break, set Normal
     /// (RawTerminal drops here -> terminal restored)
     /// return Ok(true)
@@ -6693,7 +6724,7 @@ impl EditorState {
     ///
     /// * `read_copy_path` - borrow of the read-copy file path. The CALLER (the
     ///   main loop) owns the clone and passes a borrow. This method passes that
-    ///   same borrow down to `handle_keystroke_input_mode` for every keystroke,
+    ///   same borrow down to `handle_single_byte_keystroke_input_mode` for every keystroke,
     ///   so the path is cloned exactly once per session (in the main loop), not
     ///   once per keystroke.
     ///
@@ -6707,9 +6738,14 @@ impl EditorState {
     /// # Defensive Notes
     ///
     /// - No `unwrap` / no panic.
-    /// - Single-byte read buffer `[0u8; 1]` (VMIN=1 delivers one byte at a time).
     /// - EOF, read errors, and activate-raw failures are handled, not ignored,
     ///   and always leave the editor in Normal mode.
+    /// - Read buffer `[0u8; 3]` sized for one 3-byte arrow escape sequence.
+    ///   VMIN=1 means read returns 1..=3 bytes (it does NOT wait for 3). An
+    ///   exact 3-byte arrow match is dispatched as one arrow; any other 1..=3
+    ///   bytes are dispatched per-byte so none is dropped (A2). Handler return
+    ///   values are checked, not discarded: Ok(false) is unexpected in this
+    ///   mode and recovers to Normal.
     fn handle_keystroke_input_session(&mut self, read_copy_path: &Path) -> Result<bool> {
         // ---------------------------------------------------------------------
         // Step 1: Enter raw terminal mode (RAII).
@@ -6742,9 +6778,22 @@ impl EditorState {
         // ---------------------------------------------------------------------
         // Step 2: Keystroke read loop (cooked-render / raw-read cycle).
         // ---------------------------------------------------------------------
-        // Single-byte buffer: raw mode is configured VMIN=1, VTIME=0, so read
-        // blocks until exactly one byte is available, then returns it.
-        let mut byte_buffer = [0u8; 1];
+        // Read buffer is sized for the largest single keystroke unit we classify
+        // atomically: a 3-byte arrow escape sequence (0x1B 0x5B 0x41..=0x44).
+        //
+        // The terminal is configured VMIN=1, VTIME=0: read returns as soon as
+        // AT LEAST one byte is available, delivering up to 3 bytes if that many
+        // have already arrived. Therefore:
+        //   - A one-keypress arrow whose 3 bytes arrive together returns n == 3
+        //     and is classified as a single arrow by classify_arrow_bytes.
+        //   - read does NOT wait for 3 bytes. A lone byte still returns n == 1
+        //     (e.g. one typed character, or the first byte of a FRAGMENTED arrow
+        //     over a slow link — see classify_arrow_bytes' fragmentation note).
+        //   - Fast/pasted typing may return n == 2 or n == 3 printable bytes in
+        //     one read. We MUST dispatch each of those bytes (the per-byte loop
+        //     below), or enlarging this buffer from [0u8; 1] to [0u8; 3] would
+        //     silently drop trailing bytes — a regression we explicitly avoid.
+        let mut byte_buffer = [0u8; 3];
 
         // Loop while we remain in keystroke-input mode. ESC flips the mode to
         // Normal (via the dispatcher), which ends this loop.
@@ -6816,21 +6865,111 @@ impl EditorState {
                     break;
                 }
 
-                // Got a byte: dispatch it. The dispatcher maps it to the right
-                // action (or silently ignores it). ESC will flip self.mode to
-                // Normal inside the dispatcher, ending this loop next iteration.
-                Ok(_n) => {
-                    let keystroke = byte_buffer[0];
+                // // Got a byte: dispatch it. The dispatcher maps it to the right
+                // // action (or silently ignores it). ESC will flip self.mode to
+                // // Normal inside the dispatcher, ending this loop next iteration.
+                // Ok(_n) => {
+                //     let keystroke = byte_buffer[0];
 
-                    // The dispatcher returns Ok(true) to keep running. It only
-                    // returns Err on a genuinely unrecoverable I/O failure from
-                    // an edit; we propagate that (terminal still restored on
-                    // Drop). It never returns Ok(false) in this mode.
-                    let _keep_running =
-                        handle_keystroke_input_mode(self, keystroke, read_copy_path)?;
+                //     // The dispatcher returns Ok(true) to keep running. It only
+                //     // returns Err on a genuinely unrecoverable I/O failure from
+                //     // an edit; we propagate that (terminal still restored on
+                //     // Drop). It never returns Ok(false) in this mode.
+                //     let _keep_running =
+                //         handle_single_byte_keystroke_input_mode(self, keystroke, read_copy_path)?;
 
-                    // _keep_running is always true here; the loop exit is driven
-                    // by self.mode (set to Normal by ESC), not by this value.
+                //     // _keep_running is always true here; the loop exit is driven
+                //     // by self.mode (set to Normal by ESC), not by this value.
+                // }
+
+                // Got at least one byte. First try to classify the whole read as
+                // a single 3-byte arrow escape sequence. If it is NOT an arrow,
+                // dispatch each returned byte individually so no byte is dropped.
+                //
+                // bytes_read is the count read returned (guaranteed 1..=3 here:
+                // Ok(0) is handled by the EOF arm above, and the buffer is 3
+                // bytes wide). We slice byte_buffer to exactly the filled region.
+                Ok(bytes_read) => {
+                    // Defensive: clamp the slice end to the buffer length so a
+                    // bogus oversized count (bit-flip / driver bug) cannot index
+                    // out of bounds. min() makes this branch-safe with no panic.
+                    let filled_end = bytes_read.min(byte_buffer.len());
+                    let filled_buffer = &byte_buffer[0..filled_end];
+
+                    // ---- Arrow path: exact 3-byte escape sequence only. ----
+                    if let Some(arrow_direction) = classify_arrow_bytes(filled_buffer) {
+                        // Map the classified direction to a cursor-move command.
+                        // The returned bool is the keep-running flag; loop exit is
+                        // driven by self.mode, not by this value, but we check it
+                        // defensively rather than discarding it (see below).
+                        match handle_arrow_key_input_mode(self, arrow_direction)? {
+                            true => {
+                                // Expected: keep running. Loop continues; exit is
+                                // governed by self.mode (set to Normal by ESC).
+                            }
+                            false => {
+                                // Not expected in this mode: cursor moves never
+                                // request termination. Treat an Ok(false) as an
+                                // unexpected contract change and recover safely
+                                // rather than silently ignoring it.
+                                #[cfg(debug_assertions)]
+                                eprintln!(
+                                    "hkis: arrow handler returned Ok(false) (unexpected); exiting ki mode"
+                                );
+
+                                log_error(
+                                    "ki arrow unexpected stop",
+                                    Some("handle_keystroke_input_session:arrow"),
+                                );
+
+                                self.mode = EditorMode::Normal;
+                                break;
+                            }
+                        }
+                    } else {
+                        // ---- Per-byte path (A2): dispatch every read byte. ----
+                        // Not an arrow. This covers a single typed character
+                        // (n == 1) AND fast/pasted multi-byte text (n == 2..=3)
+                        // AND the individual bytes of non-arrow escape sequences
+                        // (which the single-byte dispatcher silently ignores).
+                        //
+                        // We iterate over the filled slice so NO byte is dropped.
+                        // ESC (0x1B) appearing here as a lone byte flips self.mode
+                        // to Normal inside the dispatcher; the for-loop then
+                        // finishes its remaining (if any) bytes for this read, and
+                        // the while-condition ends the session next iteration.
+                        for &single_byte in filled_buffer {
+                            // The dispatcher returns Ok(true) to keep running, or
+                            // Err on a genuinely unrecoverable edit I/O failure
+                            // (propagated; terminal restored on Drop). We check
+                            // the bool explicitly rather than discarding it.
+                            match handle_single_byte_keystroke_input_mode(
+                                self,
+                                single_byte,
+                                read_copy_path,
+                            )? {
+                                true => {
+                                    // Expected: keep running.
+                                }
+                                false => {
+                                    // Not expected in this mode (no quit command).
+                                    // Recover safely instead of ignoring it.
+                                    #[cfg(debug_assertions)]
+                                    eprintln!(
+                                        "hkis: single-byte handler returned Ok(false) (unexpected); exiting ki mode"
+                                    );
+
+                                    log_error(
+                                        "ki byte unexpected stop",
+                                        Some("handle_keystroke_input_session:byte"),
+                                    );
+
+                                    self.mode = EditorMode::Normal;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Read error: the terminal became unavailable. Break and recover.
@@ -7495,7 +7634,7 @@ impl EditorState {
             // Defensive: Check if filename is empty after trimming
             // Catches: "sa", "sa ", "sa   "
             if filename_str.is_empty() {
-                let _ = self.set_info_bar_message("Usage: sa filename");
+                let _ = self.set_info_bar_message("Use: sa FILENAME");
                 return Command::None;
             }
 
@@ -7884,7 +8023,7 @@ impl EditorState {
         }
 
         // Parse command as utf-8 from bytes
-        // // Ignore invalid UTF-8
+        // Ignore invalid UTF-8
         let command_str = std::str::from_utf8(&command_buffer[..bytes_read]).unwrap_or("");
 
         // Normal/Visual mode: parse as command
@@ -7952,9 +8091,9 @@ impl EditorState {
     fn set_info_bar_message(&mut self, message: &str) -> Result<()> {
         // ensure buffer exists and has known capacity
         //
-        //    =================================================
-        // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        //    =================================================
+        //  =================================================
+        //  Debug-Assert, Test-Asset, Production-Catch-Handle
+        //  =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -8248,9 +8387,9 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
             }
         };
 
-        //    =================================================
-        // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        //    =================================================
+        // =================================================
+        // Debug-Assert, Test-Asset, Production-Catch-Handle
+        // =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -8364,9 +8503,9 @@ pub fn pasty_paste_mode<R: BufRead>(absolute_path: &Path, stdin_handle: &mut R) 
             }
         };
 
-        //    =================================================
-        // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        //    =================================================
+        // =================================================
+        // Debug-Assert, Test-Asset, Production-Catch-Handle
+        // =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -9081,11 +9220,6 @@ pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path
         let (line_bytes, line_length, found_newline) =
             read_single_line(&mut file, &mut line_buffer)?;
 
-        // // Check for end of file
-        // if line_length == 0 && !found_newline {
-        //     break; // End of file reached
-        // }
-
         // Check for end of file
         if line_length == 0 && !found_newline {
             // EOL detected - record position for cursor movement boundaries
@@ -9547,9 +9681,9 @@ pub fn save_file_as_newfile_with_newname(
     // Validate paths before any I/O operations to fail fast on invalid input.
     // This prevents wasted work and provides clear error messages early.
 
-    //    =================================================
-    // // Debug-Assert, Test-Asset, Production-Catch-Handle
-    //    =================================================
+    // =================================================
+    // Debug-Assert, Test-Asset, Production-Catch-Handle
+    // =================================================
     // Check: original path must be absolute
     debug_assert!(
         original_file_path.is_absolute(),
@@ -10012,6 +10146,18 @@ fn save_file(state: &mut EditorState) -> io::Result<()> {
 /// - Stops at newline character (0x0A)
 /// - Stops if buffer is full
 /// - Returns found_newline flag to distinguish EOF from empty line
+///
+/// # For Diagnostics: print bytes read so far
+/// if iterations % 10 == 0 {
+///     println!("Iterations: {}, Bytes read: {}", iterations, bytes_read);
+/// }
+///
+///  // Diagnostics: print
+/// println!(
+///     "Final bytes read: {}, Found newline: {}",
+///     bytes_read, found_newline
+/// );
+///
 fn read_single_line<'a>(
     file: &'a mut File,
     buffer: &'a mut [u8; 4096],
@@ -10025,11 +10171,6 @@ fn read_single_line<'a>(
 
     while bytes_read < buffer.len() && iterations < limits::LINE_READ_BYTES {
         iterations += 1;
-
-        // // Diagnostics: print bytes read so far
-        // if iterations % 10 == 0 {
-        //     println!("Iterations: {}, Bytes read: {}", iterations, bytes_read);
-        // }
 
         // Read one byte at a time (inefficient but simple for MVP)
         match file.read(&mut single_byte)? {
@@ -10052,11 +10193,6 @@ fn read_single_line<'a>(
             }
         }
     }
-    // // Diagnostics: print
-    // println!(
-    //     "Final bytes read: {}, Found newline: {}",
-    //     bytes_read, found_newline
-    // );
 
     // Assertion: We should have stayed within bounds
     debug_assert!(bytes_read <= buffer.len(), "Read exceeded buffer size");
@@ -10296,24 +10432,24 @@ fn get_utf8_char_byte_length_from_buffer(buffer: &[u8], index: usize) -> Result<
 ///
 /// # Example
 /// ```ignore
-/// // File line: "hello世界" (hello + two 3-byte Chinese characters)
-/// // File bytes: [h e l l o 世(E4B896) 界(E7958C)]
-/// // Positions:  0 1 2 3 4 5  6  7    8  9  10
-/// //
-/// // With horizontal_offset=0, col_start=2 (after "1 "):
-/// // Display: "1 hello世界"
-/// // Columns:  0 1 2 3 4 5 6 7 8 9 10 11
-/// //              ^ h e l l o 世世界界
-/// //
-/// // Window map:
-/// // Col 2 → file byte 0 ('h')
-/// // Col 3 → file byte 1 ('e')
-/// // ...
-/// // Col 7 → file byte 5 ('世' start)
-/// // Col 8 → file byte 5 ('世' second column, same byte)
-/// // Col 9 → file byte 8 ('界' start)
-/// // Col 10 → file byte 8 ('界' second column, same byte)
-/// ```
+/// File line: "hello世界" (hello + two 3-byte Chinese characters)
+/// File bytes: [h e l l o 世(E4B896) 界(E7958C)]
+/// Positions:  0 1 2 3 4 5  6  7    8  9  10
+///
+/// With horizontal_offset=0, col_start=2 (after "1 "):
+/// Display: "1 hello世界"
+/// Columns:  0 1 2 3 4 5 6 7 8 9 10 11
+///              ^ h e l l o 世世界界
+///
+/// Window map:
+/// Col 2 → file byte 0 ('h')
+/// Col 3 → file byte 1 ('e')
+/// ...
+/// Col 7 → file byte 5 ('世' start)
+/// Col 8 → file byte 5 ('世' second column, same byte)
+/// Col 9 → file byte 8 ('界' start)
+/// Col 10 → file byte 8 ('界' second column, same byte)
+/// ``/`
 fn process_line_with_offset(
     state: &mut EditorState,
     row: usize,
@@ -10736,13 +10872,6 @@ fn process_line_with_offset(
     // The byte_index now points to the next byte after the last displayed character.
 
     let eol_display_col = display_col; // Column right after last char
-
-    // TODO showing newline?
-    // // Write visible newline character (e.g., ␊ or ▚)
-    // let newline_char = "␊".as_bytes(); // or whatever your chosen glyph is
-    // state.utf8_txt_display_buffers[row][eol_display_col] = b'·'.as_bytes();
-    // state.utf8_txt_display_buffers[row][eol_display_col] = b'`'; // or b'$' or b'|'
-    // // note: this displays not at the newline but before it
 
     if eol_display_col < display_col_limit {
         let eol_file_pos = FilePosition {
@@ -11726,37 +11855,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             3. Horizontal offset.
             4. Number of TUI horizontal character-spaces (window size)
             5. Number of TUI vertical character-spaces (window size)
-            6. width of line-number display, or how many character-spaces plus padding the line number takes up in the TUI, e.g. ' 99 ' takes up four single-width characters (not needed for simple functionality)
-
+            6. width of line-number display, or how many character-spaces
+            plus padding the line number takes up in the TUI,
+            e.g. ' 99 ' takes up four single-width characters
+            (not needed for simple functionality)
             */
-
-            /*
-            note for backup: position available...
-            but abs state field seems to be working (mostly)
-             */
-            // // ========================================================================
-            // // STEP 1: Get file position from cursor (defensive)
-            // // ========================================================================
-
-            // let current_file_pos = match lines_editor_state
-            //     .get_row_col_file_position(lines_editor_state.cursor.tui_row, lines_editor_state.cursor.tui_col)
-            // {
-            //     Ok(Some(pos)) => pos,
-            //     Ok(None) => {
-            //         // handling None case
-            //         let _ = lines_editor_state.set_info_bar_message("gh cursor position unavailable");
-            //         return Ok(());
-            //     }
-            //     Err(e) => {
-            //         let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
-            //         log_error(
-            //             &format!("goto_line_start window_map error: {}", e),
-            //             Some("goto_line_start"),
-            //         );
-            //         return Ok(());
-            //     }
-            // };
-            // let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
 
             // =========================
             // position state inspection
@@ -12468,8 +12571,22 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // Log error and continue (non-fatal)
                     log_error("Cannot clear redo logs", Some("Command DeleteBackspace"));
-                    let _ = lines_editor_state.set_info_bar_message("Redo clear failed");
-
+                    // Best-effort user notice. The info-bar message is itself
+                    // non-critical: if it fails we do NOT abort the insert (the edit
+                    // still proceeds). We observe the failure in debug builds rather
+                    // than discarding it via `let _ = ...`.
+                    match lines_editor_state.set_info_bar_message("redo clear failed") {
+                        Ok(_) => {}
+                        Err(_e) => {
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "hskim: set_info_bar_message(redo clear failed) failed: {:?}",
+                                _e
+                            );
+                            // No production log here: this is a notice-about-a-notice;
+                            // the redo-clear failure itself was already logged above.
+                        }
+                    }
                     false // Treat error as failure
                 }
             };
@@ -13313,6 +13430,184 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     Ok(())
 }
 
+/// Identifies which arrow key was pressed, after the raw 3-byte escape
+/// sequence has been classified by the session loop.
+///
+/// # Project Context
+///
+/// In `EditorMode::KeystrokeInputMode`, arrow keys arrive from a raw terminal
+/// as a 3-byte escape sequence (`0x1B 0x5B 0x41..=0x44`), NOT as a single byte
+/// like printable ASCII. The session loop (`handle_keystroke_input_session`)
+/// reads up to 3 bytes per `read()`, classifies an exact arrow match into one
+/// of these variants via `classify_arrow_bytes`, and hands the variant to
+/// `handle_arrow_key_input_mode`.
+///
+/// This enum exists so that the byte-pattern match happens exactly ONCE (in the
+/// session loop), and the arrow handler receives an already-classified,
+/// type-safe direction rather than re-matching raw bytes. This keeps each
+/// function's scope narrow: the session loop classifies; the arrow handler maps
+/// direction to a cursor-move `Command`.
+///
+/// # Byte Sequences (raw terminal, decimal / hex)
+///
+/// | Variant     | Bytes (hex)         | Bytes (decimal) |
+/// |-------------|---------------------|-----------------|
+/// | `UpArrow`    | `0x1B 0x5B 0x41`    | `27 91 65`      |
+/// | `DownArrow`  | `0x1B 0x5B 0x42`    | `27 91 66`      |
+/// | `RightArrow` | `0x1B 0x5B 0x43`    | `27 91 67`      |
+/// | `LeftArrow`  | `0x1B 0x5B 0x44`    | `27 91 68`      |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArrowKeyDirection {
+    UpArrow,
+    DownArrow,
+    LeftArrow,
+    RightArrow,
+}
+
+/// Classifies a freshly-read raw-terminal byte buffer as an arrow key, if and
+/// only if it is an EXACT 3-byte arrow escape sequence.
+///
+/// # Project Context
+///
+/// Called by `handle_keystroke_input_session` immediately after each `read()`
+/// into the 3-byte buffer. This function is the single point where the arrow
+/// byte-pattern is matched. It returns:
+///   - `Some(direction)` ONLY when the buffer is exactly the 3 bytes of a known
+///     arrow sequence.
+///   - `None` for everything else, in which case the session loop must dispatch
+///     the bytes individually through the single-byte path (so that no byte is
+///     dropped — see the session loop's per-byte dispatch).
+///
+/// # Why `n` (the byte count) Matters
+///
+/// `read()` returns how many bytes it actually placed in the buffer. We are
+/// passed exactly that filled slice (`&buf[0..n]`). An arrow is recognized ONLY
+/// when:
+///   - the slice length is exactly 3, AND
+///   - the slice equals `[0x1B, 0x5B, 0x41..=0x44]`.
+///
+/// A length of 3 by itself does NOT mean "arrow": three printable bytes (e.g. a
+/// fast-typed or pasted "abc") also produce a length-3 slice. Those do not match
+/// the pattern (printable bytes are never `0x1B`), so this returns `None` and
+/// they go down the per-byte path. There is therefore no collision between
+/// "three printable bytes" and "one arrow key."
+///
+/// # Fragmentation Limitation (documented, accepted for now)
+///
+/// On a fast local terminal a single arrow keypress arrives as all 3 bytes in
+/// one `read()`. Over slow or remote links the kernel MAY split the sequence
+/// across multiple reads (e.g. `0x1B` alone, then `0x5B 0x41`). In that case the
+/// first read is a length-1 `0x1B`, which the single-byte path treats as ESC
+/// (enter Normal mode), and the trailing bytes are then dispatched individually.
+/// Handling fragmented sequences robustly requires an ESC-pending state machine
+/// with a read timeout; that is a deliberate future step, not implemented here.
+///
+/// # Arguments
+///
+/// * `filled_buffer` - the slice of bytes actually read this iteration
+///   (`&byte_buffer[0..bytes_read]`).
+///
+/// # Returns
+///
+/// * `Some(ArrowKeyDirection)` if the slice is an exact arrow sequence.
+/// * `None` otherwise.
+fn classify_arrow_bytes(filled_buffer: &[u8]) -> Option<ArrowKeyDirection> {
+    // An arrow sequence is exactly 3 bytes. Anything else cannot be an arrow.
+    if filled_buffer.len() != 3 {
+        return None;
+    }
+
+    // First two bytes of every arrow sequence are ESC ('0x1B') then '[' (0x5B).
+    if filled_buffer[0] != 0x1B || filled_buffer[1] != 0x5B {
+        return None;
+    }
+
+    // The third byte selects the direction.
+    match filled_buffer[2] {
+        0x41 => Some(ArrowKeyDirection::UpArrow),
+        0x42 => Some(ArrowKeyDirection::DownArrow),
+        0x43 => Some(ArrowKeyDirection::RightArrow),
+        0x44 => Some(ArrowKeyDirection::LeftArrow),
+        // 0x1B 0x5B followed by anything else is some other escape sequence
+        // (Home/End/Page/F-keys/etc.) — not an arrow. Caller will dispatch the
+        // bytes individually (and the single-byte path ignores the unknowns).
+        _ => None,
+    }
+}
+
+/// Maps a classified arrow-key direction to the corresponding cursor-move
+/// command, in `EditorMode::KeystrokeInputMode`.
+///
+/// # Project Context
+///
+/// This is the arrow-key counterpart to the single-byte dispatcher. The session
+/// loop (`handle_keystroke_input_session`) classifies the raw 3-byte arrow
+/// escape sequence into an `ArrowKeyDirection` (via `classify_arrow_bytes`) and
+/// calls this function. This function does NOT read input, does NOT own the
+/// terminal, and does NOT render — it only maps one direction to one cursor-move
+/// `Command`.
+///
+/// Separation of concerns:
+/// - `handle_keystroke_input_session` : owns RawTerminal, reads bytes, renders,
+///   classifies arrows vs. single bytes, handles EOF / read-error / mode exit.
+/// - `classify_arrow_bytes`           : recognizes the exact 3-byte arrow pattern.
+/// - `handle_arrow_key_input_mode`    : maps an `ArrowKeyDirection` to a
+///   `Command::Move*` (this function).
+/// - the single-byte dispatcher        : maps one non-arrow byte to one action.
+///
+/// # Direction → Command Mapping
+///
+/// | Direction    | Command            |
+/// |--------------|--------------------|
+/// | `UpArrow`    | `Command::MoveUp`   |
+/// | `DownArrow`  | `Command::MoveDown` |
+/// | `LeftArrow`  | `Command::MoveLeft` |
+/// | `RightArrow` | `Command::MoveRight`|
+///
+/// # Rebuild / Render Policy
+///
+/// Cursor moves route through `execute_command`, exactly like backspace and
+/// newline do. The session loop renders unconditionally at the top of its next
+/// iteration, so any cursor/window change made by the move command is painted
+/// then. This function therefore does NOT call `build_windowmap_nowrap` itself
+/// (matching the backspace/newline policy, NOT the printable-byte exception
+/// which bypasses `execute_command`). If testing later shows a cursor move needs
+/// an explicit rebuild here, it can be added at that point.
+///
+/// # Arguments
+///
+/// * `lines_editor_state` - mutable editor state (cursor, window, buffers, etc.).
+/// * `arrow_direction`    - the already-classified arrow direction.
+///
+/// # Returns
+///
+/// * `Ok(true)` - editor loop should keep running. Cursor moves never request
+///   loop termination, so the propagated `bool` from `execute_command` is the
+///   running flag (currently always `true` for `Move*` commands; we forward
+///   whatever `execute_command` returns rather than hard-coding `true`, so this
+///   stays honest if a move command's contract ever changes).
+/// * `Err(LinesError)` - propagated from `execute_command` on a genuinely
+///   unrecoverable failure; the session restores the terminal on the way out
+///   (RawTerminal Drop).
+///
+/// # Defensive Notes
+///
+/// - No `unwrap` / no panic.
+/// - The direction is type-checked (`ArrowKeyDirection`), so there is no
+///   "unknown direction" case to handle here; classification already rejected
+///   non-arrow sequences upstream.
+fn handle_arrow_key_input_mode(
+    lines_editor_state: &mut EditorState,
+    arrow_direction: ArrowKeyDirection,
+) -> Result<bool> {
+    match arrow_direction {
+        ArrowKeyDirection::UpArrow => execute_command(lines_editor_state, Command::MoveUp(1)),
+        ArrowKeyDirection::DownArrow => execute_command(lines_editor_state, Command::MoveDown(1)),
+        ArrowKeyDirection::LeftArrow => execute_command(lines_editor_state, Command::MoveLeft(1)),
+        ArrowKeyDirection::RightArrow => execute_command(lines_editor_state, Command::MoveRight(1)),
+    }
+}
+
 /// Dispatches a single keystroke byte to the correct editor action.
 ///
 /// # Project Context
@@ -13325,7 +13620,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 /// Separation of concerns:
 /// - `handle_keystroke_input_session` : owns RawTerminal, reads bytes, renders,
 ///   handles EOF / read-error / mode-flag termination.
-/// - `handle_keystroke_input_mode`    : maps a single byte to a single action
+/// - `handle_single_byte_keystroke_input_mode`    : maps a single byte to a single action
 ///   (this function).
 ///
 /// # Byte Dispatch Table
@@ -13395,13 +13690,22 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 ///
 /// # Returns
 ///
-/// * `Ok(true)`  - editor loop should keep running (always, in this mode)
+/// * `Ok(true)`  - editor loop should keep running. In the current command set
+///   every handled byte yields `Ok(true)`: ESC routes through
+///   `EnterNormalMode` (which returns the keep-running flag and flips the mode),
+///   edits return the keep-running flag, and ignored bytes return `Ok(true)`
+///   directly. The session loop CHECKS this value rather than assuming it: an
+///   `Ok(false)` (no quit command exists in this mode today) is treated by the
+///   caller as an unexpected contract violation and triggers a safe recovery to
+///   Normal mode — it is not silently ignored.
+/// * `Ok(false)` - reserved/unexpected in this mode; see above. This function
+///   does not currently produce it, but the type permits it and the caller
+///   handles it defensively.
 /// * `Err(LinesError)` - a propagated error from an edit or command. Edit
-///                       functions are written to handle their own non-critical
-///                       failures internally (logging, info-bar) and return Ok;
-///                       a returned Err here is a genuinely unrecoverable I/O
-///                       failure and is propagated to the session, which will
-///                       restore the terminal (RawTerminal Drop) on the way out.
+///   functions handle their own non-critical failures internally (logging,
+///   info-bar) and return Ok; a returned Err here is a genuinely unrecoverable
+///   I/O failure and is propagated to the session, which restores the terminal
+///   (RawTerminal Drop) on the way out.
 ///
 /// # Defensive Notes
 ///
@@ -13409,7 +13713,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 /// - Unknown bytes are silently ignored (handle-and-move-on): no edit, no log,
 ///   no state change. This is the correct behavior for arrow keys, Tab, and
 ///   stray escape-sequence fragments delivered one byte at a time in raw mode.
-fn handle_keystroke_input_mode(
+fn handle_single_byte_keystroke_input_mode(
     lines_editor_state: &mut EditorState,
     keystroke: u8,
     read_copy_path: &Path,
@@ -13477,7 +13781,7 @@ fn handle_keystroke_input_mode(
                 // Terse, no-PII log + info-bar note. Non-fatal.
                 log_error(
                     "Cannot clear redo logs",
-                    Some("handle_keystroke_input_mode:printable"),
+                    Some("handle_single_byte_keystroke_input_mode:printable"),
                 );
                 let _ = lines_editor_state.set_info_bar_message("redo clear failed");
             }
@@ -15725,8 +16029,8 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
 /// - Never loads full file
 /// - Bounded iteration with MAX_FILE_SIZE check
 fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -> io::Result<()> {
-    // use normalize_sort_sanitize_selection_range() before this function
-    // // Defensive: Validate range
+    // Use normalize_sort_sanitize_selection_range() before this function
+    // Defensive: Validate range
     if start_byte >= end_byte {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -16566,7 +16870,7 @@ fn insert_newline_at_cursor_chunked(
 /// # Example Usage
 ///
 /// ```ignore
-/// // Insert another file at current cursor position
+/// Insert another file at current cursor position
 /// let source = Path::new("/home/user/snippet.txt");
 /// match insert_file_at_cursor(&mut state, source) {
 ///     Ok(()) => {
@@ -16805,9 +17109,9 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
 
         // Defensive assertion: bytes_read should never exceed buffer size
         //
-        //    =================================================
-        // // Debug-Assert, Test-Asset, Production-Catch-Handle
-        //    =================================================
+        // =================================================
+        // Debug-Assert, Test-Asset, Production-Catch-Handle
+        // =================================================
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
@@ -18508,11 +18812,11 @@ pub fn copy_selection_to_clipboardfile(
 ///
 /// # Examples
 /// ```ignore
-/// // Forward selection: bytes 10-20
+///  // Forward selection: bytes 10-20
 /// is_in_selection(15, 10, 20) → true
 /// is_in_selection(5, 10, 20) → false
 ///
-/// // Backward selection: bytes 20-10
+///  // Backward selection: bytes 20-10
 /// is_in_selection(15, 20, 10) → true
 /// is_in_selection(5, 20, 10) → false
 /// ```
@@ -18560,10 +18864,10 @@ fn normalize_sort_sanitize_selection_range(start: u64, end: u64) -> Result<(u64,
 ///
 /// # Example
 /// ```ignore
-/// // 花 (U+82B1) = E8 8A B1 (3 bytes) at position 7
+///  // 花 (U+82B1) = E8 8A B1 (3 bytes) at position 7
 /// find_utf8_char_end(path, 7) → Ok(9)  // Last byte at position 9
 ///
-/// // ASCII 'a' = 0x61 (1 byte) at position 5
+///  // ASCII 'a' = 0x61 (1 byte) at position 5
 /// find_utf8_char_end(path, 5) → Ok(5)  // Last byte at position 5
 /// ```
 pub fn find_utf8_char_end(file_path: &Path, char_start_byte: u64) -> Result<u64> {
@@ -18700,9 +19004,9 @@ pub fn generate_clipboard_filename(
 
     // Debug-Assert: Validate byte range in debug builds
     //
-    //    =================================================
-    // // Debug-Assert, Test-Asset, Production-Catch-Handle
-    //    =================================================
+    // =================================================
+    // Debug-Assert, Test-Asset, Production-Catch-Handle
+    // =================================================
     // This is not included in production builds
     // assert: only when running in a debug-build: will panic
     debug_assert!(start_byte <= end_byte, "start_byte must be <= end_byte");
@@ -18993,8 +19297,8 @@ pub fn generate_clipboard_filename(
 /// ```no_run
 /// # use std::path::Path;
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// // Copy bytes 10 through 20 (inclusive) from source.txt
-/// // and append them to the end of target.txt
+///  Copy bytes 10 through 20 (inclusive) from source.txt
+///  and append them to the end of target.txt
 /// append_bytes_from_file_to_file(
 ///     Path::new("/absolute/path/to/source.txt"),
 ///     10,
@@ -19013,13 +19317,13 @@ pub fn generate_clipboard_filename(
 /// let source = Path::new("/data/large_file.dat");
 /// let output = Path::new("/data/output.dat");
 ///
-/// // Append header (first 512 bytes)
+///  Append header (first 512 bytes)
 /// append_bytes_from_file_to_file(source, 0, 511, output)?;
 ///
-/// // Append specific data section (bytes 1024-2047)
+///  Append specific data section (bytes 1024-2047)
 /// append_bytes_from_file_to_file(source, 1024, 2047, output)?;
 ///
-/// // Append footer (last 256 bytes, assuming we know the positions)
+///  Append footer (last 256 bytes, assuming we know the positions)
 /// append_bytes_from_file_to_file(source, 999744, 999999, output)?;
 /// # Ok(())
 /// # }
@@ -19377,7 +19681,7 @@ pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<
 ///
 /// ## Example
 /// ```rust
-/// // In main display loop:
+///  // In main display loop:
 /// write_formatted_navigation_legend_to_tui()?;
 /// ```
 fn format_pasty_tui_legend() -> Result<()> {
@@ -20123,7 +20427,8 @@ pub fn print_help() {
     println!("                    Creates dated files in ~/Documents/lines_editor/");
     println!("    Full Editor:    Run from any other directory");
     println!("    n               Normal-Mode (navigation)");
-    println!("    i               Insert-Mode (typing in text)");
+    println!("    i               Insert-Mode (type in text, delete previous)");
+    println!("    ki              Keystroke Insert-Mode (type in text, delete previous)");
     println!("    v               Visual/Select-Mode (select and act on selections");
     println!("    hex             Hex Editor Mode");
     println!("    p | pasty       Clipboard / Paste Mode");
@@ -20298,7 +20603,8 @@ MODES:
                     Creates dated files in ~/Documents/lines_editor/
     Full Editor:    Run from any other directory
     n               Normal-Mode (navigation)
-    i               Insert-Mode (typing in text)
+    i               Insert-Mode (type in text, delete previous)
+    ki              Keystroke Insert-Mode (type in text, del previous)
     v               Visual/Select-Mode (select and act on selections
     hex             Hex Editor Mode
     p | pasty       Clipboard / Paste Mode
@@ -22546,7 +22852,7 @@ fn render_utf8txt_row_with_cursor(
 /// # Crash Recovery Use Case
 /// When recovering from a crash or interrupted session:
 /// ```rust
-/// // User provides the session directory they want to recover
+///  // User provides the session directory they want to recover
 /// let recovery_path = PathBuf::from("lines_data/sessions/20250103_143022");
 /// initialize_session_directory(&mut state, timestamp, Some(recovery_path))?;
 /// ```
@@ -22809,7 +23115,7 @@ pub fn initialize_session_directory(
 /// ```rust
 /// let timestamp = "2025_01_15_14_30_45".to_string();
 /// let session_path = simple_make_lines_editor_session_directory(timestamp)?;
-/// // session_path is now: "/path/to/exe/lines_data/sessions/2025_01_15_14_30_45"
+///  // session_path is now: "/path/to/exe/lines_data/sessions/2025_01_15_14_30_45"
 /// ```
 pub fn simple_make_lines_editor_session_directory(
     session_time_stamp: String,
@@ -22971,9 +23277,12 @@ pub fn lines_full_file_editor(
 
     // Resolve target file path (all path handling logic extracted)
     let target_path = resolve_target_file_path(original_file_path)?;
-    // // Diagnostic
-    // println!("\n=== Opening Lines Editor ==="); // TODO remove/commentout debug print
-    // println!("File: {}", target_path.display());
+
+    #[cfg(debug_assertions)]
+    {
+        println!("\n=== Opening Lines Editor ===");
+        println!("File: {}", target_path.display());
+    }
 
     // Create file if it doesn't exist
     if !target_path.exists() {
@@ -23241,8 +23550,8 @@ pub fn lines_fullfile_editor_core(
     let read_copy_path =
         create_a_readcopy_of_file(&target_path, session_dir, session_time_stamp2.to_string())?;
 
-    // // Diagnostic
-    // println!("Read-copy: {}", read_copy_path.display());
+    #[cfg(debug_assertions)]
+    println!("Read-copy: {}", read_copy_path.display());
 
     // Initialize window position
     lines_editor_state.line_count_at_top_of_window = 0;
@@ -23292,11 +23601,6 @@ pub fn lines_fullfile_editor_core(
         .clone()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "No read copy path"))?;
 
-    // // diagnostic
-    // // Now we can mutably borrow lines_editor_state
-    // let lines_processed = build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
-    // println!("Loaded {} lines", lines_processed); // TODO remove/commentout debug line
-
     // Now we can mutably borrow lines_editor_state
     let _ = build_windowmap_nowrap(&mut lines_editor_state, &read_copy)?;
 
@@ -23311,17 +23615,14 @@ pub fn lines_fullfile_editor_core(
     // and Bucket Brigade! for text input:
     let mut command_buffer = [0u8; WHOLE_COMMAND_BUFFER_SIZE];
 
-    // TODO: use/reuse general 256 buffer
+    // TODO: use/reuse general 256 buffer?
+    // or have buffers in-function and remove 'general' buffers from state?
     let mut text_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
     let stdin = io::stdin();
     let mut stdin_handle = stdin.lock(); // Lock stdin once for entire session
 
     // Defensive: Limit loop iterations to prevent infinite loops
     let mut iteration_count = 0;
-
-    // // boot strap Render TUI (convert LinesError to io::Error)
-    // render_tui_utf8txt(&lines_editor_state)
-    //     .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Display error: {}", e)))?;
 
     //  ///////////////////////////////
     //  Main Loop for Full Lines Editor

@@ -524,6 +524,7 @@ fn apply_alignment<'a>(value: &str, spec: FormatSpec, buf: &'a mut [u8]) -> Opti
 // DIRECT TERMINAL OUTPUT - TRUE ZERO HEAP
 // =============================================================================
 
+// Q: could 'args' be an 'option'?
 /// Writes formatted output directly to stdout without any intermediate allocation.
 ///
 /// ## Project Context
