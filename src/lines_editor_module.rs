@@ -23496,7 +23496,7 @@ pub fn lines_fullfile_editor_core(
     Ok(true)
 }
 
-// Keep This
+// ** Keep This **
 //  /// This is a template for calling the lines module
 //  /// Main entry point - routes between memo mode and full editor mode
 //  ///

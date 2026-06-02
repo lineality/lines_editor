@@ -48,6 +48,10 @@ const SOURCE_FILES: &[SourcedFile] = &[
         "src/buffy_format_write_module.rs",
         include_str!("buffy_format_write_module.rs"),
     ),
+    SourcedFile::new(
+        "src/raw_terminal_x86_module.rs",
+        include_str!("raw_terminal_x86_module.rs"),
+    ),
     SourcedFile::new("src/tests.rs", include_str!("tests.rs")),
     // SourcedFile::new("src/lib.rs", include_str!("lib.rs")),
     SourcedFile::new("README.md", include_str!("../README.md")),
