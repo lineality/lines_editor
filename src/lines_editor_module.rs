@@ -1160,6 +1160,18 @@ const DEFAULT_TEXT_COLOUR: &[u8] = GREEN_U8;
 const DEFINITION_COLOUR: &[u8] = YELLOW_U8;
 const SYMBOL_COLOUR: &[u8] = MAGENTA_U8;
 
+/// Blue foreground for tab character highlighting.
+/// Tabs mixed with spaces are a common source of indentation bugs.
+/// We render tabs visibly (as →) in blue so they are unambiguous.
+///
+/// ANSI: ESC [ 3 4 m  — blue foreground
+pub const TAB_COLOUR: &[u8] = b"\x1b[34m";
+
+/// The visible glyph written in place of a raw tab byte.
+/// Using a visible arrow makes tab positions unambiguous.
+/// The byte sequence is the UTF-8 encoding of U+2192 RIGHTWARDS ARROW.
+pub const TAB_GLYPH: &[u8] = "→".as_bytes();
+
 /*
 Foreground Colors (Text Color):
 Color -> ANSI Code
@@ -22725,8 +22737,56 @@ fn render_utf8txt_row_with_cursor(
             }
         }
 
+        // =====================================================================
+        // PRIORITY 4: TAB CHARACTER — blue visible glyph
+        // =====================================================================
+        // Raw tab bytes are dangerous when mixed with spaces: they look like
+        // spaces but have different indentation semantics. We render them as
+        // a blue → so they are immediately visible.
+        //
+        // Tab is single-byte ASCII (0x09), so char_byte_len == 1 always.
+        // char_index still advances by 1, matching how the terminal would
+        // count the cursor column if we were writing spaces (not ideal for
+        // true tab-stop alignment, but consistent with how the rest of this
+        // renderer treats column tracking: one char_index unit per character).
+        //
+        // NOTE: we write TAB_GLYPH (→, 3 UTF-8 bytes) rather than the raw
+        // \t byte. This means visual width on screen is 1 cell (arrow),
+        // not the terminal's tab-stop expansion. This is intentional: it
+        // makes the tab visible and keeps cursor column arithmetic simple.
+        // If you want raw \t rendered with colour instead, replace TAB_GLYPH
+        // with char_bytes below — but be aware that background-coloured \t
+        // will expand to the next tab stop, which can misalign the display.
+        if char_bytes == b"\t" {
+            stdout.write_all(TAB_COLOUR).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC tab write: {}",
+                    &[&e.to_string()],
+                    "rURWC tab write",
+                ))
+            })?;
+            stdout.write_all(TAB_GLYPH).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC tab write: {}",
+                    &[&e.to_string()],
+                    "rURWC tab write",
+                ))
+            })?;
+            stdout.write_all(RESET_U8).map_err(|e| {
+                LinesError::DisplayError(stack_format_it(
+                    "rURWC tab write: {}",
+                    &[&e.to_string()],
+                    "rURWC tab write",
+                ))
+            })?;
+
+            byte_pos = char_end; // char_end == byte_pos + 1 for \t
+            char_index += 1;
+            continue;
+        }
+
         // // =====================================================================
-        // // PRIORITY 4: PLAIN CHARACTER — no styling
+        // // PRIORITY 5: PLAIN CHARACTER — no styling
         // // =====================================================================
         // stdout.write_all(char_bytes).map_err(|e| {
         //     LinesError::DisplayError(stack_format_it(
@@ -22737,7 +22797,7 @@ fn render_utf8txt_row_with_cursor(
         // })?;
 
         // =====================================================================
-        // PRIORITY 4: PLAIN CHARACTER — default green text
+        // PRIORITY 5: PLAIN CHARACTER — DEFAULT_TEXT_COLOUR
         // =====================================================================
         // Green is the default colour for all unstyled content characters.
         // Cursor (priority 1), selection (priority 2), and syntax highlighting
