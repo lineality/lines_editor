@@ -2,7 +2,14 @@
 //! lines is minimal text editor
 //! test files in: src/tests.rs
 //!
-//! # Coordinate Spaces — the authoritative reference for cursor/position math
+//! Originally lines used a byte-to-tui lookup table to interface TUI
+//! and user actions and the file bytes. Now that lookup functionality is done
+//! using a virtual-lookup-table calculated on the fly to conserve memory.
+//!
+//! There are multiple types of 'positions' and 'coordinates' and making
+//! these clear is important.
+//!
+//! # Coordinate Spaces —  reference for cursor/position math
 //!
 //! This editor displays UTF-8 text in a non-wrapping, line-by-line terminal
 //! window. UTF-8 forces three things apart that were one and the same in the
@@ -21,14 +28,14 @@
 //!
 //! ## The six coordinate spaces
 //!
-//! | # | Name (this doc)            | Unit            | Measured from        | Stored in (canonical fields)                                   |
-//! |---|----------------------------|-----------------|----------------------|----------------------------------------------------------------|
+//! | # | Name (this doc)            | Unit            | Measured from        | Stored in (canonical fields)                                             |
+//! |---|----------------------------|-----------------|----------------------|--------------------------------------------------------------------------|
 //! | 1 | **file byte (absolute)**   | bytes           | start of the file    | `FilePosition::byte_offset_linear_file_absolute_position`, `file_position_of_topline_start`, `windowmap_line_byte_start_end_position_pairs`, `file_position_of_vis_select_*` |
-//! | 2 | **in-line byte**           | bytes           | start of that line   | `FilePosition::byte_in_line`                                   |
-//! | 3 | **line number**            | lines (0-idx)   | start of the file    | `FilePosition::line_number`, `line_count_at_top_of_window`     |
+//! | 2 | **in-line byte**           | bytes           | start of that line   | `FilePosition::byte_in_line`                                             |
+//! | 3 | **line number**            | lines (0-idx)   | start of the file    | `FilePosition::line_number`, `line_count_at_top_of_window`               |
 //! | 4 | **in-line char index**     | characters      | start of that line   | `tui_window_horizontal_utf8txt_line_char_offset` (the horizontal scroll) |
-//! | 5 | **visual cell column**     | terminal cells  | left edge of the row | `cursor.tui_visual_col`; window width is `effective_cols`      |
-//! | 6 | **TUI display row**        | rows (0-idx)    | top of the window    | `cursor.tui_row`; window height is `effective_rows`            |
+//! | 5 | **visual cell column**     | terminal cells  | left edge of the row | `cursor.tui_visual_col`; window width is `effective_cols`                |
+//! | 6 | **TUI display row**        | rows (0-idx)    | top of the window    | `cursor.tui_row`; window height is `effective_rows`                      |
 //!
 //! Definitions in detail:
 //!
@@ -66,9 +73,9 @@
 //! ## Sources of truth vs. derived
 //!
 //! **Sources of truth (the ONLY stored cursor/window state):**
-//! - `cursor.tui_row`                                  (#6)
-//! - `cursor.tui_visual_col`                           (#5)
-//! - `tui_window_horizontal_utf8txt_line_char_offset`  (#4)
+//! - `cursor.tui_row`                                   (#6)
+//! - `cursor.tui_visual_col`                            (#5)
+//! - `tui_window_horizontal_utf8txt_line_char_offset`   (#4)
 //! - `line_count_at_top_of_window`                      (#3, top of window)
 //!
 //! Plus one file-byte CACHE, rebuilt each window refresh:
@@ -5182,7 +5189,7 @@ impl EditorState {
             if pos + byte_len > content_exclusive_end {
                 return Ok(None);
             }
-            // Must have actually read enough bytes to decode this char.
+            // Must have read enough bytes to decode this char.
             if (n as u64) < byte_len {
                 return Ok(None);
             }
@@ -11113,7 +11120,7 @@ fn get_utf8_char_byte_length_from_buffer(buffer: &[u8], index: usize) -> Result<
 ///
 /// This function is critical for cursor positioning: it creates the
 /// mapping between display columns (what the user sees) and file byte positions
-/// (where edits actually happen). Any error here causes insertion/deletion to
+/// (where edits happen). Any error here causes insertion/deletion to
 /// occur at the wrong file location.
 ///
 /// # Multi-byte UTF-8 Support
@@ -14155,7 +14162,7 @@ enum ArrowKeyDirection {
 ///
 /// # Why `n` (the byte count) Matters
 ///
-/// `read()` returns how many bytes it actually placed in the buffer. We are
+/// `read()` returns how many bytes it placed in the buffer. We are
 /// passed exactly that filled slice (`&buf[0..n]`). An arrow is recognized ONLY
 /// when:
 ///   - the slice length is exactly 3, AND
@@ -14179,7 +14186,7 @@ enum ArrowKeyDirection {
 ///
 /// # Arguments
 ///
-/// * `filled_buffer` - the slice of bytes actually read this iteration
+/// * `filled_buffer` - the slice of bytes read this iteration
 ///   (`&byte_buffer[0..bytes_read]`).
 ///
 /// # Returns
@@ -15181,7 +15188,7 @@ fn line_end_has_newline(file_path: &Path, byte_pos: u64) -> io::Result<bool> {
 ///
 /// * `button_make_changelog_from_user_character_action_level()` - Creates individual log entries
 /// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
-/// * `delete_byte_range_chunked()` - Performs the actual deletion
+/// * `delete_byte_range_chunked()` - Performs the deletion
 /// * `find_line_start()` - Finds beginning of current line
 /// * `find_line_end()` - Finds end of current line
 ///
@@ -16076,7 +16083,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 /// * `detect_utf8_byte_count()` - UTF-8 character length detection
 /// * `button_make_changelog_from_user_character_action_level()` - Creates individual log entries
 /// * `button_add_multibyte_make_log_files()` - Handles multi-byte characters with letter suffixes
-/// * `delete_byte_range_chunked()` - Performs the actual deletion
+/// * `delete_byte_range_chunked()` - Performs the deletion
 ///
 /// # Testing Considerations
 ///
@@ -23733,7 +23740,7 @@ pub fn simple_make_lines_editor_session_directory(
 
     // Check if directory already exists (idempotent)
     if session_path.exists() {
-        // Defensive: Verify it's actually a directory
+        // Defensive: Verify it is a directory
         if !session_path.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
