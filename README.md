@@ -30,9 +30,12 @@ NORMAL 1:1 README.md @0  > ⎕
 
 
 # Abstract
-Lines is a minimal terminal text/hex file-editor, written from scratch in vanilla 2024-Rust (with no third party crates or unsafe code), designed for long term reliability and maintainability, adaptable modularity, memory-footprint minimalism, safety, and security. The scope is intentionally constrained to a few essential uses and file operations such as insert, and delete at the character/byte level. Lines is, by design and policy, not a "fully-featured," "feature-rich," "responsive," full IDE competing with Zed, Helix, vsCode, etc. (though with the FF-file navigator and tmux, the combo is surprisingly flexible).
+Lines is a minimal terminal text/hex file-editor, written from scratch in vanilla 2024-Rust (with no third party crates), designed for long term reliability and maintainability, adaptable modularity, memory-footprint minimalism, safety, and security. The scope is intentionally constrained to a few essential uses and file operations such as insert, and delete at the character/byte level. Lines is, by design and policy, not a "fully-featured," "feature-rich," "responsive," full IDE competing with Zed, Helix, vsCode, etc. (At the same time, the combination of File-Fantastic terminal-file-manager and tmux make more IDE-type uses possible: having multiple windows open on the same file, or different files in different windows to cut and paste between them, etc.)
 
-Lines is Modal (having modes) mostly the same as Ex/Vi/Vim or Helix et al. But Lines is different in that it has a +Enter way of operating using an OS-standard input buffer, and it has other features such as Hex-Edit mode a modular file-based clipboard.
+The only 'unsafe block' code is vanilla-rust for raw-terminal use in the raw-terminal module, which is optional. This is minimal rust,
+not using a third-party crate or libc-in-rust.
+
+Lines is Modal (having modes) mostly the same as Ex/Vi/Vim or Helix et al. But Lines is different in that it has a primarily +Enter way of operating using an OS-standard input buffer. Lines also has other features such as Hex-Edit mode, a modular file-based clipboard, and quick-append mode.
 
 
 # Common Use Cases
@@ -50,7 +53,7 @@ In 2025 these are all common, yet there is no good way to deal some with these:
 
 - having a lite-weight module for another cli application to be able to simply view a file natively within that application
 
-(Note: linewrap is pending or out of scope)
+(Note: linewrap is pending)
 
 - opening a data file to see the header-line wrapped to see all the column names
 

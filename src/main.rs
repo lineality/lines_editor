@@ -20,6 +20,7 @@ use source_it_module::{SourcedFile, handle_sourceit_command};
 mod buffy_format_write_module;
 use buffy_format_write_module::{BuffyFormatArg, buffy_print, buffy_println};
 
+// for 'ki' keyboard-event based input mode
 mod raw_terminal_x86_module;
 
 // To make a smaller binary, you can remove source-it.
