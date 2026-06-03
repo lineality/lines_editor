@@ -2971,3 +2971,1737 @@ fn stack_format_it1(template: &str, inserts: &[&str], fallback: &str) -> String 
 
 //     Ok(stack_formatted_infobar)
 // }
+/// Returns the VISUAL width (terminal cells) of the character immediately to
+    // /// the LEFT of the cursor: 1 for normal/ASCII, 2 for double-width.
+    // ///
+    // /// # Purpose (Project Context)
+    // /// MoveLeft decrements `cursor.tui_visual_col` by the visual width of the character
+    // /// it crosses (Option A: `tui_visual_col` is a VISUAL column). It resolves the
+    // /// cursor's file byte, then reads up to 4 bytes ending just before that byte
+    // /// (never crossing the current line's start) and walks backward over UTF-8
+    // /// continuation bytes (0x80..=0xBF) to find the previous character's lead
+    // /// byte. Width is classified by the shared oracle
+    // /// `double_width::is_double_width`. Stateless and read-only.
+    // ///
+    // /// # Defensive / Out-of-Bounds (when in doubt, width 1)
+    // /// - No read-copy path, unmapped cursor, at line start, or any I/O failure
+    // ///   → Ok(1). Width 1 never over-decrements past a real character.
+    // ///
+    // /// # Returns
+    // /// * `Ok(1)` or `Ok(2)`
+    // /// * `Err(LinesError)` only if the lookup propagates an unrecoverable error.
+    // pub fn char_to_left_visual_width(&self) -> Result<usize> {
+    //     let read_copy_path = match &self.read_copy_path {
+    //         Some(path) => path,
+    //         None => return Ok(1),
+    //     };
+
+    //     let pos = match self
+    //         .get_row_col_file_position(self.cursor.tui_row, self.cursor.tui_visual_col)?
+    //     {
+    //         Some(p) => p,
+    //         None => return Ok(1),
+    //     };
+
+    //     let cursor_byte = pos.byte_offset_linear_file_absolute_position;
+    //     let line_start = cursor_byte.saturating_sub(pos.byte_in_line as u64);
+
+    //     if cursor_byte <= line_start {
+    //         return Ok(1); // at line start: no character to the left in this line
+    //     }
+
+    //     // Up to 4 bytes available before the cursor, but not before line_start.
+    //     let want = (cursor_byte - line_start).min(4) as usize;
+    //     let start = cursor_byte - want as u64;
+
+    //     let mut file = match File::open(read_copy_path) {
+    //         Ok(f) => f,
+    //         Err(_e) => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!("char_to_left_visual_width: open failed: {} (width 1)", _e);
+    //             return Ok(1);
+    //         }
+    //     };
+
+    //     if file.seek(SeekFrom::Start(start)).is_err() {
+    //         return Ok(1);
+    //     }
+
+    //     let mut buf = [0u8; 4];
+    //     let n = match file.read(&mut buf[..want]) {
+    //         Ok(n) => n,
+    //         Err(_e) => {
+    //             #[cfg(debug_assertions)]
+    //             eprintln!("char_to_left_visual_width: read failed: {} (width 1)", _e);
+    //             return Ok(1);
+    //         }
+    //     };
+    //     if n == 0 {
+    //         return Ok(1);
+    //     }
+
+    //     // buf[..n] are the bytes [start, cursor_byte). Walk backward to the
+    //     // previous character's lead byte (first non-continuation byte).
+    //     let mut i = n;
+    //     let mut steps = 0;
+    //     let mut lead_index: Option<usize> = None;
+    //     while i > 0 && steps < 4 {
+    //         i -= 1;
+    //         steps += 1;
+    //         if buf[i] & 0xC0 != 0x80 {
+    //             lead_index = Some(i);
+    //             break;
+    //         }
+    //     }
+
+    //     let li = match lead_index {
+    //         Some(x) => x,
+    //         None => return Ok(1),
+    //     };
+
+    //     let prev_char_bytes = &buf[li..n];
+    //     let width = match std::str::from_utf8(prev_char_bytes) {
+    //         Ok(s) => match s.chars().next() {
+    //             Some(ch) => {
+    //                 if double_width::is_double_width(ch) {
+    //                     2
+    //                 } else {
+    //                     1
+    //                 }
+    //             }
+    //             None => 1,
+    //         },
+    //         Err(_) => 1,
+    //     };
+
+    //     Ok(width)
+    // }
+
+// /// Moves cursor to end of current displayed line
+// ///
+// /// # Purpose
+// /// Positions cursor at last character of line displayed at cursor.row.
+// /// If line longer than terminal width, scrolls horizontally to show end.
+// ///
+// /// # Memory Safety
+// /// - Pre-allocated 4096-byte buffer (stack-only)
+// /// - Reads ONE line at a time
+// /// - No file loading
+// /// - No dynamic allocation
+// ///
+// /// # Defensive Programming
+// /// - All errors logged and handled gracefully
+// /// - Returns with info bar message on any issue
+// /// - Never crashes, never panics in production
+// ///
+// /// # Arguments
+// /// * `state` - Editor state with cursor position
+// /// * `file_path` - Path to read-copy file
+// ///
+// /// # Returns
+// /// * `Ok(())` - Always succeeds or logs error and continues
+// fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Result<()> {
+//     // ========================================================================
+//     // STEP 1: Get file position from cursor (defensive)
+//     // ========================================================================
+
+//     let current_file_pos = match lines_editor_state.get_row_col_file_position(
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.cursor.tui_visual_col,
+//     ) {
+//         Ok(Some(pos)) => pos,
+//         Ok(None) => {
+//             let _ = lines_editor_state.set_info_bar_message("gl cursor pos. unavailable");
+//             return Ok(());
+//         }
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             log_error("goto_line_end window_map error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     let line_number_for_display = current_file_pos.line_number + 1; // Convert to 1-indexed
+//     let line_start_byte = current_file_pos.byte_offset_linear_file_absolute_position
+//         - (current_file_pos.byte_in_line as u64);
+
+//     // ========================================================================
+//     // STEP 2: Read the line from file
+//     // ========================================================================
+
+//     let mut line_buffer = [0u8; 4096];
+
+//     let mut file = match File::open(file_path) {
+//         Ok(f) => f,
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot open file");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             log_error("goto_line_end open error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     if let Err(_e) = file.seek(SeekFrom::Start(line_start_byte)) {
+//         let _ = lines_editor_state.set_info_bar_message("cannot seek to line");
+//         #[cfg(debug_assertions)]
+//         eprintln!("e: {}", _e);
+//         log_error("goto_line_end seek error", Some("goto_line_end"));
+//         return Ok(());
+//     }
+
+//     let (_, line_length, _) = match read_single_line(&mut file, &mut line_buffer) {
+//         Ok(result) => result,
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot read line");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             #[cfg(debug_assertions)]
+//             log_error("goto_line_end read error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     // =========================
+//     // position state inspection
+//     // =========================
+//     let line_num_width = calculate_line_number_width(
+//         lines_editor_state.line_count_at_top_of_window,
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.effective_rows,
+//     );
+//     // reset for each new fn goto_line_end
+//     lines_editor_state.in_row_abs_horizontal_0_index_cursor_position = line_length + line_num_width;
+//     #[cfg(debug_assertions)]
+//     {
+//         let this_row = lines_editor_state.cursor.tui_row;
+//         let this_col = lines_editor_state.cursor.tui_visual_col;
+//         println!(
+//             "fn goto_line_end lines_editor_state.cursor.tui_row, .col-> {:?},{:?}",
+//             this_row, this_col,
+//         );
+//         println!(
+//             "\nfn goto_line_end lines_editor_state.get_row_col_file_position -> {:?}",
+//             lines_editor_state.get_row_col_file_position(this_row, this_col)
+//         );
+//         println!(
+//             "\nfn goto_line_end lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -> {:?}",
+//             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+//         );
+//         println!(
+//             "\nfn goto_line_end lines_editor_state.in_row_abs_horizontal_0_index_cursor_position -> {:?}",
+//             lines_editor_state.in_row_abs_horizontal_0_index_cursor_position
+//         );
+//         println!(
+//             "\nfn goto_line_end lines_editor_state.cursor.tui_row -> {:?}",
+//             lines_editor_state.cursor.tui_row
+//         );
+//         println!(
+//             "\nfn goto_line_end windowmap_line_byte_start_end_position_pairs -> {:?}",
+//             lines_editor_state.windowmap_line_byte_start_end_position_pairs,
+//         );
+//     }
+
+//     // // ========================================================================
+//     // // STEP 3: Convert bytes to characters
+//     // // ========================================================================
+
+//     // let line_bytes = &line_buffer[..line_length];
+//     // let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+
+//     // let char_count = line_str.chars().count();
+//     // let char_position_in_line = if char_count > 0 { char_count - 1 } else { 0 };
+
+//     // // ========================================================================
+//     // // STEP 4: Calculate display column
+//     // // ========================================================================
+
+//     // let line_num_width = calculate_line_number_width(
+//     //     lines_editor_state.line_count_at_top_of_window,
+//     //     line_number_for_display,
+//     //     lines_editor_state.effective_rows,
+//     // );
+//     // let display_col_for_line_end = line_num_width + char_position_in_line;
+
+//     // let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+//     // let mut needs_rebuild = false;
+
+//     // // ========================================================================
+//     // // STEP 5: Handle horizontal scrolling
+//     // // ========================================================================
+
+//     // if display_col_for_line_end > right_edge {
+//     //     // Line is longer than terminal width
+//     //     let overflow = display_col_for_line_end - right_edge;
+
+//     //     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = lines_editor_state
+//     //         .tui_window_horizontal_utf8txt_line_char_offset
+//     //         .saturating_add(overflow);
+
+//     //     lines_editor_state.cursor.tui_visual_col = right_edge;
+//     //     #[cfg(debug_assertions)]
+//     //     {
+//     //         eprintln!(
+//     //             "goto_line_end: scroll-branch: char_count={} char_pos={} line_num_width={} display_col_for_line_end={} right_edge={} overflow={} => NEW offset={} tui_visual_col={}",
+//     //             char_count,
+//     //             char_position_in_line,
+//     //             line_num_width,
+//     //             display_col_for_line_end,
+//     //             right_edge,
+//     //             overflow,
+//     //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
+//     //             lines_editor_state.cursor.tui_visual_col,
+//     //         );
+//     //         eprintln!(
+//     //             "right_edge {right_edge}, display_col_for_line_end {display_col_for_line_end}"
+//     //         );
+//     //     }
+//     //     needs_rebuild = true;
+//     // } else {
+//     //     // Line fits within terminal
+//     //     // TODO: why is this odd?
+//     //     lines_editor_state.cursor.tui_visual_col = display_col_for_line_end;
+
+//     //     #[cfg(debug_assertions)]
+//     //     eprintln!(
+//     //         "GOTO_END fit-branch: char_count={} char_pos={} display_col_for_line_end={} => tui_visual_col={} (offset unchanged={})",
+//     //         char_count,
+//     //         char_position_in_line,
+//     //         display_col_for_line_end,
+//     //         lines_editor_state.cursor.tui_visual_col,
+//     //         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
+//     //     );
+//     // }
+
+//     // ========================================================================
+//     // STEP 3: Count characters AND total visual width of the line
+//     // ========================================================================
+//     // Two distinct column spaces exist:
+//     //   - CHARACTER column: 1 per character (kanji counts as 1). Used by the
+//     //     horizontal-scroll offset, which skips whole CHARACTERS.
+//     //   - VISUAL column: 1 per ASCII, 2 per double-width (CJK/emoji). This is
+//     //     what the terminal actually consumes.
+//     // We compute total visual width so the scroll offset can place the line's
+//     // end inside the visible cells on a terminal that expands double-width.
+//     let line_bytes = &line_buffer[..line_length];
+//     let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+
+//     let char_count = line_str.chars().count();
+//     let char_position_in_line = char_count.saturating_sub(1);
+
+//     // Sum the visual width of every character in the line.
+//     let mut total_visual_width: usize = 0;
+//     for ch in line_str.chars() {
+//         total_visual_width += if double_width::is_double_width(ch) {
+//             2
+//         } else {
+//             1
+//         };
+//     }
+
+//     #[cfg(debug_assertions)]
+//     eprintln!(
+//         "GOTO_END widths: char_count={} char_pos={} total_visual_width={}",
+//         char_count, char_position_in_line, total_visual_width
+//     );
+
+//     // ========================================================================
+//     // STEP 4: Compute line-number prefix width and visible content cells
+//     // ========================================================================
+//     let line_num_width = calculate_line_number_width(
+//         lines_editor_state.line_count_at_top_of_window,
+//         line_number_for_display,
+//         lines_editor_state.effective_rows,
+//     );
+
+//     // Visible content width in terminal cells, after the line-number prefix.
+//     // Reserve one cell so a double-width character cannot overflow the edge
+//     // (matches the right_edge convention used by the movement commands).
+//     let visible_content_cells = lines_editor_state
+//         .effective_cols
+//         .saturating_sub(line_num_width)
+//         .saturating_sub(1);
+
+//     // ========================================================================
+//     // STEP 5: Position the cursor, scrolling horizontally if the line is wider
+//     //         than the visible content area (measured in VISUAL cells)
+//     // ========================================================================
+//     let needs_rebuild: bool;
+
+//     if total_visual_width > visible_content_cells {
+//         // Line is wider than the visible area: scroll so the END is visible.
+//         //
+//         // The scroll offset is in CHARACTERS. Walk from the line start,
+//         // dropping characters (and their visual width) until the REMAINING
+//         // visual width fits within visible_content_cells. The number of
+//         // characters dropped is the character offset to apply.
+//         let mut skip_chars: usize = 0;
+//         let mut remaining_visual_width = total_visual_width;
+
+//         for ch in line_str.chars() {
+//             if remaining_visual_width <= visible_content_cells {
+//                 break;
+//             }
+//             remaining_visual_width -= if double_width::is_double_width(ch) {
+//                 2
+//             } else {
+//                 1
+//             };
+//             skip_chars += 1;
+//         }
+
+//         // Cursor's visible character column = last char index minus chars skipped.
+//         let visible_char_index = char_position_in_line.saturating_sub(skip_chars);
+
+//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = skip_chars;
+//         lines_editor_state.cursor.tui_visual_col = line_num_width + visible_char_index;
+
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "GOTO_END scroll: skip_chars={} visible_char_index={} offset={} tui_visual_col={}",
+//             skip_chars,
+//             visible_char_index,
+//             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
+//             lines_editor_state.cursor.tui_visual_col,
+//         );
+
+//         needs_rebuild = true;
+//     } else {
+//         // Line fits without scrolling. Reset any prior offset and place the
+//         // cursor at the last character's display column.
+//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+//         lines_editor_state.cursor.tui_visual_col = line_num_width + char_position_in_line;
+
+//         #[cfg(debug_assertions)]
+//         eprintln!(
+//             "GOTO_END fit: char_pos={} tui_visual_col={} offset=0",
+//             char_position_in_line, lines_editor_state.cursor.tui_visual_col,
+//         );
+
+//         needs_rebuild = true;
+//     }
+
+//     // ========================================================================
+//     // STEP 6: Rebuild if needed
+//     // ========================================================================
+
+//     if needs_rebuild {
+//         if let Err(_e) = build_windowmap_nowrap(lines_editor_state, file_path) {
+//             let _ = lines_editor_state.set_info_bar_message("display update failed");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             #[cfg(debug_assertions)]
+//             log_error("goto_line_end rebuild error", Some("goto_line_end"));
+//             // Continue anyway - cursor was updated
+//         }
+//     }
+
+//     // message? 'end of line'? TODO: How detailed or terse should this be?
+//     // let _ = lines_editor_state.set_info_bar_message(&format!("end of line ({} chars)", char_count));
+//     // let _ = lines_editor_state.set_info_bar_message(&char_count.to_string());
+//     let _ = lines_editor_state.set_info_bar_message("end of line");
+//     Ok(())
+// }
+
+    // /// Gets the file position for a window position
+    // ///
+    // /// # Arguments
+    // /// * `row` - Terminal row (0-indexed)
+    // /// * `col` - Terminal column (0-indexed)
+    // ///
+    // ///
+    // ///
+    // /// # Returns
+    // /// * `Ok(Option<FilePosition>)` - File position if valid, None if empty
+    // /// * `Err(io::Error)` - If row/col out of bounds
+    // pub fn get_row_col_file_position(
+    //     &self,
+    //     row: usize,
+    //     col: usize,
+    // ) -> io::Result<Option<FilePosition>> {
+    //     // ============================================================
+    //     // Debug-Assert, Test-Assert, Production-Catch-Handle
+    //     // ============================================================
+    //     #[cfg(test)]
+    //     assert!(
+    //         row >= self.effective_rows,
+    //         "Failed Test: pub fn get_row_col_file_position: assert!(row >= self.valid_rows..."
+    //     );
+    //     #[cfg(test)]
+    //     assert!(
+    //         col >= self.effective_cols,
+    //         "Failed Test: pub fn get_row_col_file_position: assert!(col >= self.valid_cols..."
+    //     );
+    //     // TODO maybe remove because these are normal cases
+    //     // // Defensive: Check bounds
+    //     // #[cfg(debug_assertions)]
+    //     // if row >= self.effective_rows {
+    //     //     return Err(io::Error::new(
+    //     //         io::ErrorKind::InvalidInput,
+    //     //         format!("Row {} exceeds valid rows {}", row, self.effective_rows),
+    //     //     ));
+    //     // }
+    //     // #[cfg(debug_assertions)]
+    //     // if col >= self.effective_cols {
+    //     //     return Err(io::Error::new(
+    //     //         io::ErrorKind::InvalidInput,
+    //     //         format!(
+    //     //             "Column {} exceeds valid columns {}",
+    //     //             col, self.effective_cols
+    //     //         ),
+    //     //     ));
+    //     // }
+    //     // ==============
+    //     // Catch & Handle
+    //     // ==============
+    //     if row >= self.effective_rows {
+    //         // Handle as caught case: Do Nothing
+    //         // let _ = lines_editor_state.set_info_bar_message("row >= MAX_TUI_ROWS");
+    //         Ok(None)
+    //     } else if col >= self.effective_cols {
+    //         // let _ = lines_editor_state.set_info_bar_message("col >= MAX_TUI_VIZ_COLS");
+    //         Ok(None)
+    //     } else {
+    //         // ================
+    //         // OK: Update State
+    //         // ================
+    //         Ok(self.state_windowmap_positions[row][col])
+    //     }
+    // }
+
+
+// /// Renders one row of display directly to stdout with cursor, selection,
+// /// and syntax highlighting — zero heap allocation.
+// ///
+// /// # Purpose (Project Context)
+// /// This is the character-by-character rendering function for the TUI editor's
+// /// content area. It processes a single display row and writes ANSI-styled
+// /// characters directly to stdout as it goes. No intermediate String is built.
+// ///
+// /// The function applies three layers of highlighting with strict priority:
+// ///   PRIORITY 1: Cursor (BOLD + RED + WHITE_BG) — always wins
+// ///   PRIORITY 2: Visual selection (BOLD + YELLOW + CYAN_BG) — if in visual mode
+// ///   PRIORITY 3: Syntax highlighting (cyan for symbols, yellow for keywords)
+// ///   PRIORITY 4: Plain character — no styling
+// ///
+// /// # Multi-byte UTF-8 and the Byte-vs-Character Index Problem
+// ///
+// /// ## Critical Invariant
+// /// `cursor.tui_visual_col` is a CHARACTER column position, not a byte offset.
+// /// When we removed Vec<char>, we lost the simple `for col in 0..chars.len()`
+// /// iteration where `col` automatically tracked character index.
+// ///
+// /// We now iterate over `row_content` byte-by-byte using UTF-8 boundary
+// /// detection and maintain TWO separate counters:
+// ///
+// ///   - `byte_pos`:  Byte offset into `row_content`. Used for slicing, for
+// ///                  syntax highlight prefix matching, and for writing bytes.
+// ///                  Advances by 1-4 bytes per character.
+// ///
+// ///   - `char_index`: Character column position. Increments by exactly 1 per
+// ///                   complete UTF-8 character, regardless of byte width.
+// ///                   Compared against `cursor_col` for cursor highlighting.
+// ///
+// /// ## Why This Matters (Concrete Example)
+// /// ```text
+// /// row_content bytes: [h] [e] [l] [l] [o] [ ] [E4 B8 96] [20]
+// ///                     0   1   2   3   4   5   6  7   8     9   <- byte_pos
+// /// character index:    0   1   2   3   4   5   6              7  <- char_index
+// ///
+// /// cursor_col = 6 → cursor is on '世' (3-byte char at byte_pos 6).
+// /// If we compared cursor_col against byte_pos, it would accidentally match
+// /// byte 6 here — but on a different line where multi-byte chars appear
+// /// earlier, byte_pos and char_index diverge and the cursor would land
+// /// on the wrong character.
+// /// ```
+// ///
+// /// This is the same byte-vs-character discipline used in
+// /// process_line_with_offset() during its skip and write phases.
+// ///
+// /// # Syntax Highlighting Integration
+// /// When `is_plain_text` is false (file is not .txt/.log):
+// ///   - buffy_get_syntax_highlight() is called with `byte_pos` to check
+// ///     for keyword or symbol matches
+// ///   - SyntaxSymbol: single character written in cyan
+// ///   - DefinitionWord: keyword_byte_len bytes written in yellow, then
+// ///     byte_pos and char_index advance past the entire keyword
+// ///   - The cursor position is NEVER syntax-highlighted (cursor priority)
+// ///   - Characters inside the keyword span that overlap the cursor still
+// ///     get cursor highlighting for that one character
+// ///
+// /// # Direct-Write Pattern (No Heap)
+// /// This function writes ANSI escape codes and character bytes directly to
+// /// stdout using stdout.write_all(). No String accumulation, no Vec<char>,
+// /// no format!() macro. This is the pattern Buffy is designed for.
+// ///
+// /// The caller (render_tui_utf8txt) prints the line number prefix BEFORE
+// /// calling this function, then calls buffy_println for the newline AFTER.
+// /// This function writes only the content portion of the row.
+// ///
+// /// # Arguments
+// /// * `state`          - Editor state (mode, cursor position, window_map)
+// /// * `row_index`      - Display row being rendered (0-indexed within window)
+// /// * `row_content`    - The text content for this row (content portion only,
+// ///                      line number prefix already excluded by caller)
+// /// * `cursor_col`     - Cursor column adjusted for content portion (caller
+// ///                      subtracts line_num_width from state.cursor.tui_visual_col)
+// /// * `is_plain_text`  - If true, skip syntax highlighting entirely.
+// ///                      Computed once by caller via buffy_is_plain_text_extension()
+// ///
+// /// # Returns
+// /// * `Ok(())` - Row content written to stdout successfully
+// /// * `Err(LinesError)` - If window_map lookup fails, selection check fails,
+// ///                        or stdout write fails
+// ///
+// /// # Error Handling
+// /// All write failures and window_map errors are propagated. No silent failures.
+// /// stdout.write_all() errors are converted to LinesError::DisplayError.
+// /// This function never panics in production.
+// fn render_utf8txt_row_with_cursor(
+//     state: &EditorState,
+//     row_index: usize,
+//     row_content: &str,
+//     cursor_col: usize,
+//     is_plain_text: bool,
+// ) -> Result<()> {
+//     let mut stdout = io::stdout();
+//     let row_bytes = row_content.as_bytes();
+//     let row_len = row_bytes.len();
+
+//     // =========================================================================
+//     // CURSOR ON THIS ROW?
+//     // =========================================================================
+//     let cursor_on_this_row = row_index == state.cursor.tui_row;
+
+//     // =========================================================================
+//     // TOTAL CHARACTER COUNT (for cursor-at-end-of-line detection)
+//     // =========================================================================
+//     // We need to know the total number of characters in the row to detect
+//     // when the cursor is at/past the end. We count characters by scanning
+//     // UTF-8 lead bytes. This is O(n) but avoids Vec<char> allocation.
+//     // Done once before the main loop.
+//     let total_chars = row_content.chars().count();
+
+//     // Defensive: prevent cursor beyond line length (same as original)
+//     let effective_cursor_col = cursor_col.min(total_chars);
+
+//     // =========================================================================
+//     // MAIN LOOP: Iterate by UTF-8 character boundaries
+//     //
+//     // TWO COUNTERS (see doc comment for full explanation):
+//     //   byte_pos   — byte offset into row_bytes, advances by char byte length
+//     //   char_index — character column, advances by 1 per UTF-8 character
+//     //
+//     // For cursor comparison: char_index == effective_cursor_col
+//     // For syntax matching:   byte_pos passed to buffy_get_syntax_highlight()
+//     // For writing bytes:     &row_bytes[byte_pos..byte_pos + char_byte_len]
+//     // =========================================================================
+//     let mut byte_pos: usize = 0;
+//     let mut char_index: usize = 0;
+
+//     // Safety bound: prevent infinite loops on malformed input.
+//     // row_len is the byte length; we can never have more characters than bytes.
+//     let max_iterations = row_len + 1;
+//     let mut iterations: usize = 0;
+
+//     while byte_pos < row_len {
+//         // =====================================================================
+//         // ITERATION GUARD
+//         // =====================================================================
+//         iterations += 1;
+//         if iterations > max_iterations {
+//             // Defensive: should never happen with well-formed UTF-8.
+//             // In production, break and return what we have rather than panic.
+//             #[cfg(debug_assertions)]
+//             eprintln!(
+//                 "render_utf8txt_row_with_cursor: iteration limit reached at byte_pos={}, char_index={}",
+//                 byte_pos, char_index
+//             );
+//             break;
+//         }
+
+//         // =====================================================================
+//         // DETERMINE CHARACTER BYTE LENGTH
+//         // =====================================================================
+//         // UTF-8 encoding: lead byte tells us how many bytes this character is.
+//         //   0xxxxxxx → 1 byte  (ASCII)
+//         //   110xxxxx → 2 bytes
+//         //   1110xxxx → 3 bytes
+//         //   11110xxx → 4 bytes
+//         //   Anything else → malformed, treat as 1 byte defensively.
+//         let char_byte_len = if byte_pos < row_len {
+//             let lead = row_bytes[byte_pos];
+//             if lead < 0x80 {
+//                 1
+//             } else if lead < 0xE0 {
+//                 2
+//             } else if lead < 0xF0 {
+//                 3
+//             } else if lead < 0xF8 {
+//                 4
+//             } else {
+//                 // Malformed lead byte. Advance 1 byte to avoid infinite loop.
+//                 1
+//             }
+//         } else {
+//             break; // past end, should not reach here due to while condition
+//         };
+
+//         // Defensive: ensure we do not read past end of row_bytes
+//         let char_end = byte_pos + char_byte_len;
+//         let char_end = if char_end > row_len {
+//             // Incomplete multi-byte character at end of string.
+//             // Write a replacement character and break.
+//             #[cfg(debug_assertions)]
+//             eprintln!(
+//                 "render_utf8txt_row_with_cursor: incomplete UTF-8 at byte_pos={}, need {} bytes, have {}",
+//                 byte_pos,
+//                 char_byte_len,
+//                 row_len - byte_pos
+//             );
+//             stdout.write_all("�".as_bytes()).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC write error: {}",
+//                     &[&e.to_string()],
+//                     "rURWC write error",
+//                 ))
+//             })?;
+//             break;
+//         } else {
+//             char_end
+//         };
+
+//         let char_bytes = &row_bytes[byte_pos..char_end];
+
+//         // =====================================================================
+//         // PRIORITY 1: CURSOR HIGHLIGHTING
+//         // =====================================================================
+//         // cursor.tui_visual_col is a CHARACTER index. We compare against char_index.
+//         // If cursor is on this character, write with cursor styling and skip
+//         // all other highlighting.
+//         if cursor_on_this_row && char_index == effective_cursor_col {
+//             stdout.write_all(BOLD_U8).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC cursor write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC cursor write",
+//                 ))
+//             })?;
+//             stdout.write_all(RED_U8).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC cursor write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC cursor write",
+//                 ))
+//             })?;
+//             stdout.write_all(BG_WHITE_U8).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC cursor write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC cursor write",
+//                 ))
+//             })?;
+//             stdout.write_all(char_bytes).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC cursor write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC cursor write",
+//                 ))
+//             })?;
+//             stdout.write_all(RESET_U8).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC cursor write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC cursor write",
+//                 ))
+//             })?;
+
+//             byte_pos = char_end;
+//             char_index += 1;
+//             continue;
+//         }
+
+//         // =====================================================================
+//         // PRIORITY 2: VISUAL SELECTION HIGHLIGHTING
+//         // =====================================================================
+//         if state.mode == EditorMode::VisualSelectMode {
+//             // get_row_col_file_position uses char_index (column) for lookup.
+//             // The window_map was built with character columns, not byte offsets.
+//             // We need to add line_num_width back because the window_map was
+//             // built with the full row coordinates including line number prefix.
+//             //
+//             // IMPORTANT: The caller passes us content-only (line number prefix
+//             // stripped), and passes cursor_col already adjusted. But the
+//             // window_map stores positions in full-row coordinates. We need the
+//             // line_num_width to reconstruct the full-row column for the lookup.
+//             //
+//             // However, looking at the original code: the original function
+//             // received the full row_str including line number, and iterated
+//             // over all characters. The caller then sliced the OUTPUT string
+//             // with [line_num_width..]. Now we receive only the content portion
+//             // but must look up positions in the full-row window_map.
+//             //
+//             // We pass row_index and the FULL column (char_index + line_num_width)
+//             // to the window_map lookup. But we do not have line_num_width here.
+//             //
+//             // SOLUTION: We look up using the char_index offset that the
+//             // window_map actually stores. The caller can tell us the column
+//             // offset to add. For now, we rely on the fact that the window_map
+//             // columns start at col_start (which is the line_num_width).
+//             // We need to receive this offset. But to minimise signature changes
+//             // in this step, we can compute it from state.
+//             //
+//             // Actually, reviewing render_tui_utf8txt more carefully:
+//             // The original code passed full row_str, and the window_map was
+//             // indexed with full-row columns. The caller sliced the RESULT.
+//             // Now we need to map char_index back to the window_map column.
+//             //
+//             // We compute line_num_width the same way the caller does, and
+//             // add it to char_index for the window_map lookup.
+
+//             let line_num_width = calculate_line_number_width(
+//                 state.line_count_at_top_of_window,
+//                 state.cursor.tui_row,
+//                 state.effective_rows,
+//             );
+//             let map_col = char_index + line_num_width;
+
+//             let file_pos_option = state.get_row_col_file_position(row_index, map_col)?;
+
+//             if let Some(file_pos) = file_pos_option {
+//                 let in_selection = is_in_selection(
+//                     file_pos.byte_offset_linear_file_absolute_position,
+//                     state.file_position_of_vis_select_start,
+//                     state.file_position_of_vis_select_end,
+//                 )?;
+
+//                 if in_selection {
+//                     stdout.write_all(BOLD_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC sel write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC sel write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(YELLOW_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC sel write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC sel write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(BG_CYAN_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC sel write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC sel write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(char_bytes).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC sel write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC sel write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(RESET_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC sel write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC sel write",
+//                         ))
+//                     })?;
+
+//                     byte_pos = char_end;
+//                     char_index += 1;
+//                     continue;
+//                 }
+//             }
+//         }
+
+//         // =====================================================================
+//         // PRIORITY 3: SYNTAX HIGHLIGHTING
+//         // =====================================================================
+//         // Only when the file is not plain text (.txt, .log).
+//         // buffy_get_syntax_highlight() receives byte_pos because it needs
+//         // to do prefix matching (keyword detection) from that position.
+//         if !is_plain_text {
+//             let highlight = buffy_get_syntax_highlight(byte_pos, row_content);
+
+//             match highlight {
+//                 SyntaxHighlight::SyntaxSymbol => {
+//                     // Single character in colour. Write ANSI, char, reset.
+//                     stdout.write_all(SYMBOL_COLOUR).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC syn write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC syn write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(char_bytes).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC syn write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC syn write",
+//                         ))
+//                     })?;
+//                     stdout.write_all(RESET_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC syn write: {}",
+//                             &[&e.to_string()],
+//                             "rURWC syn write",
+//                         ))
+//                     })?;
+
+//                     byte_pos = char_end;
+//                     char_index += 1;
+//                     continue;
+//                 }
+
+//                 SyntaxHighlight::DefinitionWord { keyword_byte_len } => {
+//                     // Multi-character keyword in yellow.
+//                     // Write the entire keyword span as one coloured block,
+//                     // BUT: if the cursor is inside this keyword span, we must
+//                     // write character-by-character so the cursor character gets
+//                     // cursor highlighting instead.
+//                     //
+//                     // Determine how many CHARACTERS are in the keyword.
+//                     // All current keywords are ASCII, so byte_len == char_count.
+//                     // But for safety, we count properly.
+//                     let keyword_end_byte = byte_pos + keyword_byte_len;
+//                     let keyword_end_byte = keyword_end_byte.min(row_len); // bounds safety
+
+//                     // Check: does the cursor land inside this keyword span?
+//                     // If so, fall through to character-by-character rendering
+//                     // so cursor priority is respected.
+//                     let cursor_in_keyword = if cursor_on_this_row {
+//                         // Count characters in the keyword span to know
+//                         // what char_index range it covers.
+//                         let keyword_slice = &row_content[byte_pos..keyword_end_byte];
+//                         let keyword_char_count = keyword_slice.chars().count();
+//                         let keyword_char_end = char_index + keyword_char_count;
+//                         effective_cursor_col >= char_index
+//                             && effective_cursor_col < keyword_char_end
+//                     } else {
+//                         false
+//                     };
+
+//                     if !cursor_in_keyword {
+//                         // No cursor conflict: write entire keyword in yellow.
+//                         let keyword_bytes = &row_bytes[byte_pos..keyword_end_byte];
+
+//                         stdout.write_all(DEFINITION_COLOUR).map_err(|e| {
+//                             LinesError::DisplayError(stack_format_it(
+//                                 "rURWC kw write: {}",
+//                                 &[&e.to_string()],
+//                                 "rURWC kw write",
+//                             ))
+//                         })?;
+//                         stdout.write_all(keyword_bytes).map_err(|e| {
+//                             LinesError::DisplayError(stack_format_it(
+//                                 "rURWC kw write: {}",
+//                                 &[&e.to_string()],
+//                                 "rURWC kw write",
+//                             ))
+//                         })?;
+//                         stdout.write_all(RESET_U8).map_err(|e| {
+//                             LinesError::DisplayError(stack_format_it(
+//                                 "rURWC kw write: {}",
+//                                 &[&e.to_string()],
+//                                 "rURWC kw write",
+//                             ))
+//                         })?;
+
+//                         // Advance byte_pos and char_index past the keyword.
+//                         let keyword_slice = &row_content[byte_pos..keyword_end_byte];
+//                         let keyword_char_count = keyword_slice.chars().count();
+//                         byte_pos = keyword_end_byte;
+//                         char_index += keyword_char_count;
+//                         continue;
+//                     }
+//                     // If cursor IS inside keyword, fall through to write
+//                     // this single character normally — the next loop iteration
+//                     // for the cursor character will hit PRIORITY 1 above.
+//                     // For this current character (which is the first char of
+//                     // the keyword, and is NOT the cursor), write it in yellow.
+//                     stdout.write_all(YELLOW_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC kw partial: {}",
+//                             &[&e.to_string()],
+//                             "rURWC kw partial",
+//                         ))
+//                     })?;
+//                     stdout.write_all(char_bytes).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC kw partial: {}",
+//                             &[&e.to_string()],
+//                             "rURWC kw partial",
+//                         ))
+//                     })?;
+//                     stdout.write_all(RESET_U8).map_err(|e| {
+//                         LinesError::DisplayError(stack_format_it(
+//                             "rURWC kw partial: {}",
+//                             &[&e.to_string()],
+//                             "rURWC kw partial",
+//                         ))
+//                     })?;
+
+//                     byte_pos = char_end;
+//                     char_index += 1;
+//                     continue;
+//                 }
+
+//                 SyntaxHighlight::None => {
+//                     // Fall through to PRIORITY 4 below.
+//                 }
+//             }
+//         }
+
+//         // =====================================================================
+//         // PRIORITY 4: TAB CHARACTER — blue visible glyph
+//         // =====================================================================
+//         // Raw tab bytes are dangerous when mixed with spaces: they look like
+//         // spaces but have different indentation semantics. We render them as
+//         // a blue → so they are immediately visible.
+//         //
+//         // Tab is single-byte ASCII (0x09), so char_byte_len == 1 always.
+//         // char_index still advances by 1, matching how the terminal would
+//         // count the cursor column if we were writing spaces (not ideal for
+//         // true tab-stop alignment, but consistent with how the rest of this
+//         // renderer treats column tracking: one char_index unit per character).
+//         //
+//         // NOTE: we write TAB_GLYPH (→, 3 UTF-8 bytes) rather than the raw
+//         // \t byte. This means visual width on screen is 1 cell (arrow),
+//         // not the terminal's tab-stop expansion. This is intentional: it
+//         // makes the tab visible and keeps cursor column arithmetic simple.
+//         // If you want raw \t rendered with colour instead, replace TAB_GLYPH
+//         // with char_bytes below — but be aware that background-coloured \t
+//         // will expand to the next tab stop, which can misalign the display.
+//         if char_bytes == b"\t" {
+//             stdout.write_all(TAB_COLOUR).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC tab write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC tab write",
+//                 ))
+//             })?;
+//             stdout.write_all(TAB_GLYPH).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC tab write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC tab write",
+//                 ))
+//             })?;
+//             stdout.write_all(RESET_U8).map_err(|e| {
+//                 LinesError::DisplayError(stack_format_it(
+//                     "rURWC tab write: {}",
+//                     &[&e.to_string()],
+//                     "rURWC tab write",
+//                 ))
+//             })?;
+
+//             byte_pos = char_end; // char_end == byte_pos + 1 for \t
+//             char_index += 1;
+//             continue;
+//         }
+
+//         // // =====================================================================
+//         // // PRIORITY 5: PLAIN CHARACTER — no styling
+//         // // =====================================================================
+//         // stdout.write_all(char_bytes).map_err(|e| {
+//         //     LinesError::DisplayError(stack_format_it(
+//         //         "rURWC plain write: {}",
+//         //         &[&e.to_string()],
+//         //         "rURWC plain write",
+//         //     ))
+//         // })?;
+
+//         // =====================================================================
+//         // PRIORITY 5: PLAIN CHARACTER — DEFAULT_TEXT_COLOUR
+//         // =====================================================================
+//         // Green is the default colour for all unstyled content characters.
+//         // Cursor (priority 1), selection (priority 2), and syntax highlighting
+//         // (priority 3) each apply their own colours and reset afterwards.
+//         // Plain characters get green as the baseline readable colour.
+//         stdout.write_all(DEFAULT_TEXT_COLOUR).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC plain write: {}",
+//                 &[&e.to_string()],
+//                 "rURWC plain write",
+//             ))
+//         })?;
+//         stdout.write_all(char_bytes).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC plain write: {}",
+//                 &[&e.to_string()],
+//                 "rURWC plain write",
+//             ))
+//         })?;
+//         stdout.write_all(RESET_U8).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC plain write: {}",
+//                 &[&e.to_string()],
+//                 "rURWC plain write",
+//             ))
+//         })?;
+
+//         byte_pos = char_end;
+//         char_index += 1;
+//     }
+
+//     // =========================================================================
+//     // CURSOR AT/PAST END OF LINE
+//     // =========================================================================
+//     // When the cursor column is at or beyond the last character, show a
+//     // cursor block at the end position. This allows the user to position
+//     // the cursor after the last character for appending.
+//     if cursor_on_this_row && effective_cursor_col >= total_chars {
+//         stdout.write_all(BOLD_U8).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC eol cursor: {}",
+//                 &[&e.to_string()],
+//                 "rURWC eol cursor",
+//             ))
+//         })?;
+//         stdout.write_all(RED_U8).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC eol cursor: {}",
+//                 &[&e.to_string()],
+//                 "rURWC eol cursor",
+//             ))
+//         })?;
+//         stdout.write_all(BG_WHITE_U8).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC eol cursor: {}",
+//                 &[&e.to_string()],
+//                 "rURWC eol cursor",
+//             ))
+//         })?;
+//         stdout.write_all("█".as_bytes()).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC eol cursor: {}",
+//                 &[&e.to_string()],
+//                 "rURWC eol cursor",
+//             ))
+//         })?;
+//         stdout.write_all(RESET_U8).map_err(|e| {
+//             LinesError::DisplayError(stack_format_it(
+//                 "rURWC eol cursor: {}",
+//                 &[&e.to_string()],
+//                 "rURWC eol cursor",
+//             ))
+//         })?;
+//     }
+
+//     Ok(())
+// }
+
+// /// Formats the bottom info bar with current editor state
+// ///
+// /// # Purpose
+// /// Shows critical state info: mode, cursor position, filename, and input buffer.
+// /// All info on ONE line to minimize vertical space usage.
+// ///
+// /// # Arguments
+// /// * `state` - Current editor state
+// /// * `input_buffer` - Current command/insert input (if any)
+// ///
+// /// # Returns
+// /// * `Ok(String)` - Formatted info bar string
+// /// * `Err(LinesError)` - If formatting fails
+// ///
+// /// # Format
+// /// "NORMAL line 42, col 7 document.txt > command_here"
+// /// "INSERT line 42, col 7 document.txt > text being typed"
+// ///
+// /// # Design
+// /// - Mode in caps for visibility
+// /// - Line/col for cursor tracking
+// /// - Filename for context
+// /// - Input buffer shows what user is typing
+// fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) -> Result<String> {
+//     /*
+//     Calculation note:
+//     The column number should be - the number of digits +1
+
+//     */
+//     // Get mode string
+//     let mode_str = match lines_editor_state.mode {
+//         EditorMode::Normal => "NORMAL",
+//         EditorMode::Insert => "INSERT",
+//         EditorMode::KeystrokeInputMode => "KEY-INSRT",
+//         EditorMode::VisualSelectMode => "VISUAL",
+//         EditorMode::PastyMode => "PASTY",
+//         EditorMode::HexMode => "HEX",
+//         EditorMode::RawMode => "RAW",
+//     };
+
+//     // Get current line and column
+//     // Line is 1-indexed for display (humans count from 1)
+//     let line_display =
+//         lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.tui_row + 1;
+
+//     // Get line number to calculate line number display width
+//     let line_num =
+//         lines_editor_state.line_count_at_top_of_window + lines_editor_state.cursor.tui_row + 1;
+//     let line_num_width = calculate_line_number_width(
+//         lines_editor_state.line_count_at_top_of_window,
+//         line_num,
+//         lines_editor_state.effective_rows,
+//     );
+
+//     // Add horizontal offset to get character position in line
+//     // Subtract line number width from displayed column
+//     let true_char_position = lines_editor_state.cursor.tui_visual_col
+//         + lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
+
+//     // zero-based vs. 1 based
+//     let col_display = true_char_position.saturating_sub(line_num_width) + 1;
+
+//     // Get filename (or "unnamed" if none)
+//     let filename = lines_editor_state
+//         .original_file_path
+//         .as_ref()
+//         .and_then(|p| p.file_name())
+//         .and_then(|n| n.to_str())
+//         .unwrap_or("unmanned file");
+
+//     // Extract message from buffer (find null terminator or use full buffer)
+//     let message_len = lines_editor_state
+//         .info_bar_message_buffer
+//         .iter()
+//         .position(|&b| b == 0)
+//         .unwrap_or(lines_editor_state.info_bar_message_buffer.len());
+
+//     let message_for_infobar =
+//         std::str::from_utf8(&lines_editor_state.info_bar_message_buffer[..message_len])
+//             .unwrap_or(""); // Empty string if invalid UTF-8
+
+//     // Step 1: Get current line's file position
+//     // In case of exception, say 'n/a'
+//     let file_position_string = match lines_editor_state.get_row_col_file_position(
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.cursor.tui_visual_col,
+//     ) {
+//         Ok(Some(row_col_file_pos)) => row_col_file_pos
+//             .byte_offset_linear_file_absolute_position
+//             .to_string(),
+//         _ => "n/a".to_string(),
+//     };
+
+//     // let row_col_file_pos = lines_editor_state
+//     //     .window_map
+//     //     .get_row_col_file_position(lines_editor_state.cursor.tui_row, lines_editor_state.cursor.tui_visual_col)?
+//     //     .ok_or_else(|| {
+//     //         io::Error::new(
+//     //             io::ErrorKind::InvalidInput,
+//     //             "fib: Cursor not on valid position",
+//     //         )
+//     //     })?;
+
+//     // // Get file position at/of/where cursor
+//     // let file_position_string = row_col_file_pos
+//     //     .byte_offset_linear_file_absolute_position
+//     //     .to_string();
+
+//     // Build the info bar
+//     // let info = format!(
+//     //     // "{}{}{} line{}{} {}col{}{}{} {}{} >{}",
+//     //     "{}{} {}{}{}:{}{}{} {}{} @{}{}{} {}{} > ",
+//     //     YELLOW,
+//     //     mode_str,
+//     //     // YELLOW,
+//     //     RED,
+//     //     line_display,
+//     //     YELLOW,
+//     //     YELLOW,
+//     //     RED,
+//     //     col_display,
+//     //     YELLOW,
+//     //     filename,
+//     //     // GREEN,
+//     //     RED,
+//     //     file_position_string,
+//     //     YELLOW,
+//     //     message_for_infobar,
+//     //     RESET,
+//     // );
+
+//     // Build the info bar (no-heap)
+//     let info_bar = stack_format_it(
+//         "{}{} {}{}{}:{}{}{} {}{} @{}{}{} {}{} > ",
+//         &[
+//             &YELLOW,
+//             &mode_str,
+//             &RED,
+//             &line_display.to_string(),
+//             &YELLOW,
+//             &YELLOW,
+//             &RED,
+//             &col_display.to_string(),
+//             &YELLOW,
+//             &filename,
+//             &RED,
+//             &file_position_string,
+//             &YELLOW,
+//             &message_for_infobar,
+//             &RESET,
+//         ],
+//         " > ",
+//     );
+//     Ok(info_bar)
+// }
+   // // =========
+        // // Move Left
+        // // =========
+        // Command::MoveLeft(count) => {
+        //     // Vim-like behavior: move cursor left, scroll window if at edge
+        //     // # Coordinate Spaces (see the module "Coordinate Spaces" reference)
+        //     // Edge math is #5 VISUAL cells: `cursor.tui_visual_col` advances/retreats by the
+        //     // crossed character's #5 visual width (1 or 2), compared against `effective_cols`
+        //     // (#5). Horizontal scroll adjusts `..._line_char_offset` (#4, characters). The
+        //     // resolved file byte (#1) is always derived via get_row_col_file_position.
+
+        //     let mut remaining_moves = count;
+        //     let mut needs_rebuild = false;
+
+        //     // Defensive: Limit iterations to prevent infinite loops
+        //     let mut iterations = 0;
+
+        //     // iterate through # of steps user requested
+        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+        //         /*
+        //         I discovered this somewhat by accident:
+        //         This subtraction 'overflow' catch seems to work
+        //         as the zero-index finder and safety mechanism all in one.
+        //         I am not a fan of having a failure be a trigger...
+        //         but for MVP it looks to work.
+        //         */
+
+        //         // ─────────────────────────────────────────────────────────────
+        //         // DEFENSIVE RECOVERY — cursor drifted INTO the line-number prefix
+        //         //
+        //         // COORDINATE SPACES IN PLAY (see the project "Coordinate Spaces"
+        //         // reference; this editor uses several distinct location types and
+        //         // confusing them is the bug class this guard belongs to):
+        //         //   • cursor.tui_visual_col — VISUAL cell column of the cursor in
+        //         //       the display row. Counts terminal CELLS from the row's left
+        //         //       edge, INCLUDING the line-number prefix; double-width chars
+        //         //       (CJK, emoji) are 2 cells. SOURCE OF TRUTH for horizontal
+        //         //       position under "Option A".
+        //         //   • guard_line_num_width — the width, in CELLS, of the line-
+        //         //       number prefix (e.g. "166 " = 4 cells; ASCII, so cells ==
+        //         //       chars). The prefix occupies visual columns
+        //         //       [0, guard_line_num_width); the first CONTENT cell is at
+        //         //       visual column guard_line_num_width.
+        //         //   • tui_window_horizontal_utf8txt_line_char_offset (horizontal
+        //         //       scroll, an in-line CHARACTER index) — deliberately NOT
+        //         //       consulted here: this guard concerns only the prefix
+        //         //       boundary, which is independent of how far the line is
+        //         //       horizontally scrolled.
+        //         //
+        //         // WHAT THIS DOES AND WHY:
+        //         //   The text cursor must never sit INSIDE the line-number prefix
+        //         //   (visual columns [0, guard_line_num_width)). In normal operation
+        //         //   it cannot: the lowest legal content column is
+        //         //   guard_line_num_width, and the main-loop "Bump on Main Street"
+        //         //   re-pins it there when there is no horizontal scroll. This is a
+        //         //   belt-and-suspenders recovery for an out-of-frame glitch — if
+        //         //   tui_visual_col has somehow become STRICTLY LESS than the prefix
+        //         //   width, abandon the leftward step and jump to a known-good
+        //         //   position (line start) via GotoLineStart, then return.
+        //         //
+        //         //   THE STRICT "<" IS INTENTIONAL: at exactly the content-left edge
+        //         //   (tui_visual_col == guard_line_num_width) the cursor is on the
+        //         //   first content cell — a LEGAL position — so this guard must NOT
+        //         //   fire there; the normal left-edge / horizontal-scroll handling
+        //         //   further down owns that case.
+        //         //
+        //         // ─────────────────────────────────────────────────────────────
+        //         let guard_line_num_width = calculate_line_number_width(
+        //             lines_editor_state.line_count_at_top_of_window,
+        //             lines_editor_state.cursor.tui_row,
+        //             lines_editor_state.effective_rows,
+        //         );
+        //         if lines_editor_state.cursor.tui_visual_col < guard_line_num_width {
+        //             execute_command(lines_editor_state, Command::GotoLineStart)?;
+        //             return Ok(true);
+        //         }
+
+        //         let line_num_width = calculate_line_number_width(
+        //             lines_editor_state.line_count_at_top_of_window,
+        //             lines_editor_state.line_count_at_top_of_window,
+        //             lines_editor_state.effective_rows,
+        //         );
+
+        //         // =============================
+        //         // Move Left to Above End of Row
+        //         // =============================
+        //         // If at top of TUI but NOT top of doc
+        //         // move up to end of line
+        //         if let Some(_) = lines_editor_state // guard against overflow substraction
+        //             .cursor
+        //             .tui_visual_col
+        //             .checked_sub(line_num_width)
+        //         {
+        //             #[cfg(debug_assertions)]
+        //             println!(
+        //                 "lines_editor_state.cursor.tui_visual_col - line_num_width -> {}",
+        //                 lines_editor_state.cursor.tui_visual_col - line_num_width
+        //             );
+
+        //             if (lines_editor_state.cursor.tui_row == 0)
+        //                 && ((lines_editor_state.cursor.tui_visual_col - line_num_width) == 0)
+        //                 && !(lines_editor_state.line_count_at_top_of_window == 0)
+        //                 && (lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset == 0)
+        //             {
+        //                 // move up, move to end of line.
+        //                 _ = execute_command(lines_editor_state, Command::MoveUp(1))?;
+        //                 _ = execute_command(lines_editor_state, Command::GotoLineEnd)?;
+        //             }
+        //             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+        //         }
+
+        //         // =========================
+        //         // position state inspection
+        //         // =========================
+        //         #[cfg(debug_assertions)]
+        //         let this_row = lines_editor_state.cursor.tui_row;
+        //         #[cfg(debug_assertions)]
+        //         let this_col = lines_editor_state.cursor.tui_visual_col;
+
+        //         #[cfg(debug_assertions)]
+        //         lines_editor_state.debug_inspect_position("execute_command() Command::MoveLeft");
+
+        //         iterations += 1;
+
+        //         // =============
+        //         // Window Scroll
+        //         // =============
+        //         if lines_editor_state.cursor.tui_visual_col > 0 {
+        //             // Cursor can move left within visible window
+        //             let cursor_moves =
+        //                 remaining_moves.min(lines_editor_state.cursor.tui_visual_col);
+        //             lines_editor_state.cursor.tui_visual_col -= cursor_moves;
+        //             remaining_moves -= cursor_moves;
+        //         } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
+        //             // Cursor at left edge, scroll window left
+        //             let scroll_amount = remaining_moves
+        //                 .min(lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset);
+        //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -=
+        //                 scroll_amount;
+        //             remaining_moves -= scroll_amount;
+        //             needs_rebuild = true;
+        //         } else {
+        //             // At absolute left edge - cannot move further
+        //             break;
+        //         }
+        //     }
+
+        //     // Defensive: Check iteration limit
+        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
+        //         return Err(LinesError::Io(io::Error::new(
+        //             io::ErrorKind::Other,
+        //             "Maximum iterations exceeded in MoveLeft",
+        //         )));
+        //     }
+
+        //     // Only rebuild if we scrolled the window
+        //     if needs_rebuild {
+        //         // Rebuild window to show the change from read-copy file
+        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+        //     }
+
+        //     Ok(true)
+        // }
+
+        // Command::MoveRight(count) => {
+        //     // Vim-like behavior: move cursor right, scroll window if at edge
+
+        //     // # Coordinate Spaces (see the module "Coordinate Spaces" reference)
+        //     // Edge math is #5 VISUAL cells: `cursor.tui_visual_col` advances/retreats by the
+        //     // crossed character's #5 visual width (1 or 2), compared against `effective_cols`
+        //     // (#5). Horizontal scroll adjusts `..._line_char_offset` (#4, characters). The
+        //     // resolved file byte (#1) is always derived via get_row_col_file_position.
+
+        //     let mut remaining_moves = count;
+        //     let mut needs_rebuild = false;
+
+        //     // Defensive: Limit iterations
+        //     let mut iterations = 0;
+
+        //     // =========================
+        //     // position state inspection
+        //     // =========================
+        //     #[cfg(debug_assertions)]
+        //     let this_row = lines_editor_state.cursor.tui_row;
+        //     #[cfg(debug_assertions)]
+        //     let this_col = lines_editor_state.cursor.tui_visual_col;
+        //     #[cfg(debug_assertions)]
+        //     lines_editor_state.debug_inspect_position("execute_command() Command::MoveRight");
+
+        //     // while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+        //     //     iterations += 1;
+
+        //     //     // ===============================================
+        //     //     // First Check if Next Move Right should Jump Down
+        //     //     // ===============================================
+
+        //     //     let cursor_is_on_newline = lines_editor_state.is_current_cursor_on_newline()?;
+
+        //     //     // check if you are currently on a newline
+        //     //     if cursor_is_on_newline {
+        //     //         // === Jump Down ===
+        //     //         // Move to start of current line
+        //     //         execute_command(lines_editor_state, Command::GotoLineStart)?;
+        //     //         // Move down one line
+        //     //         execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+        //     //         remaining_moves -= 1;
+        //     //         needs_rebuild = true;
+        //     //         continue;
+        //     //     }
+
+        //     //     // At edge of TUI?
+        //     //     // Calculate space available before right TUI edge
+        //     //     // Reserve 1 column to prevent display overflow
+        //     //     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+
+        //     //     if lines_editor_state.cursor.tui_visual_col < (right_edge) {
+        //     //         // Cursor can move right within visible window
+        //     //         let space_available = right_edge - lines_editor_state.cursor.tui_visual_col;
+        //     //         let cursor_moves = remaining_moves.min(space_available);
+
+        //     //         lines_editor_state.cursor.tui_visual_col += cursor_moves;
+
+        //     //         // Inspection in debug build only
+        //     //         #[cfg(debug_assertions)]
+        //     //         println!(
+        //     //             "Inspection cursor_moves-> {:?}, col:{:?}",
+        //     //             &cursor_moves, lines_editor_state.cursor.tui_visual_col
+        //     //         );
+
+        //     //         remaining_moves -= cursor_moves;
+        //     //     } else {
+        //     //         // Edge Scroll Right
+        //     //         if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+        //     //             < limits::CURSOR_MOVEMENT_STEPS
+        //     //         {
+        //     //             let max_scroll = limits::CURSOR_MOVEMENT_STEPS
+        //     //                 - lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
+        //     //             let scroll_amount = remaining_moves.min(max_scroll);
+
+        //     //             lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset +=
+        //     //                 scroll_amount;
+
+        //     //             remaining_moves -= scroll_amount;
+        //     //             needs_rebuild = true;
+        //     //         } else {
+        //     //             // Hit maximum horizontal scroll
+        //     //             break;
+        //     //         }
+        //     //     }
+        //     // }
+
+        //     while remaining_moves > 0 && iterations < limits::CURSOR_MOVEMENT_STEPS {
+        //         iterations += 1;
+
+        //         // If the cursor is already on the newline glyph, the next right
+        //         // jumps to the start of the following line (unchanged).
+        //         let cursor_is_on_newline = lines_editor_state.is_current_cursor_on_newline()?;
+        //         if cursor_is_on_newline {
+        //             execute_command(lines_editor_state, Command::GotoLineStart)?;
+        //             execute_command(lines_editor_state, Command::MoveDown(1))?;
+
+        //             remaining_moves -= 1;
+        //             needs_rebuild = true;
+        //             continue;
+        //         }
+
+        //         // Visual width (1 or 2 cells) of the character to be crossed.
+        //         let char_width = lines_editor_state.cursor_char_visual_width()?;
+
+        //         // Reserve one cell at the right so a double-width character
+        //         // cannot overflow the edge.
+        //         let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+
+        //         if lines_editor_state.cursor.tui_visual_col + char_width <= right_edge {
+        //             // 3a: the next character fits in view — advance by its
+        //             // VISUAL width (Option A). One character crossed per step.
+        //             lines_editor_state.cursor.tui_visual_col += char_width;
+        //             remaining_moves -= 1;
+
+        //             // TEMPORARY: remove in Step 5
+        //             #[cfg(debug_assertions)]
+        //             println!(
+        //                 "MoveRight advance: char_width={}, new tui_visual_col={}",
+        //                 char_width, lines_editor_state.cursor.tui_visual_col
+        //             );
+        //         } else {
+        //             // 3b (NOT YET FIXED): right-edge horizontal scroll. The
+        //             // double-width-aware scroll recompute is deferred to Step 3b;
+        //             // this retains the prior character-based scroll behavior.
+        //             if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset
+        //                 < limits::CURSOR_MOVEMENT_STEPS
+        //             {
+        //                 let max_scroll = limits::CURSOR_MOVEMENT_STEPS
+        //                     - lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset;
+        //                 let scroll_amount = remaining_moves.min(max_scroll);
+
+        //                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset +=
+        //                     scroll_amount;
+
+        //                 remaining_moves -= scroll_amount;
+        //                 needs_rebuild = true;
+        //             } else {
+        //                 break;
+        //             }
+        //         }
+        //     }
+
+        //     // Defensive: Check iteration limit
+        //     if iterations >= limits::CURSOR_MOVEMENT_STEPS {
+        //         return Err(LinesError::Io(io::Error::new(
+        //             io::ErrorKind::Other,
+        //             "Maximum iterations exceeded in MoveRight",
+        //         )));
+        //     }
+
+        //     // Only rebuild if we scrolled the window
+        //     if needs_rebuild {
+        //         // Rebuild window to show the change from read-copy file
+        //         build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+        //     }
+
+        //     Ok(true)
+        // }
+
+        // ==========
+        // Move Right
+        // ==========
+
+        Command::DeleteRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "button_safe_clear_all_redo_logs Error clearing redo logs: {:?}",
+                        _e
+                    );
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        "button_safe_clear_all_redo_logs Cannot clear redo logs",
+                        Some("DeleteRange"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("Redo-clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            // v1
+            // /*   If no block of text is selected,
+            //  *   i.e. if start and end are the same point
+            //  *   then use backspace mode,
+            //  *   otherwise, if there is a block selected
+            //  *   inclusively delete that block
+            //  */
+            // if lines_editor_state.file_position_of_vis_select_start
+            //     == lines_editor_state.file_position_of_vis_select_end
+            // {
+            //     // if only one character is selected, use backspace delete
+            //     backspace_style_delete_noload(lines_editor_state, &edit_file_path)?;
+            // } else {
+            //     // if a more than one character is selected, inclusively delete
+            //     delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+            // }
+    // write_red_hotkey("hex", " ")?;
+
+    // // View operations group
+    // write_red_hotkey("r", "aw|")?;
+    // write_red_hotkey("p", "asty ")?;
+    // write_red_hotkey("cvy", "|")?;
+
+    // // Navigation group
+    // write_red_hotkey("w", "rd,")?;
+    // write_red_hotkey("b", ",")?;
+    // write_red_hotkey("e", "nd ")?;
+
+    // // Comment/indent group
+    // // Three Colour
+    // write_red_green_hotkey("/", "/", "/cmnt ")?;
+    // // Red only
+    // write_red_hotkey("[]", "idnt ")?;
+
+    // // Movement group
+    // write_red_hotkey("hjkl", "")?;
+
+    // Build info bar
+    // // Show byte position as 1-indexed for human readability
+    // let info_bar = format!(
+    //     "{}HEX byte {}{}{} of {}{}{} {}, Edit:Enter Hex|Insrt:NN-i|GoTo:gN {} {}> ",
+    //     YELLOW,
+    //     RED,
+    //     lines_editor_state
+    //         .hex_cursor
+    //         .byte_offset_linear_file_absolute_position
+    //         + 1, // Human-friendly: 1-indexed
+    //     YELLOW,
+    //     RED,
+    //     file_size,
+    //     YELLOW,
+    //     filename,
+    //     message_for_infobar,
+    //     RESET,
+    // );
+
+    // Build base timestamp with YYYY prefix
+    let base_timestamp = stack_format_it(
+        "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+        &[
+            &year.to_string(),
+            &two_dig.to_string(),
+            &month.to_string(),
+            &day.to_string(),
+            &hour.to_string(),
+            &minute.to_string(),
+            &second.to_string(),
+        ],
+        "YYYY_MM_DD_HH_MM_OOPS",
+    );
+
+    // // Build base timestamp with YYYY prefix
+    // let base_timestamp = format!(
+    //     "{:04}_{:02}_{:02}_{:02}_{:02}_{:02}_{:02}",
+    //     year,       // Four-digit year
+    //     year % 100, // Two-digit year
+    //     month,
+    //     day,
+    //     hour,
+    //     minute,
+    //     second
+    // );
+
+    if !include_microseconds {
+        return base_timestamp;
+    }
+
+    // Add microseconds component
+    let microseconds = duration_since_epoch.as_micros() % 1_000_000;
+
+    // // TODO add formatting ability?
+    // stack_format_it(
+    //     "{}_{:06}",
+    //     &[&base_timestamp.to_string(), &base_timestamp.to_string()],
+    //     "{}_{:06}",
+    // )
+
+    format!("{}_{:06}", base_timestamp, microseconds)
+}
