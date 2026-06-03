@@ -12180,12 +12180,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     lines_editor_state.cursor.tui_visual_col -= left_width;
                     remaining_moves -= 1;
 
-                    // TEMPORARY: remove in Step 5
-                    #[cfg(debug_assertions)]
-                    println!(
-                        "MoveLeft cross: left_width={}, new tui_visual_col={}",
-                        left_width, lines_editor_state.cursor.tui_visual_col
-                    );
+                    // // extra inspection
+                    // #[cfg(debug_assertions)]
+                    // println!(
+                    //     "MoveLeft cross: left_width={}, new tui_visual_col={}",
+                    //     left_width, lines_editor_state.cursor.tui_visual_col
+                    // );
                 } else if lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset > 0 {
                     // Case 2: at content-left edge, scroll left by one character.
                     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset -= 1;
@@ -14054,16 +14054,16 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = skip_chars;
         lines_editor_state.cursor.tui_visual_col = line_num_width + last_char_visual_start;
 
-        // TEMPORARY: remove in Step 5
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "GOTO_END scroll: skip_chars={} remaining_visual_width={} last_char_visual_start={} offset={} tui_visual_col={}",
-            skip_chars,
-            remaining_visual_width,
-            last_char_visual_start,
-            lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
-            lines_editor_state.cursor.tui_visual_col,
-        );
+        // // extra-inspection
+        // #[cfg(debug_assertions)]
+        // eprintln!(
+        //     "GOTO_END scroll: skip_chars={} remaining_visual_width={} last_char_visual_start={} offset={} tui_visual_col={}",
+        //     skip_chars,
+        //     remaining_visual_width,
+        //     last_char_visual_start,
+        //     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
+        //     lines_editor_state.cursor.tui_visual_col,
+        // );
 
         needs_rebuild = true;
     } else {
@@ -14073,12 +14073,12 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
         lines_editor_state.cursor.tui_visual_col = line_num_width + last_char_visual_start;
 
-        // TEMPORARY: remove in Step 5
-        #[cfg(debug_assertions)]
-        eprintln!(
-            "GOTO_END fit: total_visual_width={} last_char_visual_start={} tui_visual_col={} offset=0",
-            total_visual_width, last_char_visual_start, lines_editor_state.cursor.tui_visual_col,
-        );
+        // // extra inspection
+        // #[cfg(debug_assertions)]
+        // eprintln!(
+        //     "GOTO_END fit: total_visual_width={} last_char_visual_start={} tui_visual_col={} offset=0",
+        //     total_visual_width, last_char_visual_start, lines_editor_state.cursor.tui_visual_col,
+        // );
 
         needs_rebuild = true;
     }
