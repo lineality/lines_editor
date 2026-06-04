@@ -1355,7 +1355,7 @@ const CURSOR_BLOCK_STYLE: BuffyStyles = BuffyStyles {
 ///
 /// Also, as line number grows, more columns lost to that
 ///
-const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 8192; // 2**13=8192
+const FILE_TUI_WINDOW_MAP_BUFFER_SIZE: usize = 64; // 2**13=8192
 
 // for commands such as "n"
 const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
@@ -2722,7 +2722,7 @@ Naming Convention:
 /// - Must fit on stack without overflow
 /// - Typical stack size: 2MB-8MB
 /// - This buffer: 8KB (0.4% of 2MB stack)
-const SAVE_AS_COPY_BUFFER_SIZE: usize = 8192;
+const SAVE_AS_COPY_BUFFER_SIZE: usize = 64;
 
 /// Maximum retry attempts for transient I/O failures in save-as-copy
 ///
@@ -2821,10 +2821,10 @@ mod limits {
 
     /// Maximum bytes to read when processing a single line
     /// Matches the line buffer size
-    pub const LINE_READ_BYTES: usize = 4096;
+    pub const LINE_READ_BYTES: usize = 4096; // original: 4096
 
     /// Maximum iterations when skipping characters for horizontal offset
-    /// Allows scrolling very far right in long lines
+    /// Allows scrolling very far right in losng lines
     pub const HORIZONTAL_SCROLL_CHARS: usize = 10_000;
 
     /// Maximum cursor movement iterations in a single command
@@ -10892,8 +10892,8 @@ fn save_file(state: &mut EditorState) -> io::Result<()> {
 ///
 fn read_single_line<'a>(
     file: &'a mut File,
-    buffer: &'a mut [u8; 4096],
-) -> io::Result<(&'a [u8; 4096], usize, bool)> {
+    buffer: &'a mut [u8; limits::LINE_READ_BYTES],
+) -> io::Result<(&'a [u8; limits::LINE_READ_BYTES], usize, bool)> {
     let mut bytes_read = 0usize;
     let mut found_newline = false;
     let mut single_byte = [0u8; 1];
@@ -13933,7 +13933,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
     // STEP 2: Read the line from file
     // ========================================================================
 
-    let mut line_buffer = [0u8; 4096];
+    let mut line_buffer = [0u8; limits::LINE_READ_BYTES];
 
     let mut file = match File::open(file_path) {
         Ok(f) => f,
@@ -16723,8 +16723,8 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     // Create temp file in same directory
     let temp_path = file_path.with_extension("tmp_delete");
 
-    // Pre-allocated 8KB buffer
-    const CHUNK_SIZE: usize = 8192;
+    // Pre-allocated N-bytes buffer
+    const CHUNK_SIZE: usize = 4;
     let mut buffer = [0u8; CHUNK_SIZE];
 
     let mut source = File::open(file_path)?;
@@ -17118,13 +17118,9 @@ fn insert_newline_at_cursor_chunked(
 
     // TODO this should not be be allocating MORE memory
     // this should use a standard modular buffer
-    // Pre-allocated 8KB buffer
-    const CHUNK_SIZE: usize = 8192;
+    // Pre-allocated N-bytes buffer
+    const CHUNK_SIZE: usize = 8;
     let mut buffer = [0u8; CHUNK_SIZE];
-
-    // ...general_use_256_buffer
-    //
-    // state.clear_general_256_buffer;
 
     // Step 4: Copy bytes before insertion point
     let mut bytes_copied = 0u64;
@@ -17740,8 +17736,8 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // ============================================
     // Counters and constants for the insertion loop
 
-    const CHUNK_SIZE: usize = 256;
-    const MAX_CHUNKS: usize = 16_777_216; // Allows ~4GB at 256-byte chunks
+    const CHUNK_SIZE: usize = 8;
+    const MAX_CHUNKS: usize = usize::MAX; // e.g. 16_777_216 allows ~4GB at 256-byte chunks
 
     let mut chunk_counter: usize = 0;
     let mut total_bytes_written: u64 = 0;
@@ -18553,8 +18549,8 @@ fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io
     let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
 
     // Pre-allocated buffer for bytes after insertion point
-    // 8KB chosen as balance between stack usage and shift efficiency
-    const BUFFER_SIZE: usize = 8192;
+    // N-bytes chosen as balance between stack usage and shift efficiency
+    const BUFFER_SIZE: usize = 8;
     let mut after_buffer = [0u8; BUFFER_SIZE];
 
     // Seek to insertion position and read bytes that will be shifted
@@ -18720,8 +18716,8 @@ pub fn insert_text_chunk_at_cursor_position(
         .open(file_path)
         .map_err(|e| LinesError::Io(e))?;
 
-    // Read bytes after insertion point into 8K buffer (stack-allocated)
-    let mut after_buffer = [0u8; 8192];
+    // Read bytes after insertion point into N-bytes buffer (stack-allocated)
+    let mut after_buffer = [0u8; 32];
 
     file.seek(SeekFrom::Start(insert_position))
         .map_err(|e| LinesError::Io(e))?;
