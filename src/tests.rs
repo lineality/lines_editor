@@ -2045,6 +2045,7 @@ mod hexedit_tests {
 
             eof_fileline_tuirow_tuple: None,
             info_bar_message_buffer: [0u8; INFOBAR_MESSAGE_BUFFER_SIZE],
+            line_chunk_scratch: [0u8; limits::LINE_CHUNK_READ_BYTES],
         }
     }
 

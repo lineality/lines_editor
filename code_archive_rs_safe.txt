@@ -4705,3 +4705,566 @@ fn stack_format_it1(template: &str, inserts: &[&str], fallback: &str) -> String 
 
     format!("{}_{:06}", base_timestamp, microseconds)
 }
+
+/// Processes a line with horizontal offset and writes visible portion to display
+///
+/// # Purpose (Project Context)
+/// Takes a line's bytes, skips horizontal_offset characters, then writes
+/// the visible portion to the display buffer while updating WindowMapStruct.
+///
+/// This function is critical for cursor positioning: it creates the
+/// mapping between display columns (what the user sees) and file byte positions
+/// (where edits happen). Any error here causes insertion/deletion to
+/// occur at the wrong file location.
+///
+/// # Multi-byte UTF-8 Support
+/// The function must handle 1-4 byte UTF-8 characters:
+/// - Skip complete characters when applying horizontal offset (not bytes)
+/// - Map display columns to file byte positions
+/// - Handle double-width characters (CJK, emoji) that occupy 2 display columns
+/// - Ensure each display column maps to the START byte of its character
+///
+/// # Arguments
+/// * `state` - Editor state for buffers and map
+/// * `row` - Display row index (0-indexed within window)
+/// * `col_start` - Starting column (after line number prefix)
+/// * `line_bytes` - The complete line text as bytes (entire line, not truncated)
+/// * `horizontal_offset` - Number of CHARACTERS to skip from line start (not bytes)
+/// * `max_cols` - Maximum display columns available for text
+/// * `file_line_start` - Absolute byte position where this line starts in file
+/// * `current_line_number` - Absolute file line number (0-indexed)
+///
+/// # Returns
+/// * `Ok(bytes_written)` - Number of bytes written to display buffer
+/// * `Err(LinesError)` - If buffer overflow, invalid UTF-8, or bounds violation
+///
+/// # Window Mapping Semantics
+/// Each display column maps to the file byte position of the character's FIRST byte:
+/// ```ignore
+/// File bytes:   [10='a', 11='b', 12-14='世', 15=' ']
+/// Display cols: [0='a',  1='b',  2-3='世',    4=' ']
+///                                 ^^^
+/// Column 2 maps to byte 12 (start of '世')
+/// Column 3 maps to byte 12 (still part of '世', same start byte)
+/// Column 4 maps to byte 15 (start of space after '世')
+/// ```
+///
+/// # Defensive Programming
+/// - Validates all array indices before access
+/// - Checks UTF-8 character completeness
+/// - Bounds-checks display buffer writes
+/// - Limits iterations to prevent infinite loops
+/// - Validates continuation bytes for multi-byte sequences
+///
+/// # Coordinate Spaces (see the module "Coordinate Spaces" reference)
+/// - In  `col_start`        : #5 VISUAL cell column where content begins (== prefix width)
+/// - In  `horizontal_offset`: #4 in-line CHARACTER index (skips whole chars, not cells)
+/// - In  `max_cols`         : width budget in #5 VISUAL cells
+/// - In  `file_line_start`  : #1 file byte of this line's first byte
+/// - In  `current_line_number` : #3 line number (0-indexed)
+/// Note: this is where #4 (scroll, characters) and #5 (display, cells) meet —
+/// it skips by characters, then lays out by cells.
+///
+/// # Example
+/// ```ignore
+/// File line: "hello世界" (hello + two 3-byte Chinese characters)
+/// File bytes: [h e l l o 世(E4B896) 界(E7958C)]
+/// Positions:  0 1 2 3 4 5  6  7    8  9  10
+///
+/// With horizontal_offset=0, col_start=2 (after "1 "):
+/// Display: "1 hello世界"
+/// Columns:  0 1 2 3 4 5 6 7 8 9 10 11
+///              ^ h e l l o 世世界界
+///
+/// Window map:
+/// Col 2 → file byte 0 ('h')
+/// Col 3 → file byte 1 ('e')
+/// ...
+/// Col 7 → file byte 5 ('世' start)
+/// Col 8 → file byte 5 ('世' second column, same byte)
+/// Col 9 → file byte 8 ('界' start)
+/// Col 10 → file byte 8 ('界' second column, same byte)
+/// ``/`
+fn process_line_with_offset(
+    state: &mut EditorState,
+    row: usize,
+    col_start: usize,
+    line_bytes: &[u8],
+    horizontal_offset: usize,
+    max_cols: usize,
+    found_newline: bool,
+) -> Result<usize> {
+    /*
+    Note: The right scrolling and cursor display
+    must allow for one ~empty cursor location after the last character (on/before the newline)
+    so that the user can enter characters at the end of the line or add a newline.
+    One pathway may be to show newline as a UTF-8 character such as ▚ or ␊
+     */
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DEFENSIVE CHECK 1: Validate row index
+    // ═══════════════════════════════════════════════════════════════════════
+    if row >= MAX_TUI_ROWS {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "process_line_with_offset: row {} exceeds MAX_TUI_ROWS {}",
+            row, MAX_TUI_ROWS
+        );
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Row exceeds maximum display rows",
+        )));
+    }
+
+    // Assertion: col_start should be reasonable (after line number, typically 1-5)
+    debug_assert!(
+        col_start < 20,
+        "col_start {} seems unreasonably large",
+        col_start
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 1: Skip horizontal_offset CHARACTERS (not bytes!)
+    // ═══════════════════════════════════════════════════════════════════════
+    // When horizontally scrolling, we skip complete characters from the line start.
+    // Must use UTF-8 character boundaries, not byte boundaries.
+
+    let mut byte_index = 0usize;
+    let mut chars_skipped = 0usize;
+    let mut skip_iterations = 0;
+
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "process_line_with_offset: row={}, horizontal_offset={}, line_length={} bytes",
+        row,
+        horizontal_offset,
+        line_bytes.len()
+    );
+
+    while byte_index < line_bytes.len()
+        && chars_skipped < horizontal_offset
+        && skip_iterations < limits::HORIZONTAL_SCROLL_CHARS
+    {
+        skip_iterations += 1;
+
+        // Get character byte length using centralized helper
+        let char_len = match get_utf8_char_byte_length_from_buffer(line_bytes, byte_index) {
+            Ok(len) => len,
+            Err(_) => {
+                // Buffer access error - should not happen as we checked byte_index < len
+                // Defensive: treat as 1 byte and continue
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "process_line_with_offset: buffer access error at byte_index {} (treating as 1 byte)",
+                    byte_index
+                );
+                1
+            }
+        };
+
+        #[cfg(debug_assertions)]
+        {
+            if char_len > 1 {
+                eprintln!(
+                    "  Skip phase: byte_index={}, char_len={}, first_byte=0x{:02X}",
+                    byte_index, char_len, line_bytes[byte_index]
+                );
+            }
+        }
+
+        // Skip this complete character
+        byte_index = (byte_index + char_len).min(line_bytes.len());
+        chars_skipped += 1;
+    }
+
+    // Defensive: Check we didn't hit iteration limit
+    if skip_iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+        #[cfg(debug_assertions)]
+        eprintln!("process_line_with_offset: hit iteration limit during horizontal skip phase");
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Maximum iterations exceeded in horizontal skip",
+        )));
+    }
+
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "  After skip: byte_index={}, chars_skipped={}",
+        byte_index, chars_skipped
+    );
+
+    // Assertion: We should have skipped at most the requested amount
+    debug_assert!(
+        chars_skipped <= horizontal_offset,
+        "Skipped {} characters but only {} requested",
+        chars_skipped,
+        horizontal_offset
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PHASE 2: Write visible characters to display buffer and build window map
+    // ═══════════════════════════════════════════════════════════════════════
+
+    let mut display_col = col_start;
+    let mut bytes_written = 0usize;
+    let mut write_iterations = 0;
+
+    // Visual size of TUI width -pixel level-
+    let mut visual_col = col_start; // Visual TUI column consumed
+    let visual_col_limit = col_start + max_cols; // Visual limit
+
+    // Reserve space to prevent double-width characters from overflowing
+    // A double-width char starting at max_cols-1 would extend to max_cols+1
+    let display_col_limit = col_start + max_cols;
+
+    while byte_index < line_bytes.len()
+
+        // can add EOL but last char clipped off: "INSERT 4:2 long_lines.txt @345"
+        // && display_col < display_col_limit - 1 // Reserve 1-2 cols for double-width
+
+        /*
+        Can see last character...but EOL cursor is now not a position in file @n/a
+        3 7890123456789012345678901234567890123456789012345678901234567890123456789B█
+        NORMAL 3:130 long_lines.txt @n/a
+        */
+        && display_col < display_col_limit // TEST
+
+        && write_iterations < limits::HORIZONTAL_SCROLL_CHARS
+    {
+        write_iterations += 1;
+
+        // Get character byte length using centralized helper
+        let char_len = match get_utf8_char_byte_length_from_buffer(line_bytes, byte_index) {
+            Ok(len) => len,
+            Err(_) => {
+                // Buffer access error - skip this position
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "process_line_with_offset: buffer access error at byte_index {} in write phase",
+                    byte_index
+                );
+                byte_index += 1;
+                continue;
+            }
+        };
+
+        // Check if complete character is available
+        if byte_index + char_len > line_bytes.len() {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "process_line_with_offset: incomplete character at byte_index {} (need {} bytes, only {} remaining)",
+                byte_index,
+                char_len,
+                line_bytes.len() - byte_index
+            );
+            break; // Incomplete character at end of line
+        }
+
+        // Get the character bytes
+        let char_bytes = &line_bytes[byte_index..byte_index + char_len];
+
+        // Assertion: Character bytes should be exactly char_len
+        debug_assert_eq!(
+            char_bytes.len(),
+            char_len,
+            "Character byte slice length mismatch: expected {}, got {}",
+            char_len,
+            char_bytes.len()
+        );
+
+        #[cfg(debug_assertions)]
+        {
+            if char_len > 1 {
+                eprintln!(
+                    "  Write phase: byte_index={}, char_len={}, bytes={:02X?}",
+                    byte_index, char_len, char_bytes
+                );
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // DISPLAY WIDTH: Determine how many columns this character occupies
+        // ═══════════════════════════════════════════════════════════════════
+        let display_width = if char_len == 1 {
+            1 // ASCII is always single-width
+        } else {
+            // Parse multi-byte character to check if double-width (CJK, emoji, etc.)
+            match std::str::from_utf8(char_bytes) {
+                Ok(s) => {
+                    if let Some(ch) = s.chars().next() {
+                        if double_width::is_double_width(ch) {
+                            2
+                        } else {
+                            1
+                        }
+                    } else {
+                        1 // Default to single-width
+                    }
+                }
+                Err(_) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "  Invalid UTF-8 sequence at byte_index {}: {:02X?}",
+                        byte_index, char_bytes
+                    );
+                    1 // Invalid UTF-8, treat as single-width
+                }
+            }
+        };
+
+        // Check if character fits VISUALLY
+        if visual_col + display_width > visual_col_limit {
+            break; // Would overflow visually
+        }
+
+        // Check if character fits in remaining display space
+        if display_col + display_width > display_col_limit {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "  Character would exceed display limit: display_col={}, display_width={}, limit={}",
+                display_col, display_width, display_col_limit
+            );
+            break; // Character would exceed display width
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // WRITE: Copy character bytes to display buffer
+        // ═══════════════════════════════════════════════════════════════════
+        let write_start = col_start + bytes_written;
+        let write_end = write_start + char_len;
+
+        if write_end <= MAX_DISPLAY_BUFFER_BYTES {
+            // Copy bytes to display buffer
+            for i in 0..char_len {
+                state.utf8_txt_display_buffers[row][write_start + i] = char_bytes[i];
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // WINDOW MAP: Create file position mapping for this character
+            // ═══════════════════════════════════════════════════════════════
+            //
+            // bytes, pixels, characters, are not the same.
+            //
+            // Each character maps to ONE cursor position, regardless of display width.
+            //
+            // Single-width 'a': 1 display column → 1 cursor position
+            // Double-width '花': 1 display columns → 1 cursor position (not 2!)
+
+            #[cfg(debug_assertions)]
+            {
+                if display_width == 2 {
+                    eprintln!(
+                        "  Double-width char at display_col={} → (width={}, ONE cursor position)",
+                        display_col, display_width
+                    );
+                }
+            }
+
+            bytes_written += char_len;
+
+            // TODO, which is correct? kanji long line testing?
+            display_col += 1 // display_width; // Visual advance 1 TUI char column
+        // display_col += display_width; // Advance display_col by VISUAL WIDTH, not by '1'
+        } else {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "  Buffer full: write_end={} exceeds MAX_DISPLAY_BUFFER_BYTES={}",
+                write_end, MAX_DISPLAY_BUFFER_BYTES
+            );
+            break; // Buffer full
+        }
+
+        byte_index += char_len;
+        visual_col += display_width; // Advance visual position by 1 or 2
+    }
+
+    // Defensive: Check we didn't hit iteration limit
+    if write_iterations >= limits::HORIZONTAL_SCROLL_CHARS {
+        #[cfg(debug_assertions)]
+        eprintln!("process_line_with_offset: hit iteration limit during write phase");
+
+        return Err(LinesError::Io(io::Error::new(
+            io::ErrorKind::Other,
+            "Maximum iterations exceeded in line write",
+        )));
+    }
+
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "  After write: byte_index={}, bytes_written={}, display_col={}",
+        byte_index, bytes_written, display_col
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // ASSERTION CHECKS: Verify buffer bounds were respected
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Debug-Assert: Development/testing panic
+    debug_assert!(
+        bytes_written <= MAX_DISPLAY_BUFFER_BYTES,
+        "Wrote {} bytes but buffer is only {} bytes",
+        bytes_written,
+        MAX_DISPLAY_BUFFER_BYTES
+    );
+
+    // Test-Assert: Cargo test panic
+    #[cfg(test)]
+    assert!(
+        bytes_written <= MAX_DISPLAY_BUFFER_BYTES,
+        "Wrote {} bytes but buffer is only {} bytes",
+        bytes_written,
+        MAX_DISPLAY_BUFFER_BYTES
+    );
+
+    // Production: Catch and handle without panic
+    if bytes_written > MAX_DISPLAY_BUFFER_BYTES {
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "bytes_written > MAX_DISPLAY_BUFFER_BYTES".into(),
+        ));
+    }
+
+    // Debug-Assert: Display column check
+    debug_assert!(
+        display_col <= display_col_limit,
+        "Display column {} exceeds limit {}",
+        display_col,
+        display_col_limit
+    );
+
+    // Test-Assert: Display column check
+    #[cfg(test)]
+    assert!(
+        display_col <= display_col_limit,
+        "Display column {} exceeds limit {}",
+        display_col,
+        display_col_limit
+    );
+
+    // Production: Catch and handle
+    if display_col > display_col_limit {
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "display_col > display_col_limit".into(),
+        ));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // NEWLINE DISPLAY: Show newline as visible character
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Check if a line has a newline (from build_windowmap_nowrap's found_newline)
+    if found_newline && byte_index >= line_bytes.len() && display_col < display_col_limit {
+        // Choose your newline display character
+        let newline_char = '␤'; // '¶'; // or '↵' or '␤' or whatever you prefer
+        let newline_bytes = newline_char.to_string();
+        let newline_byte_len = newline_bytes.len();
+
+        let write_start = col_start + bytes_written;
+        let write_end = write_start + newline_byte_len;
+
+        if write_end <= MAX_DISPLAY_BUFFER_BYTES {
+            // Write the newline character to display
+            for (i, byte) in newline_bytes.as_bytes().iter().enumerate() {
+                state.utf8_txt_display_buffers[row][write_start + i] = *byte;
+            }
+
+            bytes_written += newline_byte_len;
+            display_col += 1; // Newline character occupies 1 column
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // END-OF-LINE MAPPING: Map position after last visible character
+    // ═══════════════════════════════════════════════════════════════════════
+    // This allows cursor to be positioned at "end of visible text" (not EOL).
+    // The byte_index now points to the next byte after the last displayed character.
+
+    let eol_display_col = display_col; // Column right after last char
+
+    if eol_display_col < display_col_limit {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "  EOL mapping: display_col={} →  (end of visible text)",
+            eol_display_col,
+        );
+    }
+
+    Ok(bytes_written)
+}
+
+/// Reads a single line from file into buffer
+///
+/// # Purpose
+/// Reads bytes from current file position until newline or buffer limit.
+/// Does NOT include the newline character in the returned bytes.
+///
+/// # Arguments
+/// * `file` - Open file handle positioned at start of line
+/// * `buffer` - Pre-allocated buffer to read into
+///
+/// # Returns
+/// * `Ok((buffer, bytes_read, found_newline))` - The buffer, bytes read, and whether newline was found
+/// * `Err(io::Error)` - If read operation fails
+///
+/// # Defensive Notes
+/// - Stops at newline character (0x0A)
+/// - Stops if buffer is full
+/// - Returns found_newline flag to distinguish EOF from empty line
+///
+/// # For Diagnostics: print bytes read so far
+/// if iterations % 10 == 0 {
+///     println!("Iterations: {}, Bytes read: {}", iterations, bytes_read);
+/// }
+///
+///  // Diagnostics: print
+/// println!(
+///     "Final bytes read: {}, Found newline: {}",
+///     bytes_read, found_newline
+/// );
+///
+fn read_single_line<'a>(
+    file: &'a mut File,
+    buffer: &'a mut [u8; limits::LINE_CHUNK_READ_BYTES],
+) -> io::Result<(&'a [u8; limits::LINE_CHUNK_READ_BYTES], usize, bool)> {
+    let mut bytes_read = 0usize;
+    let mut found_newline = false;
+    let mut single_byte = [0u8; 1];
+
+    // Defensive: Limit iterations
+    let mut iterations = 0;
+
+    while bytes_read < buffer.len() && iterations < limits::LINE_CHUNK_READ_BYTES {
+        iterations += 1;
+
+        // Read one byte at a time (inefficient but simple for MVP)
+        match file.read(&mut single_byte)? {
+            0 => break, // EOF reached
+            1 => {
+                if single_byte[0] == b'\n' {
+                    found_newline = true;
+                    break; // Don't include newline in buffer
+                }
+
+                buffer[bytes_read] = single_byte[0];
+                bytes_read += 1;
+            }
+            _ => {
+                // Should not happen with single byte read
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unexpected read result",
+                ));
+            }
+        }
+    }
+
+    // Assertion: We should have stayed within bounds
+    debug_assert!(bytes_read <= buffer.len(), "Read exceeded buffer size");
+    debug_assert!(
+        iterations <= limits::LINE_CHUNK_READ_BYTES,
+        "Too many iterations in line read"
+    );
+
+    Ok((buffer, bytes_read, found_newline))
+}
