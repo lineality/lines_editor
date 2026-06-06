@@ -1301,12 +1301,10 @@ use super::buffy_format_write_module::{
 //
 // This is the FIRST and ONLY use of raw-terminal mode in the entire lines
 // editor. Every other editor mode (Normal, Insert, VisualSelect, Pasty, Hex,
-// the existing "RawMode" which is unrelated to terminal raw mode) reads from a
-// cooked/canonical StdinLock acquired once in lines_fullfile_editor_core.
+// reads from a cooked/canonical StdinLock acquired once in
+// lines_fullfile_editor_core.
 //
 // IMPORTANT NAMING NOTE FOR FUTURE DEVS:
-//   - EditorMode::RawMode is NOT terminal-raw-mode. It is a legacy name that
-//     refers to a string-representation view (like Python's r"raw" strings).
 //   - RawTerminal (imported here) IS Linux termios raw mode (no line buffering,
 //     no echo, byte-by-byte input). These two unrelated concepts share the
 //     word "raw" by historical accident. Do not conflate them.
@@ -2239,126 +2237,6 @@ pub fn stack_format_hex<'a>(
 
     // Return slice of buffer (guaranteed valid ASCII, thus valid UTF-8)
     std::str::from_utf8(&buf[..pos]).ok()
-}
-/// Converts byte to raw string representation with escape sequences.
-/// **ZERO HEAP ALLOCATION**
-///
-/// ## Project Context
-/// Used in hex editor to display bytes as readable escape sequences.
-/// Shows special characters (\n, \t) and non-printable bytes (\xHH) in a
-/// human-readable format. Writes directly to provided stack buffer - NO heap.
-///
-/// ## Operation
-/// - Printable ASCII (0x20-0x7E) → writes as single character
-/// - Special chars (newline, tab, etc.) → writes escape sequence
-/// - Non-printable bytes → writes hex escape \xHH
-/// - Pure stack-based: Uses only provided buffer
-///
-/// ## Safety & Error Handling
-/// - No panic: Returns None if buffer too small
-/// - No heap: Uses only caller-provided stack buffer
-/// - Bounded output: Maximum 4 bytes (\xHH)
-/// - Pre-validated: All paths write valid UTF-8
-///
-/// ## Parameters
-/// - `byte`: Single byte to convert (0x00-0xFF)
-/// - `buf`: Mutable stack buffer to write into (min 4 bytes)
-///
-/// ## Returns
-/// - `Some(&str)`: Formatted string borrowing from buf (1-4 chars)
-/// - `None`: Buffer too small (< 4 bytes)
-///
-/// ## Examples
-/// ```rust
-/// let mut buf = [0u8; 4];
-///
-/// stack_format_byte_escape(0x0A, &mut buf) // Some("\\n")
-/// stack_format_byte_escape(0x48, &mut buf) // Some("H")
-/// stack_format_byte_escape(0x00, &mut buf) // Some("\\0")
-/// stack_format_byte_escape(0x09, &mut buf) // Some("\\t")
-/// ```
-pub fn stack_format_byte_escape<'a>(byte: u8, buf: &'a mut [u8]) -> Option<&'a str> {
-    let len: usize;
-
-    match byte {
-        0x0A => {
-            // Newline: \n
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b'n';
-            len = 2;
-        }
-        0x09 => {
-            // Tab: \t
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b't';
-            len = 2;
-        }
-        0x0D => {
-            // Carriage return: \r
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b'r';
-            len = 2;
-        }
-        0x5C => {
-            // Backslash: \\
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b'\\';
-            len = 2;
-        }
-        0x22 => {
-            // Quote: \"
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b'"';
-            len = 2;
-        }
-        0x00 => {
-            // Null: \0
-            if buf.len() < 2 {
-                return None;
-            }
-            buf[0] = b'\\';
-            buf[1] = b'0';
-            len = 2;
-        }
-        0x20..=0x7E => {
-            // Printable ASCII
-            if buf.is_empty() {
-                return None;
-            }
-            buf[0] = byte;
-            len = 1;
-        }
-        _ => {
-            // Non-printable: \xHH
-            if buf.len() < 4 {
-                return None;
-            }
-            let hex_chars = b"0123456789ABCDEF";
-            buf[0] = b'\\';
-            buf[1] = b'x';
-            buf[2] = hex_chars[(byte >> 4) as usize];
-            buf[3] = hex_chars[(byte & 0x0F) as usize];
-            len = 4;
-        }
-    }
-
-    // Return slice (guaranteed valid UTF-8 - we only write ASCII)
-    std::str::from_utf8(&buf[..len]).ok()
 }
 
 /// Formats a message with placeholders supporting alignment and width specifiers.
@@ -3754,7 +3632,6 @@ fn write_red_green_hotkey(hotkey_1: &str, hotkey_2: &str, description: &str) -> 
 /// - ins: insert mode
 /// - vis: visual mode
 /// - hex: hex editor mode
-/// - raw: raw view
 /// - pasty: paste operation
 /// - cvy: copy operation
 /// - wrd,b,end: word navigation
@@ -4258,13 +4135,10 @@ pub enum EditorMode {
     VisualSelectMode,
     /// Visual selection mode
     PastyMode,
-
     /// Hex Edict!
     HexMode,
-    RawMode,
-
-    /// Keystroke-input mode: byte-by-byte ASCII input via Linux termios raw
-    /// terminal (NOT the same as the legacy `RawMode` above).
+    /// Keystroke-input mode: byte-by-byte ASCII input via
+    /// Linux termios "raw terminal".
     ///
     /// # Project Context
     /// This mode is the only place in the editor that uses a real raw terminal
@@ -8546,7 +8420,7 @@ impl EditorState {
         ```
          */
 
-        if current_mode == EditorMode::Normal || current_mode == EditorMode::RawMode {
+        if current_mode == EditorMode::Normal {
             match command_str {
                 // Single character commands
                 "h" => Command::MoveLeft(count),
@@ -8585,7 +8459,6 @@ impl EditorState {
                 // Command::EnterKeystrokeInputMode and EditorMode::KeystrokeInputMode.
                 "ki" => Command::EnterKeystrokeInputMode,
                 "v" => Command::EnterVisualSelectMode,
-                "raw" => Command::EnterRawMode,
                 // Multi-character commands
                 "wq" | "sq" => Command::SaveAndQuit,
                 "s" | "ww" => Command::SaveFileStandard,
@@ -11765,7 +11638,6 @@ pub enum Command {
 
     EnterPastyClipboardMode, // pasty: clipboard et al
     EnterHexEditMode,        // Hex Edith
-    EnterRawMode,
 
     /// Enter keystroke-input mode (the `ki` command).
     ///
@@ -13256,32 +13128,6 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // Rebuild window to show the change from read-copy file
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             lines_editor_state.mode = EditorMode::HexMode;
-
-            // Convert current window position to file byte offset
-            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
-                lines_editor_state.cursor.tui_row,
-                lines_editor_state.cursor.tui_visual_col,
-            ) {
-                // Start hex cursor at same file position
-                lines_editor_state
-                    .hex_cursor
-                    .byte_offset_linear_file_absolute_position =
-                    file_pos.byte_offset_linear_file_absolute_position as usize;
-            } else {
-                // Fallback to file start if cursor position invalid
-                lines_editor_state
-                    .hex_cursor
-                    .byte_offset_linear_file_absolute_position = 0;
-            }
-
-            Ok(true)
-        }
-
-        Command::EnterRawMode => {
-            // rebuild may not be needed here, but just in case
-            // Rebuild window to show the change from read-copy file
-            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
-            lines_editor_state.mode = EditorMode::RawMode;
 
             // Convert current window position to file byte offset
             if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
@@ -20189,7 +20035,6 @@ pub fn read_and_sort_pasty_clipboard(clipboard_dir: &PathBuf) -> io::Result<Vec<
 /// - ins: insert mode
 /// - vis: visual mode
 /// - hex: hex editor mode
-/// - raw: raw view
 /// - pasty: paste operation
 /// - cvy: copy operation
 /// - wrd,b,end: word navigation
@@ -21536,7 +21381,6 @@ fn format_info_bar_cafe_normal_visualselect(lines_editor_state: &EditorState) ->
         EditorMode::VisualSelectMode => "VISUAL",
         EditorMode::PastyMode => "PASTY",
         EditorMode::HexMode => "HEX",
-        EditorMode::RawMode => "RAW",
     };
 
     // Line number (1-indexed for display).
@@ -21898,251 +21742,10 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
     Ok(result)
 }
 
-//  =====================
-//  Sashimi Raw TUI Ramen
-//  =====================
-//  =====================
-//  RAW String TUI
-//  =====================
-//  =====================
-//  Sashimi Raw TUI Ramen
-//  =====================
-
-//  =====================
-//  RAW STRING TUI
-//  =====================
-
-/// Renders the complete TUI in RAW STRING mode
-///
-/// # Purpose
-/// Displays raw string view with escape sequences visible:
-/// 1. Top: Command legend (1 line, same as hex mode)
-/// 2. Middle: Raw string with visible escapes + interpreted text (2 lines)
-/// 3. Bottom: Info bar (1 line, shows byte offset)
-///
-/// # Layout
-/// ```text
-/// quit ins vis save undo hjkl wb /search       <- Legend
-/// H  e  l  l  o  \n W  o  r  l  d  \t A  B    <- Raw (escapes visible)
-/// H  e  l  l  o  ␊  W  o  r  l  d  ␉  A  B    <- Interpreted
-/// RAW byte 156 of 1024 doc.txt > cmd_         <- Info bar
-/// ```
-pub fn render_tui_raw(state: &EditorState) -> Result<()> {
-    // Clear screen
-    print!("\x1B[2J\x1B[H");
-    io::stdout().flush().map_err(|e| {
-        LinesError::DisplayError(stack_format_it(
-            "Failed to flush stdout: {}",
-            &[&e.to_string()],
-            "Failed to flush stdout",
-        ))
-    })?;
-
-    // === TOP LINE: LEGEND (same as hex mode) ===
-    let _ = write_formatted_navigation_legend_to_tui()?;
-
-    // padding
-    for _ in 0..5 {
-        println!();
-    }
-
-    // === MIDDLE: RAW + INTERPRETED DISPLAY (2 lines) ===
-    let raw_display = render_raw_row(state)?;
-    print!("{}", raw_display);
-
-    // padding
-    for _ in 0..14 {
-        println!();
-    }
-
-    // === BOTTOM LINE: INFO BAR ===
-    let info_bar = format_raw_info_bar(state)?;
-    print!("{}", info_bar);
-
-    io::stdout().flush().map_err(|e| {
-        LinesError::DisplayError(stack_format_it(
-            "Failed to flush stdout: {}",
-            &[&e.to_string()],
-            "Failed to flush stdout",
-        ))
-    })?;
-
-    Ok(())
-}
-
 // ============================================================================
 // UTF-8 CHARACTER ANALYSIS (Helper for Multi-byte Character Handling)
 // ============================================================================
 
-/// Renders one row of raw string data with interpreted view
-///
-/// # Purpose
-/// Displays 26 bytes in two formats:
-/// 1. Raw representation with escape sequences (\n, \t, etc.)
-/// 2. Interpreted character representation (same as hex mode UTF-8 line)
-///
-/// # Format
-/// ```text
-/// H  e  l  l  o  \n W  o  r  l  d  \t
-/// H  e  l  l  o  ␊  W  o  r  l  d  ␉
-/// ```
-///
-/// # Escape Sequences
-/// - Newline (0x0A) → \n
-/// - Tab (0x09) → \t
-/// - Carriage return (0x0D) → \r
-/// - Backslash (0x5C) → \\
-/// - Quote (0x22) → \"
-/// - Other non-printable → \xHH (hex escape)
-/// - Regular printable → as-is
-fn render_raw_row(state: &EditorState) -> Result<String> {
-    const BYTES_TO_DISPLAY: usize = 26;
-    const BOLD: &str = "\x1b[1m";
-    const RED: &str = "\x1b[31m";
-    const BG_WHITE: &str = "\x1b[47m";
-    const RESET: &str = "\x1b[0m";
-
-    let mut raw_line = String::with_capacity(120); // Escapes can be 2-4 chars
-    let mut interpreted_line = String::with_capacity(DEFAULT_COLS);
-    let mut byte_buffer = [0u8; BYTES_TO_DISPLAY];
-
-    // Get file path from state
-    let file_path = state
-        .read_copy_path
-        .as_ref()
-        .ok_or_else(|| LinesError::StateError("No file path in raw mode".to_string()))?;
-
-    let mut file = File::open(file_path).map_err(|e| LinesError::Io(e))?;
-
-    // Calculate ROW START (same as hex)
-    let current_row = state.hex_cursor.current_row();
-    let row_start_offset = current_row * state.hex_cursor.bytes_per_row;
-
-    // Seek to START OF ROW
-    file.seek(io::SeekFrom::Start(row_start_offset as u64))
-        .map_err(|e| LinesError::Io(e))?;
-
-    let bytes_read = file.read(&mut byte_buffer).map_err(|e| LinesError::Io(e))?;
-    let cursor_col = state.hex_cursor.current_col();
-
-    // Build raw line and interpreted line simultaneously
-    for i in 0..BYTES_TO_DISPLAY {
-        if i < bytes_read {
-            let byte = byte_buffer[i];
-
-            let mut hex_buf = [0u8; 64];
-
-            // TODO: explore stack based formatting...
-            // === RAW LINE (with escape sequences) ===
-            // let raw_repr = byte_to_raw_escape(byte);
-            let raw_repr = stack_format_byte_escape(byte, &mut hex_buf).unwrap_or("?");
-
-            if i == cursor_col {
-                // raw_line.push_str(&format!(
-                //     "{}{}{}{:<3}{}", // Left-align in 3-char field
-                //     BOLD, RED, BG_WHITE, raw_repr, RESET
-                // ));
-
-                let formatted_string_1 = stack_format_it(
-                    "{}{}{}{:<3}{}", // "{}{}{}{:<3}{}",
-                    &[&BOLD, &RED, &BG_WHITE, &raw_repr, &RESET],
-                    "NNNNN",
-                );
-                raw_line.push_str(&formatted_string_1);
-            } else {
-                // raw_line.push_str(&format!("{:<3}", raw_repr));
-                let formatted_string_2 = stack_format_it("{:<3}", &[&raw_repr], "N");
-                raw_line.push_str(&formatted_string_2);
-            }
-
-            // === INTERPRETED LINE (same as hex mode) ===
-            let display_char = byte_to_display_char(byte);
-
-            if i == cursor_col {
-                // interpreted_line.push_str(&format!(
-                //     "{}{}{}{}{}  ",
-                //     BOLD, RED, BG_WHITE, display_char, RESET
-                // ));
-
-                let formatted_string_3 = stack_format_it(
-                    "{}{}{}{}{}  ",
-                    &[&BOLD, &RED, &BG_WHITE, &display_char.to_string(), &RESET],
-                    "NNNNN",
-                );
-
-                interpreted_line.push_str(&formatted_string_3);
-            } else {
-                interpreted_line.push_str(&format!("{}  ", display_char));
-                // interpreted_line.push_str(&stack_format_it(
-                //     "{}  ",
-                //     &[&display_char.to_string()],
-                //     "N   ",
-                // ));
-            }
-        } else {
-            // Past EOF
-            raw_line.push_str("   ");
-            interpreted_line.push_str("   ");
-        }
-    }
-
-    // let result = format!("{}\n{}\n", raw_line.trim_end(), interpreted_line.trim_end());
-
-    let result = stack_format_it(
-        "{}\n{}\n",
-        &[&raw_line.trim_end(), &interpreted_line.trim_end()],
-        "^\n^\n",
-    );
-
-    Ok(result)
-}
-
-/// Formats info bar for raw string mode
-///
-/// # Format
-/// ```text
-/// RAW byte 156 of 1024 doc.txt > cmd_
-/// ```
-fn format_raw_info_bar(state: &EditorState) -> Result<String> {
-    let filename = state
-        .read_copy_path
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
-
-    // Get file size (same as hex mode)
-    let file_size = if let Some(path) = &state.read_copy_path {
-        std::fs::metadata(path)
-            .map(|m| m.len() as usize)
-            .unwrap_or(0)
-    } else {
-        0
-    };
-
-    // Ok(format!(
-    //     "RAW byte {} of {} {} > ",
-    //     state.hex_cursor.byte_offset_linear_file_absolute_position, file_size, filename
-    // ))
-
-    Ok(stack_format_it(
-        "RAW byte {} of {} {} > ",
-        &[
-            &state
-                .hex_cursor
-                .byte_offset_linear_file_absolute_position
-                .to_string(),
-            &file_size.to_string(),
-            &filename,
-        ],
-        "RAW byte __ of _ _ > ",
-    ))
-}
-
-//  =====================
-//  Sashimi Raw TUI Ramen end
-//  =====================
-//
 /// Finds the next newline byte position after current cursor
 ///
 /// # Purpose
@@ -24085,16 +23688,6 @@ pub fn lines_fullfile_editor_core(
                     stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
                 )
             })?;
-        } else if lines_editor_state.mode == EditorMode::RawMode {
-            //  =====================
-            //  Sashimi Raw TUI Ramen
-            //  =====================
-            render_tui_raw(&lines_editor_state).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    stack_format_it("Display error: {}", &[&e.to_string()], "Display error"),
-                )
-            })?;
         } else {
             // Render TUI (convert LinesError to io::Error)
             render_tui_utf8txt(&lines_editor_state).map_err(|e| {
@@ -24135,12 +23728,6 @@ pub fn lines_fullfile_editor_core(
             keep_editor_loop_running =
                 lines_editor_state.pasty_mode(&mut stdin_handle, &mut text_buffer)?;
         } else if lines_editor_state.mode == EditorMode::HexMode {
-            //  ===============
-            //  Hex Editor Mode
-            //  ===============
-            keep_editor_loop_running = lines_editor_state
-                .handle_parse_hex_mode_input_and_commands(&mut stdin_handle, &mut command_buffer)?;
-        } else if lines_editor_state.mode == EditorMode::RawMode {
             //  ===============
             //  Hex Editor Mode
             //  ===============

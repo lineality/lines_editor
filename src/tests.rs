@@ -2844,32 +2844,6 @@ mod hex_format_tests {
         let result = stack_format_hex(0x42, &mut buf, false, "", "", "", "");
         assert_eq!(result, None);
     }
-
-    #[test]
-    fn test_byte_escape_zero_printable() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(b'H', &mut buf), Some("H"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_special() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(0x0A, &mut buf), Some("\\n"));
-        assert_eq!(stack_format_byte_escape(0x09, &mut buf), Some("\\t"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_nonprintable() {
-        let mut buf = [0u8; 4];
-        assert_eq!(stack_format_byte_escape(0xFF, &mut buf), Some("\\xFF"));
-    }
-
-    #[test]
-    fn test_byte_escape_zero_buffer_too_small() {
-        let mut buf = [0u8; 1]; // Too small for \xHH
-        let result = stack_format_byte_escape(0xFF, &mut buf);
-        assert_eq!(result, None);
-    }
 }
 
 // =============================================================================
