@@ -2319,6 +2319,7 @@ pub fn stack_format_it(template: &str, inserts: &[&str], fallback: &str) -> Stri
     let mut buf = [0u8; 256];
 
     // Maximum number of inserts to prevent abuse
+    // does this need to be usize?
     const MAX_INSERTS: usize = 128;
 
     // Check insert count
@@ -2646,36 +2647,6 @@ const SAVE_AS_COPY_MAX_RETRY_ATTEMPTS: usize = 3;
 /// thread::sleep(Duration::from_millis(SAVE_AS_COPY_RETRY_DELAY_MS));
 /// ```
 const SAVE_AS_COPY_RETRY_DELAY_MS: u64 = 200;
-
-/// Maximum chunks to process in save-as-copy operation
-///
-/// # Purpose
-/// Safety limit to prevent infinite loops from filesystem corruption,
-/// cosmic ray bit flips, or malformed file metadata.
-///
-/// # Capacity Calculation
-/// At 8KB buffer size:
-/// - 16,777,216 chunks × 8KB = 134,217,728 KB
-/// - = 131,072 MB
-/// - = ~128 GB maximum file size
-///
-/// # Rationale
-/// - Protects against infinite loops (NASA Power of 10, rule 2)
-/// - Allows copying very large files (128GB covers most use cases)
-/// - Typical text files: < 10MB (< 1,300 chunks)
-/// - Large log files: < 1GB (< 131,000 chunks)
-/// - Extreme cases: up to 128GB supported
-///
-/// # Failure Mode
-/// If exceeded, function returns error:
-/// - Logs to error file (production)
-/// - Returns LinesError::StateError
-/// - Does not panic or halt program
-///
-/// # Related Constants
-/// - FILE_APPEND_MAX_CHUNKS: 16,777,216 (same value, different operation)
-/// - Both ensure consistent safety limits across file operations
-const SAVE_AS_COPY_MAX_CHUNKS: usize = 16_777_216;
 
 // ============================================================================
 // (end) SAVE-AS-COPY OPERATION: Configuration Constants
@@ -8936,7 +8907,7 @@ fn is_leap_year(year: u64) -> bool {
 /// ```
 pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
-    const STDIN_CHUNK_SIZE: usize = 64;
+    const STDIN_CHUNK_SIZE: usize = 4;
     const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
 
     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
@@ -9063,7 +9034,6 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
 pub fn pasty_paste_mode<R: BufRead>(absolute_path: &Path, stdin_handle: &mut R) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
     const STDIN_CHUNK_SIZE: usize = 64;
-    const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
 
     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
 
@@ -9090,7 +9060,7 @@ pub fn pasty_paste_mode<R: BufRead>(absolute_path: &Path, stdin_handle: &mut R) 
 
         // Defensive: prevent infinite loop
         chunk_counter += 1;
-        if chunk_counter > MAX_CHUNKS {
+        if chunk_counter > limits::MAX_CHUNKS {
             return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::Other,
                 "Maximum iteration limit exceeded",
@@ -11041,11 +11011,11 @@ pub fn save_file_as_newfile_with_newname(
     // Copy loop: bounded by MAX_CHUNKS safety limit
     loop {
         // Safety check: prevent infinite loop from filesystem corruption
-        if chunk_count >= SAVE_AS_COPY_MAX_CHUNKS {
+        if chunk_count >= limits::MAX_CHUNKS {
             #[cfg(debug_assertions)]
             eprintln!(
                 "DEBUG: Maximum chunk limit reached ({})",
-                SAVE_AS_COPY_MAX_CHUNKS
+                limits::MAX_CHUNKS
             );
 
             #[cfg(not(debug_assertions))]
@@ -14965,13 +14935,12 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     source_file.seek(SeekFrom::Start(line_start))?;
 
     // Copy line bytes to temp file (chunked, no heap)
-    const CHUNK_SIZE: usize = 256;
+    const CHUNK_SIZE: usize = 32;
     let mut buffer = [0u8; CHUNK_SIZE];
     let mut bytes_to_copy = (delete_end - line_start) as usize;
     let mut copy_iterations = 0;
-    const MAX_COPY_ITERATIONS: usize = 1_000_000; // Safety limit
 
-    while bytes_to_copy > 0 && copy_iterations < MAX_COPY_ITERATIONS {
+    while bytes_to_copy > 0 && copy_iterations < limits::MAX_CHUNKS {
         copy_iterations += 1;
 
         let to_read = bytes_to_copy.min(CHUNK_SIZE);
@@ -14993,7 +14962,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     // Debug-Assert, Test-Assert, Production-Catch-Handle
     // =================================================
 
-    if copy_iterations >= MAX_COPY_ITERATIONS {
+    if copy_iterations >= limits::MAX_CHUNKS {
         log_error(
             &stack_format_it(
                 "Copy iterations {} exceeded limit",
@@ -15573,7 +15542,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
 ///
 /// **Bounded iterations:**
 /// - MAX_COPY_ITERATIONS: 1,000,000 (prevents infinite loops)
-/// - MAX_CHUNKS: 16,777,216 (during changelog creation)
+/// - MAX_CHUNKS: from standard constant (e.g. size max)
 /// - MAX_LOGGING_ERRORS: 100 (stops after too many failures)
 ///
 /// # Error Handling Philosophy
@@ -16037,11 +16006,10 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
         let mut carry_over_count: usize = 0;
         let mut logging_error_count: usize = 0;
         const MAX_LOGGING_ERRORS: usize = 100;
-        const MAX_CHUNKS: usize = 16_777_216;
 
         // Logging loop (same pattern as file insertion)
         loop {
-            if logging_chunk_counter >= MAX_CHUNKS {
+            if logging_chunk_counter >= limits::MAX_CHUNKS {
                 #[cfg(debug_assertions)]
                 log_error(
                     "Logging iteration exceeded MAX_CHUNKS",
@@ -16406,8 +16374,8 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     let temp_path = file_path.with_extension("tmp_delete");
 
     // Pre-allocated N-bytes buffer
-    const CHUNK_SIZE: usize = 4;
-    let mut buffer = [0u8; CHUNK_SIZE];
+    const DBRC_CHUNK_SIZE: usize = 4;
+    let mut buffer = [0u8; DBRC_CHUNK_SIZE];
 
     let mut source = File::open(file_path)?;
     let mut dest = File::create(&temp_path)?;
@@ -16419,7 +16387,7 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     while bytes_copied < start_byte && iterations < limits::FILE_SEEK_BYTES {
         iterations += 1;
 
-        let to_read = ((start_byte - bytes_copied) as usize).min(CHUNK_SIZE);
+        let to_read = ((start_byte - bytes_copied) as usize).min(DBRC_CHUNK_SIZE);
         let n = source.read(&mut buffer[..to_read])?;
 
         if n == 0 {
@@ -16801,8 +16769,8 @@ fn insert_newline_at_cursor_chunked(
     // TODO this should not be be allocating MORE memory
     // this should use a standard modular buffer
     // Pre-allocated N-bytes buffer
-    const CHUNK_SIZE: usize = 8;
-    let mut buffer = [0u8; CHUNK_SIZE];
+    const INACC_CHUNK_SIZE: usize = 8;
+    let mut buffer = [0u8; INACC_CHUNK_SIZE];
 
     // Step 4: Copy bytes before insertion point
     let mut bytes_copied = 0u64;
@@ -16811,7 +16779,7 @@ fn insert_newline_at_cursor_chunked(
     while bytes_copied < insert_position && iterations < limits::FILE_SEEK_BYTES {
         iterations += 1;
 
-        let to_read = ((insert_position - bytes_copied) as usize).min(CHUNK_SIZE);
+        let to_read = ((insert_position - bytes_copied) as usize).min(INACC_CHUNK_SIZE);
 
         // TODO use state buffer
         // let n = source.read(state.general_use_256_buffer[..to_read])?;
@@ -17042,7 +17010,8 @@ fn insert_newline_at_cursor_chunked(
 /// 4. Update total bytes written counter
 /// 5. Repeat until EOF (bytes_read == 0)
 ///
-/// **Iteration safety:** Limited to MAX_CHUNKS (16,777,216) to prevent infinite
+/// **Iteration safety:** Limited to MAX_CHUNKS
+/// (e.g. usize::MAX) to prevent infinite
 /// loops from filesystem corruption or cosmic ray bit flips.
 ///
 /// # File Operations
@@ -17418,7 +17387,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // ============================================
     // Counters and constants for the insertion loop
 
-    const CHUNK_SIZE: usize = 8;
+    const IFAC_CHUNK_SIZE: usize = 8;
 
     let mut chunk_counter: usize = 0;
     let mut total_bytes_written: u64 = 0;
@@ -17446,12 +17415,12 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
 
         // Pre-allocated buffer on stack (NASA Rule 3: no dynamic allocation)
         // This buffer is reused for each chunk - no per-iteration allocation
-        let mut buffer = [0u8; CHUNK_SIZE];
+        let mut buffer = [0u8; IFAC_CHUNK_SIZE];
 
         // Security mode: manually clear buffer before use
         // Prevents data leakage between chunks if read fails mid-buffer
         if state.security_mode {
-            for i in 0..CHUNK_SIZE {
+            for i in 0..IFAC_CHUNK_SIZE {
                 buffer[i] = 0;
             }
         }
@@ -17479,24 +17448,24 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
-            bytes_read <= CHUNK_SIZE,
+            bytes_read <= IFAC_CHUNK_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
             bytes_read,
-            CHUNK_SIZE
+            IFAC_CHUNK_SIZE
         );
         // Defensive assertion: bytes_read should never exceed buffer size
         // If it does, indicates memory corruption or cosmic ray bit flip
         // This is the only panic point - for catastrophic failure only
         #[cfg(test)]
         assert!(
-            bytes_read <= CHUNK_SIZE,
+            bytes_read <= IFAC_CHUNK_SIZE,
             "bytes_read ({}) exceeded buffer size ({})",
             bytes_read,
-            CHUNK_SIZE
+            IFAC_CHUNK_SIZE
         );
         // Catch & Handle without panic in production
         // This IS included in production to safe-catch
-        if !bytes_read <= CHUNK_SIZE {
+        if !bytes_read <= IFAC_CHUNK_SIZE {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
                 "zero buffer size error".into(),
@@ -17670,11 +17639,11 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         }
 
         // Stack-allocated read buffer (NASA Rule 3: pre-allocated)
-        let mut buffer = [0u8; CHUNK_SIZE];
+        let mut buffer = [0u8; IFAC_CHUNK_SIZE];
 
         // Security mode: clear buffer before use
         if state.security_mode {
-            for i in 0..CHUNK_SIZE {
+            for i in 0..IFAC_CHUNK_SIZE {
                 buffer[i] = 0;
             }
         }
@@ -17707,18 +17676,24 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
         // Debug-Assert, Test-Assert, Production-Catch-Handle
         // =================================================
 
-        debug_assert!(bytes_read <= CHUNK_SIZE, "bytes_read exceeded CHUNK_SIZE");
+        debug_assert!(
+            bytes_read <= IFAC_CHUNK_SIZE,
+            "bytes_read exceeded IFAC_CHUNK_SIZE"
+        );
 
         #[cfg(test)]
-        assert!(bytes_read <= CHUNK_SIZE, "bytes_read exceeded CHUNK_SIZE");
+        assert!(
+            bytes_read <= IFAC_CHUNK_SIZE,
+            "bytes_read exceeded IFAC_CHUNK_SIZE"
+        );
 
         // Production catch-handle
-        if bytes_read > CHUNK_SIZE {
+        if bytes_read > IFAC_CHUNK_SIZE {
             #[cfg(debug_assertions)]
             log_error(
                 &format!(
-                    "bytes_read {} exceeded CHUNK_SIZE {}",
-                    bytes_read, CHUNK_SIZE
+                    "bytes_read {} exceeded IFAC_CHUNK_SIZE {}",
+                    bytes_read, IFAC_CHUNK_SIZE
                 ),
                 Some("insert_file_at_cursor:phase6"),
             );
@@ -21763,11 +21738,11 @@ fn render_hex_row(state: &EditorState) -> Result<String> {
 /// * `Err(e)` - File read error
 ///
 /// # Search Strategy
-/// Reads file in 256-byte chunks to avoid loading entire file.
+/// Reads file in N-byte chunks to avoid loading entire file.
 /// Bounded by file size to prevent infinite loops.
 ///
 /// # Memory Safety
-/// - Pre-allocated 256-byte buffer (no dynamic allocation)
+/// - Pre-allocated N-byte buffer (no dynamic allocation)
 /// - Bounded iteration (stops at EOF)
 /// - Returns position, not reference (no lifetime issues)
 fn find_next_newline(
@@ -21775,7 +21750,7 @@ fn find_next_newline(
     start_offset: usize,
     file_size: usize,
 ) -> io::Result<Option<usize>> {
-    const SEARCH_CHUNK_SIZE: usize = 256;
+    const SEARCH_CHUNK_SIZE: usize = 32;
     let mut buffer = [0u8; SEARCH_CHUNK_SIZE];
 
     let mut file = File::open(file_path)?;
@@ -21835,15 +21810,15 @@ fn find_next_newline(
 /// * `Err(e)` - File read error
 ///
 /// # Search Strategy
-/// Reads file in 256-byte chunks backward from cursor position.
+/// Reads file in N-byte chunks backward from cursor position.
 /// Stops at byte 0 (file start).
 ///
 /// # Memory Safety
-/// - Pre-allocated 256-byte buffer
+/// - Pre-allocated N-byte buffer
 /// - Bounded iteration (stops at offset 0)
 /// - Underflow protection (checked subtraction)
 fn find_previous_newline(file_path: &PathBuf, start_offset: usize) -> io::Result<Option<usize>> {
-    const SEARCH_CHUNK_SIZE: usize = 256;
+    const SEARCH_CHUNK_SIZE: usize = 32;
     let mut buffer = [0u8; SEARCH_CHUNK_SIZE];
 
     if start_offset == 0 {

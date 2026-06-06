@@ -6342,3 +6342,32 @@ pub fn stack_format_byte_escape<'a>(byte: u8, buf: &'a mut [u8]) -> Option<&'a s
     // Return slice (guaranteed valid UTF-8 - we only write ASCII)
     std::str::from_utf8(&buf[..len]).ok()
 }
+/// Maximum chunks to process in save-as-copy operation
+///
+/// # Purpose
+/// Safety limit to prevent infinite loops from filesystem corruption,
+/// cosmic ray bit flips, or malformed file metadata.
+///
+/// # Capacity Calculation
+/// At 8KB buffer size:
+/// - 16,777,216 chunks × 8KB = 134,217,728 KB
+/// - = 131,072 MB
+/// - = ~128 GB maximum file size
+///
+/// # Rationale
+/// - Protects against infinite loops (NASA Power of 10, rule 2)
+/// - Allows copying very large files (128GB covers most use cases)
+/// - Typical text files: < 10MB (< 1,300 chunks)
+/// - Large log files: < 1GB (< 131,000 chunks)
+/// - Extreme cases: up to 128GB supported
+///
+/// # Failure Mode
+/// If exceeded, function returns error:
+/// - Logs to error file (production)
+/// - Returns LinesError::StateError
+/// - Does not panic or halt program
+///
+/// # Related Constants
+/// - FILE_APPEND_MAX_CHUNKS: 16,777,216 (same value, different operation)
+/// - Both ensure consistent safety limits across file operations
+const SAVE_AS_COPY_MAX_CHUNKS: usize = 16_777_216;
