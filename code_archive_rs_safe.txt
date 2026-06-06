@@ -5268,3 +5268,567 @@ fn read_single_line<'a>(
 
     Ok((buffer, bytes_read, found_newline))
 }
+
+// /// Builds the window-to-file mapping for NoWrap mode
+// /// Note: this should be using a read-copy file at all times.
+// ///
+// /// # Purpose
+// /// Reads file content and populates display buffers with proper line numbers
+// /// and text, while maintaining a complete mapping of which file byte each
+// /// terminal cell corresponds to.
+// ///
+// /// # NoWrap Mode Behavior
+// /// - Each file line maps to exactly one display row (no wrapping)
+// /// - Lines longer than terminal width are truncated at display edge
+// /// - Horizontal scrolling is controlled by state.tui_window_horizontal_utf8txt_line_char_offset
+// /// - Empty file lines still consume a display row
+// ///
+// /// # Arguments
+// /// * `state` - Editor state containing buffers and window position info
+// /// * `original_file_path` - Absolute path to the file being displayed
+// ///
+// /// # Returns
+// /// * `Ok(lines_processed)` - Number of file lines successfully processed
+// /// * `Err(io::Error)` - If file operations fail or invalid UTF-8 encountered
+// ///
+// /// # State Modified
+// /// - `state.utf8_txt_display_buffers` - Filled with line numbers and visible text
+// /// - `state.display_utf8txt_buffer_lengths` - Set to bytes used per row
+// /// - `state.window_map` - Updated with file position for each display cell
+// ///
+// /// # Defensive Programming
+// /// - Validates file exists before reading
+// /// - Bounds checks all buffer accesses
+// /// - Handles invalid UTF-8 gracefully
+// /// - Limits iteration counts to prevent infinite loops
+// ///
+// /// # Coordinate Spaces (see the module "Coordinate Spaces" reference)
+// /// - Reads `line_count_at_top_of_window` : #3 ; `..._line_char_offset` : #4
+// /// - Writes `windowmap_line_byte_start_end_position_pairs[row]` : #1 file bytes,
+// ///   indexed by #6 TUI display row. This is the file-byte CACHE the converter
+// ///   (`get_row_col_file_position`) reads; it is derived from the file each refresh.
+// ///
+// /// # Example
+// /// For a file starting "Hello\nWorld\n" with window at line 1:
+// /// - Row 0: "1 Hello"
+// /// - Row 1: "2 World"
+// /// WindowMapStruct will map each character to its file byte position.
+// pub fn build_windowmap_nowrap(state: &mut EditorState, readcopy_file_path: &Path) -> Result<usize> {
+//     // Defensive: Validate inputs
+//     if !readcopy_file_path.is_absolute() {
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::InvalidInput,
+//             "File path must be absolute",
+//         )));
+//     }
+
+//     if !readcopy_file_path.exists() {
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::NotFound,
+//             stack_format_it(
+//                 "File not found: {:?}",
+//                 &[&readcopy_file_path.to_string_lossy()],
+//                 "File not found",
+//             ),
+//         )));
+//     }
+
+//     // Assertion: State should have valid dimensions
+//     #[cfg(debug_assertions)]
+//     {
+//         debug_assert!(state.effective_rows > 0, "Effective rows must be positive");
+//         debug_assert!(state.effective_cols > 0, "Effective cols must be positive");
+//     }
+
+//     // Clear existing buffers and map before building
+//     state.clear_utf8_displaybuffers();
+
+//     state.clear_line_byte_ranges(); // line start stop data
+
+//     // Clear EOF tracking - will be rediscovered if EOF appears in this window
+//     // Note: file state changes with every edit, must refresh
+//     state.eof_fileline_tuirow_tuple = None;
+
+//     // Open file for reading
+//     let mut file = File::open(readcopy_file_path)?;
+
+//     // Calculate byte position for the target line
+//     let byte_position = seek_to_line_number(&mut file, state.line_count_at_top_of_window)?;
+
+//     // Update state with the byte position
+//     state.file_position_of_topline_start = byte_position;
+
+//     // Pre-allocate read buffer for one line at a time
+//     // Max line we'll try to read (defensive limit)
+//     let mut line_buffer = [0u8; limits::LINE_CHUNK_READ_BYTES];
+
+//     let mut current_display_row = 0usize;
+//     let mut current_file_line_number = state.line_count_at_top_of_window; // STARTS here, NOT always here
+//     let mut lines_processed = 0usize;
+//     let mut file_byte_position = state.file_position_of_topline_start;
+
+//     // Defensive: Limit iterations to prevent infinite loops
+//     let mut iteration_count = 0;
+
+//     // Clear EOF tracking at start of rebuild
+//     state.eof_fileline_tuirow_tuple = None;
+
+//     // Process lines until display is full or file ends
+//     while current_display_row < state.effective_rows && iteration_count < limits::WINDOW_BUILD_LINES
+//     {
+//         // Assertion: We should not exceed our display buffer count
+//         // assert if has been, not if might become, larger than max
+//         #[cfg(debug_assertions)]
+//         debug_assert!(
+//             current_display_row <= MAX_TUI_ROWS,
+//             "Display row exceeds maximum"
+//         );
+
+//         iteration_count += 1;
+
+//         // line start stop data
+//         let line_start_byte = file_byte_position;
+
+//         // Read one line from file (up to newline or MAX_LINE_BYTES)
+//         let (line_bytes, line_length, found_newline) =
+//             read_single_line(&mut file, &mut line_buffer)?;
+
+//         // Check for end of file
+//         if line_length == 0 && !found_newline {
+//             // EOL detected - record position for cursor movement boundaries
+//             // eo'f' is a typo here?
+
+//             if lines_processed > 0 {
+//                 // We processed at least one line before hitting EOF
+//                 // The last valid line is one before current position
+//                 let last_valid_file_line = current_file_line_number.saturating_sub(1);
+//                 let last_valid_display_row = current_display_row.saturating_sub(1);
+
+//                 state.eof_fileline_tuirow_tuple = Some((
+//                     last_valid_file_line,   // File line number (0-indexed)
+//                     last_valid_display_row, // TUI display row (0-indexed)
+//                 ));
+//             } else {
+//                 // No lines processed - positioned at or past EOF from start
+//                 // This happens with empty files or seeking past end
+//                 state.eof_fileline_tuirow_tuple = Some((
+//                     current_file_line_number, // Current file line position (0-indexed)
+//                     current_display_row,      // Current display row (0-indexed)
+//                 ));
+//             }
+
+//             break; // End of file reached
+//         }
+
+//         // Write line number to display buffer
+//         let fileline_number_for_display = current_file_line_number + 1; // Convert 0-indexed to 1-indexed
+
+//         let line_num_bytes_written = state.write_line_number(
+//             current_display_row,               // row_idx: usize,
+//             fileline_number_for_display,       // line_num: usize,
+//             state.line_count_at_top_of_window, // starting_row: usize,
+//         )?;
+
+//         // Calculate how many columns remain after line number
+//         let remaining_cols = state.effective_cols.saturating_sub(line_num_bytes_written);
+
+//         // Process the line text with horizontal offset
+//         let text_bytes_written = process_line_with_offset(
+//             state,
+//             current_display_row,
+//             line_num_bytes_written, // Column position after line number
+//             &line_bytes[..line_length],
+//             state.tui_window_horizontal_utf8txt_line_char_offset,
+//             remaining_cols,
+//             found_newline,
+//         )?;
+
+//         // Update total buffer length for this row
+//         state.display_utf8txt_buffer_lengths[current_display_row] =
+//             line_num_bytes_written + text_bytes_written;
+
+//         // ════════════════════════
+//         // line start stop tracking
+//         // ════════════════════════
+//         // Calculate line end byte position
+//         // For "hello\n" at bytes [10..15]: start=10, end=14 (last content byte)
+//         // For empty line "\n" at byte 20: start=20, end=20 (signals empty)
+//         // For last line "world" with no newline: start=X, end=X+4
+//         let line_end_byte = if line_length > 0 {
+//             // Line has content - end is last content byte
+//             // line_length = bytes read (NOT including newline)
+//             line_start_byte + (line_length as u64) - 1
+//         } else {
+//             // Empty line (just newline) - start == end signals empty
+//             line_start_byte
+//         };
+//         // Store the byte range for this display row
+//         state.set_line_byte_range(current_display_row, line_start_byte, line_end_byte)?;
+//         // ════════════════════════
+//         // line start stop tracking
+//         // ════════════════════════
+
+//         // Advance to next line
+//         current_display_row += 1;
+//         current_file_line_number += 1;
+//         lines_processed += 1;
+
+//         // Update file position for next line
+//         file_byte_position += line_length as u64;
+//         if found_newline {
+//             file_byte_position += 1; // Account for newline character
+//         }
+//     }
+
+//     // Defensive: Check we didn't hit iteration limit
+//     if iteration_count >= limits::WINDOW_BUILD_LINES {
+//         return Err(LinesError::Io(io::Error::new(
+//             io::ErrorKind::Other,
+//             "Maximum iterations exceeded in build_windowmap_nowrap",
+//         )));
+//     }
+
+//     // Assertion: Verify our line count makes sense
+//     #[cfg(debug_assertions)]
+//     debug_assert!(
+//         lines_processed <= state.effective_rows,
+//         "Processed more lines than display rows available"
+//     );
+
+//     // Validates that the processed line count does not exceed available display rows.
+//     // This catch ensures the windowmap construction stayed within bounds.
+//     // Returns error if an impossible state is detected (e.g., state corruption,
+//     // off-by-one errors in line processing, or file format unexpected behavior).
+//     if lines_processed > state.effective_rows {
+//         return Err(LinesError::LineCountExceeded {
+//             lines_processed,
+//             available_rows: state.effective_rows,
+//         });
+//     }
+
+//     Ok(lines_processed)
+// }
+
+// /// Moves the cursor to the end of the current displayed line ("End" key),
+// /// landing ON the last character, and scrolls horizontally if needed so
+// /// that last character is visible.
+// ///
+// /// # Purpose (Project Context)
+// /// In `lines_editor` the cursor's horizontal position is tracked as
+// /// `cursor.tui_visual_col`. Under the project's "Option A" coordinate decision,
+// /// `cursor.tui_visual_col` is a VISUAL column — a count of terminal CELLS — not a
+// /// count of characters. This matters because double-width characters (CJK such
+// /// as `危`, `な`, `い`, and many emoji) occupy TWO terminal cells but are ONE
+// /// character and ONE cursor stop. The terminal hardware and `effective_cols`
+// /// are both visual, so storing `tui_visual_col` as a visual column lets the movement
+// /// edge-checks compare against `effective_cols` with no conversion. This
+// /// function therefore sets `cursor.tui_visual_col` to the VISUAL start column of the
+// /// line's last character.
+// ///
+// /// # Two Coordinate Spaces (do not conflate them)
+// /// - CHARACTER space: 1 per character (a kanji counts as 1). The horizontal
+// ///   scroll offset `tui_window_horizontal_utf8txt_line_char_offset` lives here,
+// ///   because `process_line_with_offset` skips whole CHARACTERS when scrolling.
+// ///   This function computes the offset (`skip_chars`) in character units.
+// /// - VISUAL space: 1 per ASCII, 2 per double-width. `cursor.tui_visual_col`,
+// ///   `effective_cols`, and the terminal itself live here. This function sets
+// ///   `cursor.tui_visual_col` in visual units.
+// /// The whole job of this function is to convert between the two at the line's
+// /// end: it sums `double_width::is_double_width` widths to get visual extents,
+// /// while expressing the scroll position in characters.
+// ///
+// /// # Consistency Contract With The Lookup
+// /// The visual column written to `cursor.tui_visual_col` is later handed back to
+// /// `EditorState::get_row_col_file_position`, which converts a visual column to
+// /// a file byte by walking and summing the same `is_double_width` widths. For
+// /// the round-trip to resolve to the intended byte, the line-number prefix width
+// /// MUST be computed the same way in both places. This function therefore uses
+// /// `calculate_line_number_width(line_count_at_top_of_window, cursor.tui_row,
+// /// effective_rows)` — `cursor.tui_row` as the second argument — exactly as the
+// /// lookup does. (Passing a file line number there instead would compute a wrong
+// /// prefix width and the cursor would land on the wrong byte.)
+// ///
+// /// # Algorithm
+// /// 1. Resolve the cursor's current file position via the lookup to learn the
+// ///    line's start byte (`current_file_pos.byte_offset - byte_in_line`).
+// /// 2. Read that one line from the read-copy file into a stack buffer (no whole-
+// ///    file load; one line at a time).
+// /// 3. Sum the line's total VISUAL width and record the last character's visual
+// ///    width (1 or 2).
+// /// 4. Compute `visible_content_cells = effective_cols - line_num_width - 1`.
+// ///    One cell is reserved so a double-width character cannot straddle the right
+// ///    edge (matching the `right_edge` convention in the movement commands).
+// /// 5a. If the line fits (`total_visual_width <= visible_content_cells`): reset
+// ///     the horizontal offset to 0 and set
+// ///     `tui_visual_col = line_num_width + (total_visual_width - last_char_visual_width)`.
+// /// 5b. Otherwise (line wider than the visible area): drop leading CHARACTERS one
+// ///     at a time until the remaining VISUAL width fits, recording how many were
+// ///     dropped (`skip_chars`, the character offset) and the remaining visible
+// ///     visual width. Set
+// ///     `offset = skip_chars` and
+// ///     `tui_visual_col = line_num_width + (remaining_visual_width - last_char_visual_width)`.
+// /// 6. Rebuild the on-screen window from the read-copy file so the new offset and
+// ///    cursor column are reflected. A rebuild failure is logged and handled; the
+// ///    cursor state is already updated, so the function continues.
+// ///
+// /// In both cases the resulting visual column is the START column of the last
+// /// character, so `get_row_col_file_position` returns that character's start
+// /// byte (e.g. byte 8659 on the canonical README2 test line).
+// ///
+// /// # Edge Cases
+// /// - Empty line (no characters): `total_visual_width == 0`, there is no last
+// ///   character, and `last_char_visual_width` defaults to 1. The subtraction is
+// ///   saturating, so `tui_visual_col` becomes `line_num_width` (content column 0), i.e.
+// ///   the line's only stop. No scroll is applied.
+// /// - Line exactly as wide as the visible area: takes the fit branch; offset 0.
+// /// - Saturating arithmetic is used for the prefix/edge/width subtractions so a
+// ///   surprising terminal size (e.g. `effective_cols` smaller than the prefix)
+// ///   cannot underflow.
+// ///
+// /// # Memory Safety
+// /// - Stack-only fixed buffer (`[0u8; 4096]`); the line is read with
+// ///   `read_single_line` one line at a time. No heap, no whole-file load.
+// /// - The width sums iterate the bytes already read; no additional allocation.
+// ///
+// /// # Defensive Programming (never panic in production)
+// /// - Every fallible I/O step (lookup, open, seek, read, rebuild) is matched and
+// ///   handled: on failure it sets a terse, data-free info-bar message, logs
+// ///   detail only under `#[cfg(debug_assertions)]`, and returns `Ok(())` so the
+// ///   editor keeps running. The cursor is never left in an undefined state.
+// /// - `std::str::from_utf8(...).unwrap_or("")` tolerates malformed bytes by
+// ///   treating the line as empty rather than panicking (matches the renderer's
+// ///   tolerance of invalid UTF-8).
+// ///
+// /// # Arguments
+// /// * `lines_editor_state` - Mutable editor state; `cursor.tui_visual_col`,
+// ///   `tui_window_horizontal_utf8txt_line_char_offset`,
+// ///   `the display buffers, and the info-bar message may be updated.
+// /// * `file_path` - Absolute path to the read-copy file to read the line from and
+// ///   to rebuild the window from.
+// ///
+// /// # Returns
+// /// * `Ok(())` - Always: either the cursor was moved to the line end, or an issue
+// ///   was handled gracefully and reported on the info bar. This function does not
+// ///   surface recoverable errors to the caller; it absorbs and logs them.
+// ///
+// /// # Coordinate Spaces (see the module "Coordinate Spaces" reference)
+// /// - In  cursor (#6 tui_row, #5 tui_visual_col); resolves the current #3 line
+// /// - Sets `cursor.tui_visual_col` : #5 VISUAL cell column (last char's start cell)
+// /// - Sets `tui_window_horizontal_utf8txt_line_char_offset` : #4 in-line char index
+// ///   (0 if the line fits; chars to skip if it must scroll)
+// ///
+// /// # Side Effects
+// /// * Sets `cursor.tui_visual_col` to the last character's visual start column.
+// /// * Sets `tui_window_horizontal_utf8txt_line_char_offset` (0 when the line
+// ///   fits; the character count to skip when scrolling).
+// /// * Rebuilds the display buffers via `build_windowmap_nowrap`.
+// /// * Sets the info-bar message ("end of line", or a terse failure message).
+// ///
+// fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Result<()> {
+//     // ========================================================================
+//     // STEP 1: Get file position from cursor (defensive)
+//     // ========================================================================
+
+//     let current_file_pos = match lines_editor_state.get_row_col_file_position(
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.cursor.tui_visual_col,
+//     ) {
+//         Ok(Some(pos)) => pos,
+//         Ok(None) => {
+//             let _ = lines_editor_state.set_info_bar_message("gl cursor pos. unavailable");
+//             return Ok(());
+//         }
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot get cursor position");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             log_error("goto_line_end window_map error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     let line_start_byte = current_file_pos.byte_offset_linear_file_absolute_position
+//         - (current_file_pos.byte_in_line as u64);
+
+//     // ========================================================================
+//     // STEP 2: Read the line from file
+//     // ========================================================================
+
+//     let mut line_buffer = [0u8; limits::LINE_CHUNK_READ_BYTES];
+
+//     let mut file = match File::open(file_path) {
+//         Ok(f) => f,
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot open file");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             log_error("goto_line_end open error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     if let Err(_e) = file.seek(SeekFrom::Start(line_start_byte)) {
+//         let _ = lines_editor_state.set_info_bar_message("cannot seek to line");
+//         #[cfg(debug_assertions)]
+//         eprintln!("e: {}", _e);
+//         log_error("goto_line_end seek error", Some("goto_line_end"));
+//         return Ok(());
+//     }
+
+//     let (_, line_length, _) = match read_single_line(&mut file, &mut line_buffer) {
+//         Ok(result) => result,
+//         Err(_e) => {
+//             let _ = lines_editor_state.set_info_bar_message("cannot read line");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             #[cfg(debug_assertions)]
+//             log_error("goto_line_end read error", Some("goto_line_end"));
+//             return Ok(());
+//         }
+//     };
+
+//     // =========================
+//     // position state inspection
+//     // =========================
+//     // line_num_width uses cursor.tui_row — the SAME prefix width the lookup
+//     // (get_row_col_file_position) uses — so the VISUAL column we set below
+//     // resolves consistently when the lookup is asked for this position.
+//     let line_num_width = calculate_line_number_width(
+//         lines_editor_state.line_count_at_top_of_window,
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.effective_rows,
+//     );
+
+//     #[cfg(debug_assertions)]
+//     lines_editor_state.debug_inspect_position("go_to_line()");
+
+//     // ========================================================================
+//     // STEP 3: Sum the line's total VISUAL width and the last char's width
+//     // ========================================================================
+//     // Under Option A, cursor.tui_visual_col is a VISUAL column (terminal cells). The
+//     // line-number prefix is ASCII (visual width == char width). Content visual
+//     // width is the sum of is_double_width widths (1 per ASCII, 2 per
+//     // double-width). "End" places the cursor ON the last character, so we
+//     // also need that last character's visual width to compute where it starts.
+//     let line_bytes = &line_buffer[..line_length];
+//     let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+
+//     let mut total_visual_width: usize = 0;
+//     for ch in line_str.chars() {
+//         total_visual_width += if double_width::is_double_width(ch) {
+//             2
+//         } else {
+//             1
+//         };
+//     }
+
+//     let last_char_visual_width: usize = match line_str.chars().last() {
+//         Some(ch) => {
+//             if double_width::is_double_width(ch) {
+//                 2
+//             } else {
+//                 1
+//             }
+//         }
+//         None => 1, // empty line: no last char (saturates to start column below)
+//     };
+
+//     // TEMPORARY: remove in Step 5
+//     #[cfg(debug_assertions)]
+//     eprintln!(
+//         "GOTO_END widths: total_visual_width={} last_char_visual_width={}",
+//         total_visual_width, last_char_visual_width
+//     );
+
+//     // ========================================================================
+//     // STEP 4: Visible content width in terminal cells (after the prefix)
+//     // ========================================================================
+//     // Reserve one cell so a double-width character cannot overflow the edge
+//     // (matches the right_edge convention used by the movement commands).
+//     let visible_content_cells = lines_editor_state
+//         .effective_cols
+//         .saturating_sub(line_num_width)
+//         .saturating_sub(1);
+
+//     // ========================================================================
+//     // STEP 5: Set the VISUAL cursor column, scrolling horizontally if the line
+//     //         is wider than the visible content area.
+//     // ========================================================================
+//     // The horizontal scroll offset stays in CHARACTERS (process_line_with_offset
+//     // skips whole characters). We drop leading characters until the remaining
+//     // VISUAL width fits, then place the cursor at the last character's VISUAL
+//     // start column within the visible region.
+//     let needs_rebuild: bool;
+
+//     if total_visual_width > visible_content_cells {
+//         // Scroll branch: drop leading chars until remaining visual width fits.
+//         let mut skip_chars: usize = 0;
+//         let mut remaining_visual_width = total_visual_width;
+//         for ch in line_str.chars() {
+//             if remaining_visual_width <= visible_content_cells {
+//                 break;
+//             }
+//             remaining_visual_width -= if double_width::is_double_width(ch) {
+//                 2
+//             } else {
+//                 1
+//             };
+//             skip_chars += 1;
+//         }
+
+//         // Visual start column of the last char, within the visible region.
+//         let last_char_visual_start = remaining_visual_width.saturating_sub(last_char_visual_width);
+
+//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = skip_chars;
+//         lines_editor_state.cursor.tui_visual_col = line_num_width + last_char_visual_start;
+
+//         // // extra-inspection
+//         // #[cfg(debug_assertions)]
+//         // eprintln!(
+//         //     "GOTO_END scroll: skip_chars={} remaining_visual_width={} last_char_visual_start={} offset={} tui_visual_col={}",
+//         //     skip_chars,
+//         //     remaining_visual_width,
+//         //     last_char_visual_start,
+//         //     lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset,
+//         //     lines_editor_state.cursor.tui_visual_col,
+//         // );
+
+//         needs_rebuild = true;
+//     } else {
+//         // Fit branch: no scroll. Place the cursor at the last char's visual start.
+//         let last_char_visual_start = total_visual_width.saturating_sub(last_char_visual_width);
+
+//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+//         lines_editor_state.cursor.tui_visual_col = line_num_width + last_char_visual_start;
+
+//         // // extra inspection
+//         // #[cfg(debug_assertions)]
+//         // eprintln!(
+//         //     "GOTO_END fit: total_visual_width={} last_char_visual_start={} tui_visual_col={} offset=0",
+//         //     total_visual_width, last_char_visual_start, lines_editor_state.cursor.tui_visual_col,
+//         // );
+
+//         needs_rebuild = true;
+//     }
+
+//     // ========================================================================
+//     // STEP 6: Rebuild the display if the cursor column or scroll offset changed
+//     // ========================================================================
+//     // Either branch above updated cursor.tui_visual_col (and possibly the horizontal
+//     // scroll offset), so the on-screen window must be regenerated from the
+//     // read-copy file. A rebuild failure is logged and handled, never panicked:
+//     // the cursor state is already updated, so we continue.
+//     if needs_rebuild {
+//         if let Err(_e) = build_windowmap_nowrap(lines_editor_state, file_path) {
+//             let _ = lines_editor_state.set_info_bar_message("display update failed");
+//             #[cfg(debug_assertions)]
+//             eprintln!("e: {}", _e);
+//             #[cfg(debug_assertions)]
+//             log_error("goto_line_end rebuild error", Some("goto_line_end"));
+//             // Continue anyway - cursor was already updated.
+//         }
+//     }
+
+//     let _ = lines_editor_state.set_info_bar_message("end of line");
+//     Ok(())
+// }
