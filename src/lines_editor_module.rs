@@ -3108,13 +3108,16 @@ pub fn createarchive_timestamp_with_precision(
 }
 
 /*
- * The attempt is to follow NASA's only-preallocated-memory rule.
- */
+The attempt is to follow NASA's only-preallocated-memory rule.
+*/
+
+const FIXED_SIZE_32_TIMESTAMP_CAPACITY: usize = 32;
+const FIXED_SIZE_32_TIMESTAMP_MAX_LEN: usize = FIXED_SIZE_32_TIMESTAMP_CAPACITY - 1; // 31, reserves one byte (e.g. for null termination)
 
 /// Fixed-size timestamp type - stack allocated, no heap
 #[derive(Copy, Clone)]
 pub struct FixedSize32Timestamp {
-    data: [u8; 32],
+    data: [u8; FIXED_SIZE_32_TIMESTAMP_CAPACITY],
     len: usize,
 }
 
@@ -3130,26 +3133,26 @@ impl FixedSize32Timestamp {
     /// # Errors
     /// Returns error if string exceeds 31 bytes
     pub fn from_str(s: &str) -> Result<Self> {
-        const MAX_LEN: usize = 31;
-
         // Assertion 1: Check length
-        if s.len() > MAX_LEN {
+        if s.len() > FIXED_SIZE_32_TIMESTAMP_MAX_LEN {
             return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 stack_format_it(
                     "impl FixedSize32Timestamp String too long: {} bytes, max: {}",
-                    &[&s.len().to_string(), &MAX_LEN.to_string()],
+                    &[
+                        &s.len().to_string(),
+                        &FIXED_SIZE_32_TIMESTAMP_MAX_LEN.to_string(),
+                    ],
                     "impl FixedSize32Timestamp String too long: __ bytes, max: __",
                 ),
             )));
         }
 
-        // Assertion 2: Verify valid UTF-8 (already guaranteed by &str type)
-        let mut data = [0u8; 32];
+        let mut data = [0u8; FIXED_SIZE_32_TIMESTAMP_CAPACITY];
         let bytes = s.as_bytes();
 
         // Bounded copy loop
-        for i in 0..s.len().min(MAX_LEN) {
+        for i in 0..s.len().min(FIXED_SIZE_32_TIMESTAMP_MAX_LEN) {
             data[i] = bytes[i];
         }
 
@@ -3171,22 +3174,16 @@ impl FixedSize32Timestamp {
         // This is not included in production builds
         // assert: only when running in a debug-build: will panic
         debug_assert!(
-            self.len <= 32,
+            self.len <= FIXED_SIZE_32_TIMESTAMP_CAPACITY,
             "Internal invariant violated: length exceeds buffer size"
         );
-        // This is not included in production builds
-        // assert: only when running cargo test: will panic
-        #[cfg(test)]
-        assert!(
-            self.len <= 32,
-            "Internal invariant violated: length exceeds buffer size"
-        );
+
         // Catch & Handle without panic in production
         // This IS included in production to safe-catch
-        if !self.len <= 32 {
+        if self.len > FIXED_SIZE_32_TIMESTAMP_CAPACITY {
             // state.set_info_bar_message("Config error");
             return Err(LinesError::GeneralAssertionCatchViolation(
-                "NOTlen<=32buf".into(),
+                "is len > 32buf".into(),
             ));
         }
 
