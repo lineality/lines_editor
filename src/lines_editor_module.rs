@@ -188,11 +188,14 @@ full IDE competing with Zed, Helix, vsCode, etc.
 
 
 # 🦀 Rust rules 🦀:
+(production-Rust rules)
+
+# 🦀 Rust rules 🦀:
 - Always best practice.
 - Always extensive doc strings: what the code is doing with project context
 - Always clear comments.
 - Always cargo tests (where possible).
-- Never remove documentation.
+- Never remove (still-current) documentation.
 - Always clear, meaningful, unique names (e.g. variables, functions).
 - Always absolute file paths.
 - Always error handling.
@@ -282,7 +285,7 @@ These are ideals to be followed where possible and sensible, not absolute pedant
 3. Pre-allocate all memory (no dynamic memory allocation)
 - Production code should minimize or eliminate use of heap (e.g. very terse error messages that do not leak any user-data)
 - Debug and testing often make sense to use heap and this code is not in production-binaries (e.g. detailed error messages)
-- Clearly separate lazy-convension from real-need. With tools such as "Buffy'
+- Clearly separate lazy-convention from real-need. With tools such as "Buffy'
 github.com/lineality/buffy_stack_format_write_module, it is not necessary to use heap for string formatting.
 
 4. Clear Function Scope and Data Ownership:
@@ -341,12 +344,26 @@ When we run a cargo test:
 
 3 of 3:. Production catches: Always present, return production-safe no-heap terse errors (no panic, no open-ended data exfiltration), with unique error prefixes to identify the function, e.g. 'SCLF error: arg empty' for string_concat_list_function()
 
+Terminology: for consistency, "assert" will be used to mean inducing panic, which is the goal only for cargo-test and debug-builds (not production).
+
+For production, the term "required-condition" will be used (e.g. instead of invariant), to avoid the circular terminology vortex that the original 'Power of 10' is not clear on: ' "assert" handing in production without "asserting" because "asserts" are removed in production... but something is still "asserted" without "assert"ing..." etc.
+
+e.g.
+"required-condition" — each rule itself, e.g. len <= 8, Independent of build mode
+
+"requirement-check" — the code that tests a required-condition
+
+"reaction-to-check" — what happens when a check fails. This varies by tier:
+
+Test: panic (assert!) (heap)
+Debug: panic (debug_assert!), may also eprintln! (heap)
+Production: return terse error (no panic, no print) (no heap)
 
 Note: Buffy may be useful in production error string formatting https://github.com/lineality/buffy_stack_format_write_module
 
 // template/example for check/assert format
 //    =================================================
-//    Debug-Assert, Test-Asset, Production-Catch-Handle
+// // Debug-Assert, Test-Asset, Production-Catch-Handle
 //    =================================================
 // This is not included in production builds
 // debug_assert: IS also active during test-builds
@@ -431,6 +448,14 @@ All debug-prints not for production must be tagged with:
 ```
 
 Production output following an error / exception / case must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
+The three tiers can be handled with a Fieldless enum type system and exit-codes for behavior such as retry-ing in some cases.
+
+(see more below)
+
+
+
+
+
 
 6. Manage ownership and borrowing
 - Rust is designed to greatly assist here (vs. c).
@@ -459,6 +484,15 @@ Production output following an error / exception / case must be managed and defi
 
 Also: As per Mara Bos's 'Rust Atomics and Locks' (O'Reilly) note the specific use-case and needs for threads, parallelism, concurrency, atomics, async, etc. Distributed processing varies significantly per project, and implementations of production functions, algorithms, and data structures, are rarely the same as abstract text-book examples.
 🦀Vigilance🦀: Properly written code supports users, developers, and the people who depend upon maintainable software. Maintainable software supports the future for us all.
+
+#### Links:
+- https://en.wikipedia.org/wiki/The_Power_of_10:_Rules_for_Developing_Safety-Critical_Code
+- https://spinroot.com/gerard/pdf/P10.pdf
+- https://spinroot.com/static/index.html
+- https://web.eecs.umich.edu/~imarkov/10rules.pdf
+- https://www.youtube.com/watch?v=JWKadu0ks20
+- https://en.wikipedia.org/wiki/Static_program_analysis
+- https://www.oreilly.com/library/view/designing-data-intensive-applications/9781491903063/
 
 
 
@@ -5150,7 +5184,7 @@ impl EditorState {
         // Span: [accumulated_visual, accumulated_visual + 1) → the '\n' byte.
         // ───────────────────────────────────────────────────────────────────
         if has_newline && content_visual_col < accumulated_visual + 1 {
-            // // extra inspect
+            //  // extra inspect
             // #[cfg(debug_assertions)]
             // eprintln!(
             //     "GRCFP HIT newline-glyph: newline_byte={} byte_in_line={} acc_visual={}",
@@ -18299,660 +18333,6 @@ fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io
     Ok(())
 }
 
-// /// Inserts bytes at specific file position without cursor tracking
-// ///
-// /// # Overview
-// ///
-// /// This helper function inserts a byte slice at an arbitrary position in a file
-// /// by reading the bytes after that position, writing the new bytes, then writing
-// /// back the shifted bytes.
-// ///
-// /// **Operation:**
-// /// ```text
-// /// Before: [A B C D E F]
-// ///         Insert "XY" at position 3
-// /// After:  [A B C X Y D E F]
-// ///                 ↑ insertion point (position 3)
-// /// ```
-// ///
-// /// # Memory Safety - Stack Allocated Buffer
-// ///
-// /// Uses 8KB stack buffer for shifting bytes after insertion point.
-// /// - No heap allocation for data processing
-// /// - Fixed-size buffer regardless of file size
-// /// - If file has > 8KB after insertion point, shifts occur in 8KB chunks
-// ///
-// /// # Arguments
-// ///
-// /// * `file_path` - Path to target file (read+write access required)
-// /// * `position` - Byte offset where to insert (0 = start, file_size = append)
-// /// * `bytes` - Slice of bytes to insert (any length, copied in one write)
-// ///
-// /// # Returns
-// ///
-// /// * `Ok(())` - Bytes inserted successfully, file modified
-// /// * `Err(io::Error)` - File operation failed (open, seek, read, write, flush)
-// ///
-// /// # Algorithm
-// ///
-// /// 1. Open file in read+write mode
-// /// 2. Seek to insertion position
-// /// 3. Read bytes after insertion point into buffer (up to 8KB)
-// /// 4. Seek back to insertion position
-// /// 5. Write new bytes
-// /// 6. Write back the shifted bytes (from buffer)
-// /// 7. Flush to ensure data written to disk
-// ///
-// /// # Edge Cases
-// ///
-// /// **Insert at EOF (position == file size):**
-// /// - Read after position returns 0 bytes
-// /// - Writes new bytes
-// /// - Nothing to shift back
-// /// - Equivalent to append operation
-// ///
-// /// **Insert at start (position == 0):**
-// /// - Reads entire file into buffer (up to 8KB)
-// /// - Writes new bytes at position 0
-// /// - Writes back original content (shifted right)
-// /// - Most expensive case (maximum data movement)
-// ///
-// /// **Insert with > 8KB after insertion point:**
-// /// - Only first 8KB shifted in this call
-// /// - Remaining bytes stay in original positions
-// /// - **BUG:** This corrupts the file if bytes_to_insert.len() + bytes_after > 8KB
-// /// - Should be fixed to loop-shift in chunks
-// /// - Current implementation assumes insert size + remaining < 8KB
-// ///
-// /// **Empty insertion (bytes.len() == 0):**
-// /// - Valid operation (no-op)
-// /// - Still performs read/seek/write/flush
-// /// - File unchanged but timestamp updated
-// ///
-// /// # Defensive Programming
-// ///
-// /// - No unwrap calls
-// /// - All I/O operations explicitly error-checked
-// /// - Flush called to ensure disk write
-// /// - No assumptions about file permissions (error if not writable)
-// ///
-// /// # Performance
-// ///
-// /// - **Time:** O(M) where M = bytes after insertion point (up to 8KB)
-// /// - **Space:** O(1) - fixed 8KB stack buffer
-// /// - **I/O:** 1 read, 2 seeks, 2 writes, 1 flush = 6 operations
-// /// - Not optimized for repeated insertions (each call shifts independently)
-// ///
-// /// # Known Limitations
-// ///
-// /// **8KB shift buffer limit:**
-// /// If inserting N bytes at position P, and (file_size - P) > 8KB:
-// /// - Only first 8KB shifted
-// /// - Data beyond 8KB may be overwritten
-// /// - Should loop to shift all remaining bytes
-// ///
-// /// **No atomic operation:**
-// /// If write fails mid-operation, file left in inconsistent state.
-// /// No rollback, no transaction, no recovery.
-// ///
-// /// # See Also
-// ///
-// /// * `delete_byte_at_position()` - Inverse operation (removes byte)
-// /// * `insert_file_at_cursor()` - Caller that uses this function repeatedly
-// fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io::Result<()> {
-//     // Open file for read+write
-//     // Requires file already exists (won't create new file)
-//     let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
-
-//     // Pre-allocated buffer for bytes after insertion point
-//     // N-bytes chosen as balance between stack usage and shift efficiency
-//     const BUFFER_SIZE: usize = 8;
-//     let mut after_buffer = [0u8; BUFFER_SIZE];
-
-//     // Seek to insertion position and read bytes that will be shifted
-//     file.seek(SeekFrom::Start(position))?;
-//     let bytes_after = file.read(&mut after_buffer)?;
-
-//     // Seek back to insertion position to write new bytes
-//     file.seek(SeekFrom::Start(position))?;
-//     file.write_all(bytes)?;
-
-//     // Write the shifted bytes (what was at position, now at position+insert_size)
-//     file.write_all(&after_buffer[..bytes_after])?;
-
-//     // Flush to ensure data written to disk
-//     // Without flush, data might sit in OS buffer cache
-//     file.flush()?;
-
-//     Ok(())
-// }
-
-// incomplete update for small-chunk version of lines
-// /// Inserts a chunk of text at cursor position using file operations
-// ///
-// /// # Overview
-// /// This function inserts text at the current cursor position and creates
-// /// inverse changelog entries for undo support. Text is inserted character-by-character
-// /// with proper UTF-8 handling.
-// ///
-// /// # Workflow
-// /// 1. Get cursor position from window map
-// /// 2. Read bytes after insertion point into buffer
-// /// 3. Insert new text at cursor position
-// /// 4. Write shifted bytes back
-// /// 5. Create inverse changelog entries (one per character)
-// /// 6. Update editor state (modified flag, cursor position)
-// /// 7. Handle cursor overflow and window scrolling
-// ///
-// /// # Arguments
-// /// * `state` - Editor state with cursor position
-// /// * `file_path` - Path to the read-copy file (absolute path)
-// /// * `text_bytes` - The bytes to insert (borrowed slice, can be read multiple times)
-// ///
-// /// # Returns
-// /// * `Ok(())` - Text inserted successfully (with or without undo logs)
-// /// * `Err(LinesError)` - File operation failed
-// ///
-// /// # Error Handling
-// /// - Cursor position errors: Log warning, return Ok() without inserting
-// /// - File operation errors: Propagate error (insertion critical)
-// /// - Changelog errors: Log error, continue (undo is non-critical)
-// /// - UTF-8 decoding errors: Log error, skip character, continue
-// /// - All errors handled gracefully without panic
-// ///
-// /// # Changelog Integration
-// /// After successful insertion, creates inverse logs:
-// /// - User action: Add character → Log: Rmv character
-// /// - One log entry per UTF-8 character
-// /// - Logging failures are non-critical (don't block insertion)
-// /// - Maximum 100 logging errors before stopping (fail-safe)
-// ///
-// /// # Performance
-// /// - Human typing speed: ~200ms between keystrokes
-// /// - Logging per char: <50ms typical, 150ms worst case (3 retries)
-// /// - Latency is imperceptible to user
-// ///
-// /// # Safety
-// /// - No heap allocation in production error messages
-// /// - No data exfiltration in production logs
-// /// - Stack-only buffers (8KB shift buffer already allocated)
-// /// - Debug/test builds have full diagnostic messages
-// /// - Production builds have terse, safe messages
-// pub fn insert_text_chunk_at_cursor_position(
-//     lines_editor_state: &mut EditorState,
-//     file_path: &Path,
-//     text_bytes: &[u8],
-// ) -> Result<()> {
-//     // ==================================================
-//     // Debug-Assert, Test-Assert, Production-Catch-Handle
-//     // ==================================================
-
-//     debug_assert!(file_path.is_absolute(), "File path must be absolute");
-
-//     #[cfg(test)]
-//     assert!(file_path.is_absolute(), "File path must be absolute");
-
-//     if !file_path.is_absolute() {
-//         #[cfg(debug_assertions)]
-//         log_error(
-//             &format!("Non-absolute path: {}", file_path.display()),
-//             Some("insert_text_chunk_at_cursor_position"),
-//         );
-
-//         #[cfg(not(debug_assertions))]
-//         log_error(
-//             "Non-absolute path",
-//             Some("insert_text_chunk_at_cursor_position"),
-//         );
-
-//         let _ = lines_editor_state.set_info_bar_message("path error");
-//         return Err(LinesError::StateError("Non-absolute path".into()));
-//     }
-
-//     // ============================================
-//     // Phase 1: Get Cursor Position
-//     // ============================================
-
-//     let file_pos = match lines_editor_state.get_row_col_file_position(
-//         lines_editor_state.cursor.tui_row,
-//         lines_editor_state.cursor.tui_visual_col,
-//     ) {
-//         Ok(Some(pos)) => pos,
-//         Ok(None) => {
-//             // Cursor not on valid position - log and return without crashing
-//             #[cfg(debug_assertions)]
-//             {
-//                 eprintln!("Warning: Cannot insert - cursor not on valid file position");
-//                 log_error(
-//                     "Insert failed: cursor not on valid file position",
-//                     Some("insert_text_chunk_at_cursor_position"),
-//                 );
-//             }
-
-//             #[cfg(not(debug_assertions))]
-//             log_error(
-//                 "Insert failed: invalid cursor",
-//                 Some("insert_text_chunk_at_cursor_position"),
-//             );
-
-//             let _ = lines_editor_state.set_info_bar_message("invalid cursor");
-//             return Ok(()); // Return success but do nothing
-//         }
-//         Err(_e) => {
-//             // Error getting position - log and return
-//             #[cfg(debug_assertions)]
-//             {
-//                 eprintln!("Warning: Cannot get cursor position: {}", _e);
-//                 log_error(
-//                     &format!("Insert failed: {}", _e),
-//                     Some("insert_text_chunk_at_cursor_position"),
-//                 );
-//             }
-
-//             #[cfg(not(debug_assertions))]
-//             log_error(
-//                 "Insert failed: cursor error",
-//                 Some("insert_text_chunk_at_cursor_position"),
-//             );
-
-//             let _ = lines_editor_state.set_info_bar_message("cursor error");
-//             return Ok(()); // Return success but do nothing
-//         }
-//     };
-
-//     let insert_position = file_pos.byte_offset_linear_file_absolute_position;
-
-//     // ============================================
-//     // Phase 2: Perform File Insertion
-//     // ============================================
-
-//     // Open file for read+write
-//     let mut file = OpenOptions::new()
-//         .read(true)
-//         .write(true)
-//         .open(file_path)
-//         .map_err(|e| LinesError::Io(e))?;
-
-//     // Read bytes after insertion point into N-bytes buffer (stack-allocated)
-//     let mut after_buffer = [0u8; 32];
-
-//     file.seek(SeekFrom::Start(insert_position))
-//         .map_err(|e| LinesError::Io(e))?;
-
-//     let bytes_after = file
-//         .read(&mut after_buffer)
-//         .map_err(|e| LinesError::Io(e))?;
-
-//     // =================================================
-//     // Debug-Assert, Test-Assert, Production-Catch-Handle
-//     // =================================================
-
-//     debug_assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
-
-//     #[cfg(test)]
-//     assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
-
-//     if bytes_after > 8192 {
-//         #[cfg(debug_assertions)]
-//         log_error(
-//             &format!("bytes_after {} exceeded buffer 8192", bytes_after),
-//             Some("insert_text_chunk_at_cursor_position"),
-//         );
-
-//         #[cfg(not(debug_assertions))]
-//         log_error(
-//             "Buffer overflow detected",
-//             Some("insert_text_chunk_at_cursor_position"),
-//         );
-
-//         let _ = lines_editor_state.set_info_bar_message("buffer error");
-//         return Err(LinesError::GeneralAssertionCatchViolation(
-//             "buffer overflow".into(),
-//         ));
-//     }
-
-//     // Write new text at insertion position
-//     file.seek(SeekFrom::Start(insert_position))
-//         .map_err(|e| LinesError::Io(e))?;
-
-//     file.write_all(text_bytes).map_err(|e| LinesError::Io(e))?;
-
-//     // Write the shifted bytes
-//     file.write_all(&after_buffer[..bytes_after])
-//         .map_err(|e| LinesError::Io(e))?;
-
-//     file.flush().map_err(|e| LinesError::Io(e))?;
-
-//     // Update lines_editor_state
-//     lines_editor_state.is_modified = true;
-
-//     // ============================================
-//     // Phase 3: Log the Edit (Existing Functionality)
-//     // ============================================
-
-//     let text_str = std::str::from_utf8(text_bytes).unwrap_or("[invalid UTF-8]");
-
-//     // ============================================
-//     // Phase 4: Create Inverse Changelog Entries
-//     // ============================================
-//     // Iterate through text_bytes to create undo logs
-//     // Each character gets an inverse log entry for undo support
-//     //
-//     // Important: This happens AFTER insertion completes successfully
-//     // If logging fails, insertion has already succeeded (non-critical failure)
-
-//     let log_directory_path = match get_undo_changelog_directory_path(file_path) {
-//         Ok(path) => path,
-//         Err(_e) => {
-//             // Non-critical: Log error but don't fail the insertion operation
-//             #[cfg(debug_assertions)]
-//             log_error(
-//                 &format!("Cannot get changelog directory: {}", _e),
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             #[cfg(not(debug_assertions))]
-//             log_error(
-//                 "Cannot get changelog directory",
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             let _ = lines_editor_state.set_info_bar_message("undo disabled");
-
-//             // Skip to Phase 5 (cursor update) - insertion succeeded, logging is optional
-//             // Continue with cursor update and return
-//             let char_count = text_str.chars().count();
-//             lines_editor_state.cursor.tui_visual_col += char_count;
-
-//             let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
-//             if lines_editor_state.cursor.tui_visual_col > right_edge {
-//                 let overflow = lines_editor_state.cursor.tui_visual_col - right_edge;
-//                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
-//                 lines_editor_state.cursor.tui_visual_col = right_edge;
-//                 build_windowmap_nowrap(lines_editor_state, file_path)?;
-//             }
-
-//             return Ok(());
-//         }
-//     };
-
-//     // Initialize changelog iteration state
-//     let mut byte_offset: u64 = 0; // Offset within inserted text
-//     let mut logging_error_count: usize = 0;
-//     const MAX_LOGGING_ERRORS: usize = 100; // Stop logging after too many failures
-
-//     // =================================================
-//     // Debug-Assert, Test-Assert, Production-Catch-Handle
-//     // =================================================
-
-//     debug_assert!(
-//         MAX_LOGGING_ERRORS > 0,
-//         "Max logging errors must be positive"
-//     );
-
-//     #[cfg(test)]
-//     assert!(
-//         MAX_LOGGING_ERRORS > 0,
-//         "Max logging errors must be positive"
-//     );
-
-//     if MAX_LOGGING_ERRORS == 0 {
-//         #[cfg(debug_assertions)]
-//         log_error(
-//             "MAX_LOGGING_ERRORS is zero",
-//             Some("insert_text_chunk:changelog"),
-//         );
-
-//         #[cfg(not(debug_assertions))]
-//         log_error("Config error", Some("insert_text_chunk:changelog"));
-
-//         let _ = lines_editor_state.set_info_bar_message("config error");
-//         return Err(LinesError::GeneralAssertionCatchViolation(
-//             "zero max logging errors".into(),
-//         ));
-//     }
-
-//     // ============================================
-//     // Changelog Creation Loop
-//     // ============================================
-//     // Iterate through text_bytes character by character
-//     // No file reading needed - data already in memory
-
-//     let mut buffer_index: usize = 0;
-
-//     while buffer_index < text_bytes.len() {
-//         // Stop logging if too many errors (fail-safe)
-//         if logging_error_count >= MAX_LOGGING_ERRORS {
-//             #[cfg(debug_assertions)]
-//             log_error(
-//                 &format!("Logging stopped after {} errors", MAX_LOGGING_ERRORS),
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             #[cfg(not(debug_assertions))]
-//             log_error(
-//                 "Logging stopped after max errors",
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
-//             break;
-//         }
-
-//         let byte = text_bytes[buffer_index];
-
-//         // Detect UTF-8 character length
-//         let char_len = match detect_utf8_byte_count(byte) {
-//             Ok(len) => len,
-//             Err(_) => {
-//                 // Invalid UTF-8 start byte, skip it
-//                 #[cfg(debug_assertions)]
-//                 log_error(
-//                     &format!("Invalid UTF-8 start byte at offset {}", byte_offset),
-//                     Some("insert_text_chunk:changelog"),
-//                 );
-
-//                 #[cfg(not(debug_assertions))]
-//                 log_error(
-//                     "Invalid UTF-8 start byte",
-//                     Some("insert_text_chunk:changelog"),
-//                 );
-
-//                 buffer_index += 1;
-//                 byte_offset += 1;
-//                 logging_error_count += 1;
-//                 continue;
-//             }
-//         };
-
-//         // =================================================
-//         // Debug-Assert, Test-Assert, Production-Catch-Handle
-//         // =================================================
-
-//         debug_assert!(
-//             char_len >= 1 && char_len <= 4,
-//             "UTF-8 char length must be 1-4"
-//         );
-
-//         #[cfg(test)]
-//         assert!(
-//             char_len >= 1 && char_len <= 4,
-//             "UTF-8 char length must be 1-4"
-//         );
-
-//         if char_len < 1 || char_len > 4 {
-//             #[cfg(debug_assertions)]
-//             log_error(
-//                 &format!("Invalid char_len {} at offset {}", char_len, byte_offset),
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             #[cfg(not(debug_assertions))]
-//             log_error("Invalid char length", Some("insert_text_chunk:changelog"));
-
-//             buffer_index += 1;
-//             byte_offset += 1;
-//             logging_error_count += 1;
-//             continue;
-//         }
-
-//         // Check if complete character is available in slice
-//         if buffer_index + char_len <= text_bytes.len() {
-//             // Complete character available
-//             let char_bytes = &text_bytes[buffer_index..(buffer_index + char_len)];
-
-//             // Decode UTF-8 character
-//             match std::str::from_utf8(char_bytes) {
-//                 Ok(s) => {
-//                     if let Some(ch) = s.chars().next() {
-//                         // Calculate absolute position in file
-//                         // Converting from u64 to u128 (safe: u64 always fits in u128)
-//                         let char_position_u64 = insert_position + byte_offset;
-//                         let char_position_u128 = char_position_u64 as u128;
-
-//                         /*
-//                         pub fn button_make_changelog_from_user_character_action_level(
-//                             target_file: &Path,
-//                             character: Option<char>,
-//                             byte_value: Option<u8>, // raw byte input
-//                             position: u128,
-//                             edit_type: EditType,
-//                             log_directory_path: &Path,
-//                         ) -> ButtonResult<()> {
-//                         */
-//                         // Create inverse log entry (with retry)
-//                         // User action: Add → Inverse log: Rmv
-//                         for retry_attempt in 0..3 {
-//                             match button_make_changelog_from_user_character_action_level(
-//                                 file_path,
-//                                 Some(ch),
-//                                 None,
-//                                 char_position_u128,
-//                                 EditType::AddCharacter, // User added, inverse is remove
-//                                 &log_directory_path,
-//                             ) {
-//                                 Ok(_) => break, // Success
-//                                 Err(_e) => {
-//                                     if retry_attempt == 2 {
-//                                         // Final retry failed
-//                                         #[cfg(debug_assertions)]
-//                                         log_error(
-//                                             &format!(
-//                                                 "Failed to log char '{}' at position {}: {}",
-//                                                 ch, char_position_u128, _e
-//                                             ),
-//                                             Some("insert_text_chunk:changelog"),
-//                                         );
-
-//                                         #[cfg(not(debug_assertions))]
-//                                         log_error(
-//                                             "Failed to log character",
-//                                             Some("insert_text_chunk:changelog"),
-//                                         );
-
-//                                         logging_error_count += 1;
-//                                     } else {
-//                                         // Retry after brief pause (file may be temporarily busy)
-//                                         std::thread::sleep(std::time::Duration::from_millis(50));
-//                                     }
-//                                 }
-//                             }
-//                         }
-
-//                         byte_offset += char_len as u64;
-//                     }
-//                 }
-//                 Err(_) => {
-//                     // Invalid UTF-8 sequence
-//                     #[cfg(debug_assertions)]
-//                     log_error(
-//                         &format!("Invalid UTF-8 sequence at offset {}", byte_offset),
-//                         Some("insert_text_chunk:changelog"),
-//                     );
-
-//                     #[cfg(not(debug_assertions))]
-//                     log_error(
-//                         "Invalid UTF-8 sequence",
-//                         Some("insert_text_chunk:changelog"),
-//                     );
-
-//                     byte_offset += char_len as u64;
-//                     logging_error_count += 1;
-//                 }
-//             }
-
-//             buffer_index += char_len;
-//         } else {
-//             // Incomplete character at end - should not happen with valid UTF-8 input
-//             #[cfg(debug_assertions)]
-//             log_error(
-//                 &format!(
-//                     "Incomplete UTF-8 character at end, offset {}, need {} bytes, have {}",
-//                     byte_offset,
-//                     char_len,
-//                     text_bytes.len() - buffer_index
-//                 ),
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             #[cfg(not(debug_assertions))]
-//             log_error(
-//                 "Incomplete UTF-8 at end",
-//                 Some("insert_text_chunk:changelog"),
-//             );
-
-//             logging_error_count += 1;
-//             break; // Exit loop - cannot process incomplete character
-//         }
-//     }
-
-//     // Report if logging had errors
-//     if logging_error_count > 0 {
-//         #[cfg(debug_assertions)]
-//         log_error(
-//             &format!("Changelog completed with {} errors", logging_error_count),
-//             Some("insert_text_chunk:changelog"),
-//         );
-
-//         #[cfg(not(debug_assertions))]
-//         log_error(
-//             "Changelog completed with errors",
-//             Some("insert_text_chunk:changelog"),
-//         );
-
-//         let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
-//     }
-
-//     // ============================================
-//     // Phase 5: Update Cursor Position
-//     // ============================================
-
-//     // Update cursor position
-//     let char_count = text_str.chars().count();
-//     lines_editor_state.cursor.tui_visual_col += char_count;
-
-//     // ==========================================
-//     // Check if cursor exceeded right edge
-//     // ==========================================
-//     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
-
-//     if lines_editor_state.cursor.tui_visual_col > right_edge {
-//         // Calculate how far past edge we went
-//         let overflow = lines_editor_state.cursor.tui_visual_col - right_edge;
-
-//         // Scroll window right to accommodate
-//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
-
-//         // Move cursor back to right edge
-//         lines_editor_state.cursor.tui_visual_col = right_edge;
-
-//         // Rebuild window to show new viewport
-//         build_windowmap_nowrap(lines_editor_state, file_path)?;
-//     }
-
-//     Ok(())
-// }
-
 /// Inserts a chunk of text at cursor position using file operations
 ///
 /// # Overview
@@ -19185,9 +18565,9 @@ pub fn insert_text_chunk_at_cursor_position(
     // Determine current file length (L) to know how much tail must move.
     let file_length: u64 = file.seek(SeekFrom::End(0)).map_err(|e| LinesError::Io(e))?;
 
-    //    =================================================
-    // // Debug-Assert, Test-Assert, Production-Catch-Handle
-    //    =================================================
+    // ==================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // ==================================================
     // Required-condition: insert_position must be within the file [0 .. L].
     // A position past EOF would mean the windowmap and file are desynchronized.
     #[cfg(all(debug_assertions, not(test)))]
@@ -19234,9 +18614,9 @@ pub fn insert_text_chunk_at_cursor_position(
     let mut shift_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
     let chunk_size: u64 = TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE as u64;
 
-    //    =================================================
-    // // Debug-Assert, Test-Assert, Production-Catch-Handle
-    //    =================================================
+    // ==================================================
+    // Debug-Assert, Test-Assert, Production-Catch-Handle
+    // ==================================================
     // Required-condition: chunk size must be positive, else the shift loop
     // could never make progress.
     #[cfg(all(debug_assertions, not(test)))]
