@@ -137,6 +137,9 @@
 //! ambiguous one. The cost of `tui_col` meaning two things was this entire
 //! refactor.
 /*
+See: // TODO: determining ideal default buffer & chunk size
+
+
 See: "diagnostic" flag for debugging inspection
 
 ```
@@ -2652,7 +2655,7 @@ const SAVE_AS_COPY_RETRY_DELAY_MS: u64 = 200;
 // (end) SAVE-AS-COPY OPERATION: Configuration Constants
 // ============================================================================
 
-// TODO: Why does this exist? Why not use normal constants??
+// TODO: Why does this 'mod' exist? Why not use normal constants??
 /// Defensive programming limits to prevent infinite loops and resource exhaustion
 /// Following NASA Power of 10 rules: all loops must have explicit upper bounds
 pub mod limits {
@@ -2669,6 +2672,7 @@ pub mod limits {
     /// Should match or exceed MAX_TUI_ROWS (45) with generous margin
     pub const WINDOW_BUILD_LINES: usize = 1000;
 
+    // TODO: determining ideal default buffer & chunk size
     /// Maximum bytes to read when processing a single line
     /// Matches the line buffer size
     pub const LINE_CHUNK_READ_BYTES: usize = 32; // original: 4096
@@ -14931,6 +14935,7 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
     // Seek to line start
     source_file.seek(SeekFrom::Start(line_start))?;
 
+    // TODO: determining ideal default buffer & chunk size
     // Copy line bytes to temp file (chunked, no heap)
     const CHUNK_SIZE: usize = 32;
     let mut buffer = [0u8; CHUNK_SIZE];
@@ -15870,6 +15875,7 @@ fn delete_position_range_noload(state: &mut EditorState, file_path: &Path) -> Re
     source_file.seek(SeekFrom::Start(line_start))?;
 
     // Copy line bytes to temp file (chunked, no heap)
+    // TODO: determining ideal default buffer & chunk size
     const CHUNK_SIZE: usize = 256;
     let mut buffer = [0u8; CHUNK_SIZE];
     let mut bytes_to_copy = (delete_end - line_start) as usize;
@@ -16370,6 +16376,7 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
     // Create temp file in same directory
     let temp_path = file_path.with_extension("tmp_delete");
 
+    // TODO: determining ideal default buffer & chunk size
     // Pre-allocated N-bytes buffer
     const DBRC_CHUNK_SIZE: usize = 4;
     let mut buffer = [0u8; DBRC_CHUNK_SIZE];
@@ -16692,6 +16699,7 @@ fn row_needs_extra_padding_bool(
     bool_output
 }
 
+// TODO: determining ideal default buffer & chunk size
 // TODO: this should use general_use_256_buffer
 /// Inserts a newline character at cursor position WITHOUT loading whole file
 ///
@@ -16763,10 +16771,12 @@ fn insert_newline_at_cursor_chunked(
     let mut source = File::open(file_path)?;
     let mut dest = File::create(&temp_path)?;
 
+    // TODO: determining ideal default buffer & chunk size
     // TODO this should not be be allocating MORE memory
     // this should use a standard modular buffer
     // Pre-allocated N-bytes buffer
-    const INACC_CHUNK_SIZE: usize = 8;
+    // TODO: determining ideal default buffer & chunk size
+    const INACC_CHUNK_SIZE: usize = 128;
     let mut buffer = [0u8; INACC_CHUNK_SIZE];
 
     // Step 4: Copy bytes before insertion point
@@ -18096,13 +18106,15 @@ fn replace_byte_in_place(file_path: &Path, position: usize, new_byte: u8) -> io:
     // File automatically closed here (RAII)
 }
 
-/// Inserts bytes at specific file position without cursor tracking
+/// Inserts bytes at a specific file position using safe chunked temp-file copy.
 ///
 /// # Overview
 ///
-/// This helper function inserts a byte slice at an arbitrary position in a file
-/// by reading the bytes after that position, writing the new bytes, then writing
-/// back the shifted bytes.
+/// This helper inserts a byte slice at an arbitrary byte offset in a file by
+/// streaming the file through a temporary file, rather than attempting an
+/// in-place shift with a fixed-size buffer. This makes the operation correct
+/// for files of *any* size and eliminates the data-truncation bug present in
+/// the previous fixed-buffer implementation.
 ///
 /// **Operation:**
 /// ```text
@@ -18112,117 +18124,834 @@ fn replace_byte_in_place(file_path: &Path, position: usize, new_byte: u8) -> io:
 ///                 ↑ insertion point (position 3)
 /// ```
 ///
-/// # Memory Safety - Stack Allocated Buffer
+/// # Why Temp-File Copy (and not in-place shift)
 ///
-/// Uses 8KB stack buffer for shifting bytes after insertion point.
-/// - No heap allocation for data processing
-/// - Fixed-size buffer regardless of file size
-/// - If file has > 8KB after insertion point, shifts occur in 8KB chunks
+/// A naive in-place shift reads the bytes *after* the insertion point into a
+/// stack buffer, writes the new bytes, then writes the buffered tail back.
+/// If the tail is larger than the buffer, the remainder of the file is silently
+/// lost (truncated). This function avoids that entirely by copying the whole
+/// tail through a bounded, *looping* chunked read/write, so no data can be lost
+/// regardless of file size or insertion length.
+///
+/// # Memory Safety - Stack Allocated Bounded Buffer
+///
+/// - Uses a fixed-size stack buffer for streaming (no per-file heap growth).
+/// - The buffer size does NOT limit correctness; large tails are copied in a
+///   bounded loop, one chunk at a time.
+/// - Iteration counts are bounded by `limits::FILE_SEEK_BYTES` to satisfy
+///   NASA-Power-of-10-style bounded-loop requirements.
 ///
 /// # Arguments
 ///
-/// * `file_path` - Path to target file (read+write access required)
-/// * `position` - Byte offset where to insert (0 = start, file_size = append)
-/// * `bytes` - Slice of bytes to insert (any length, copied in one write)
+/// * `file_path` - Path to target file (must already exist; not created here).
+/// * `position`  - Byte offset where to insert
+///                 (0 = start, file_size = append).
+/// * `bytes`     - Slice of bytes to insert (any length; may be empty).
 ///
 /// # Returns
 ///
-/// * `Ok(())` - Bytes inserted successfully, file modified
-/// * `Err(io::Error)` - File operation failed (open, seek, read, write, flush)
+/// * `Ok(())`         - Bytes inserted successfully; file replaced atomically
+///                      via rename of the temp file.
+/// * `Err(io::Error)` - A file operation failed (open, create, seek, read,
+///                      write, flush, rename), OR the insertion `position`
+///                      exceeds the file length, OR a bounded iteration limit
+///                      was exceeded (indicating an unexpectedly large file or
+///                      a logic error).
 ///
 /// # Algorithm
 ///
-/// 1. Open file in read+write mode
-/// 2. Seek to insertion position
-/// 3. Read bytes after insertion point into buffer (up to 8KB)
-/// 4. Seek back to insertion position
-/// 5. Write new bytes
-/// 6. Write back the shifted bytes (from buffer)
-/// 7. Flush to ensure data written to disk
+/// 1. Open source file (read) and create a temp file (write).
+/// 2. Copy bytes `[0..position)` from source to temp in bounded chunks.
+/// 3. Write the new `bytes` to temp.
+/// 4. Copy bytes `[position..EOF)` from source to temp in bounded chunks.
+/// 5. Flush and close both files.
+/// 6. Atomically replace the original file with the temp file via `fs::rename`.
 ///
 /// # Edge Cases
 ///
 /// **Insert at EOF (position == file size):**
-/// - Read after position returns 0 bytes
-/// - Writes new bytes
-/// - Nothing to shift back
-/// - Equivalent to append operation
+/// - Phase 2 copies the entire file.
+/// - Phase 3 writes the new bytes.
+/// - Phase 4 copies nothing (already at EOF).
+/// - Equivalent to an append.
 ///
 /// **Insert at start (position == 0):**
-/// - Reads entire file into buffer (up to 8KB)
-/// - Writes new bytes at position 0
-/// - Writes back original content (shifted right)
-/// - Most expensive case (maximum data movement)
-///
-/// **Insert with > 8KB after insertion point:**
-/// - Only first 8KB shifted in this call
-/// - Remaining bytes stay in original positions
-/// - **BUG:** This corrupts the file if bytes_to_insert.len() + bytes_after > 8KB
-/// - Should be fixed to loop-shift in chunks
-/// - Current implementation assumes insert size + remaining < 8KB
+/// - Phase 2 copies nothing.
+/// - Phase 3 writes the new bytes first.
+/// - Phase 4 copies the entire original file after them.
 ///
 /// **Empty insertion (bytes.len() == 0):**
-/// - Valid operation (no-op)
-/// - Still performs read/seek/write/flush
-/// - File unchanged but timestamp updated
+/// - Valid no-op in effect: the file is rewritten identically.
+/// - Still performs the full copy (file timestamp updates).
 ///
-/// # Defensive Programming
+/// **position > file length:**
+/// - Detected in Phase 2 when EOF is reached before reaching `position`.
+/// - Returns `io::ErrorKind::InvalidInput`; temp file is left behind but the
+///   original file is never modified (rename never occurs).
 ///
-/// - No unwrap calls
-/// - All I/O operations explicitly error-checked
-/// - Flush called to ensure disk write
-/// - No assumptions about file permissions (error if not writable)
+/// # Atomicity
+///
+/// The original file is only replaced via `fs::rename` after the temp file is
+/// fully written and flushed. If any step fails before the rename, the original
+/// file is left untouched. (A stray `.tmp_insert` file may remain on failure.)
 ///
 /// # Performance
 ///
-/// - **Time:** O(M) where M = bytes after insertion point (up to 8KB)
-/// - **Space:** O(1) - fixed 8KB stack buffer
-/// - **I/O:** 1 read, 2 seeks, 2 writes, 1 flush = 6 operations
-/// - Not optimized for repeated insertions (each call shifts independently)
+/// - **Time:**  O(N) where N = total file size (full copy per insertion).
+/// - **Space:** O(1) stack buffer, independent of file size.
+/// - Not optimized for many small repeated insertions (each rewrites the file).
 ///
-/// # Known Limitations
+/// # Defensive Programming
 ///
-/// **8KB shift buffer limit:**
-/// If inserting N bytes at position P, and (file_size - P) > 8KB:
-/// - Only first 8KB shifted
-/// - Data beyond 8KB may be overwritten
-/// - Should loop to shift all remaining bytes
-///
-/// **No atomic operation:**
-/// If write fails mid-operation, file left in inconsistent state.
-/// No rollback, no transaction, no recovery.
+/// - No `unwrap`/`expect`; every I/O operation is explicitly `?`-checked.
+/// - Bounded loops guard against runaway iteration.
+/// - Both files are explicitly dropped before the rename.
 ///
 /// # See Also
 ///
-/// * `delete_byte_at_position()` - Inverse operation (removes byte)
-/// * `insert_file_at_cursor()` - Caller that uses this function repeatedly
+/// * `delete_byte_range_chunked()`      - Inverse (removes a byte range).
+/// * `insert_newline_at_cursor_chunked()` - Same pattern, specialized for `\n`.
 fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io::Result<()> {
-    // Open file for read+write
-    // Requires file already exists (won't create new file)
-    let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
+    // Create temp file path alongside the original.
+    let temp_path = file_path.with_extension("tmp_insert");
 
-    // Pre-allocated buffer for bytes after insertion point
-    // N-bytes chosen as balance between stack usage and shift efficiency
-    const BUFFER_SIZE: usize = 8;
-    let mut after_buffer = [0u8; BUFFER_SIZE];
+    // Open source (read) and destination temp (write).
+    let mut source = File::open(file_path)?;
+    let mut dest = File::create(&temp_path)?;
 
-    // Seek to insertion position and read bytes that will be shifted
-    file.seek(SeekFrom::Start(position))?;
-    let bytes_after = file.read(&mut after_buffer)?;
+    // TODO: determining ideal default buffer & chunk size
+    // Bounded, stack-allocated streaming buffer. Size affects performance
+    // only, NOT correctness — large tails are copied in a loop.
+    const IBAP_CHUNK_SIZE: usize = 256;
+    let mut buffer = [0u8; IBAP_CHUNK_SIZE];
 
-    // Seek back to insertion position to write new bytes
-    file.seek(SeekFrom::Start(position))?;
-    file.write_all(bytes)?;
+    // -----------------------------------------------------------------
+    // Phase 1: Copy bytes [0..position) from source to temp (chunked).
+    // -----------------------------------------------------------------
+    let mut bytes_copied = 0u64;
+    let mut iterations = 0;
 
-    // Write the shifted bytes (what was at position, now at position+insert_size)
-    file.write_all(&after_buffer[..bytes_after])?;
+    while bytes_copied < position && iterations < limits::FILE_SEEK_BYTES {
+        iterations += 1;
 
-    // Flush to ensure data written to disk
-    // Without flush, data might sit in OS buffer cache
-    file.flush()?;
+        // Read only up to the insertion boundary this chunk.
+        let to_read = ((position - bytes_copied) as usize).min(IBAP_CHUNK_SIZE);
+        let n = source.read(&mut buffer[..to_read])?;
+
+        if n == 0 {
+            // Reached EOF before reaching insertion position: invalid.
+            // Original file is untouched (no rename has occurred).
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Insert position exceeds file length",
+            ));
+        }
+
+        dest.write_all(&buffer[..n])?;
+        bytes_copied += n as u64;
+    }
+
+    // Defensive: bounded-iteration guard for Phase 1.
+    if iterations >= limits::FILE_SEEK_BYTES && bytes_copied < position {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Max iterations exceeded copying before insert point",
+        ));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 2: Write the new bytes at the insertion point.
+    // -----------------------------------------------------------------
+    // (Safe when bytes.is_empty(): write_all with empty slice is a no-op.)
+    dest.write_all(bytes)?;
+
+    // -----------------------------------------------------------------
+    // Phase 3: Copy remaining bytes [position..EOF) from source to temp.
+    // Source is already positioned at `position` from Phase 1 reads.
+    // -----------------------------------------------------------------
+    iterations = 0;
+    loop {
+        if iterations >= limits::FILE_SEEK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Max iterations exceeded copying after insert point",
+            ));
+        }
+        iterations += 1;
+
+        let n = source.read(&mut buffer)?;
+        if n == 0 {
+            break; // EOF reached — tail fully copied.
+        }
+
+        dest.write_all(&buffer[..n])?;
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4: Flush, close, and atomically replace the original.
+    // -----------------------------------------------------------------
+    dest.flush()?;
+    drop(dest);
+    drop(source);
+
+    fs::rename(&temp_path, file_path)?;
 
     Ok(())
 }
+
+// /// Inserts bytes at specific file position without cursor tracking
+// ///
+// /// # Overview
+// ///
+// /// This helper function inserts a byte slice at an arbitrary position in a file
+// /// by reading the bytes after that position, writing the new bytes, then writing
+// /// back the shifted bytes.
+// ///
+// /// **Operation:**
+// /// ```text
+// /// Before: [A B C D E F]
+// ///         Insert "XY" at position 3
+// /// After:  [A B C X Y D E F]
+// ///                 ↑ insertion point (position 3)
+// /// ```
+// ///
+// /// # Memory Safety - Stack Allocated Buffer
+// ///
+// /// Uses 8KB stack buffer for shifting bytes after insertion point.
+// /// - No heap allocation for data processing
+// /// - Fixed-size buffer regardless of file size
+// /// - If file has > 8KB after insertion point, shifts occur in 8KB chunks
+// ///
+// /// # Arguments
+// ///
+// /// * `file_path` - Path to target file (read+write access required)
+// /// * `position` - Byte offset where to insert (0 = start, file_size = append)
+// /// * `bytes` - Slice of bytes to insert (any length, copied in one write)
+// ///
+// /// # Returns
+// ///
+// /// * `Ok(())` - Bytes inserted successfully, file modified
+// /// * `Err(io::Error)` - File operation failed (open, seek, read, write, flush)
+// ///
+// /// # Algorithm
+// ///
+// /// 1. Open file in read+write mode
+// /// 2. Seek to insertion position
+// /// 3. Read bytes after insertion point into buffer (up to 8KB)
+// /// 4. Seek back to insertion position
+// /// 5. Write new bytes
+// /// 6. Write back the shifted bytes (from buffer)
+// /// 7. Flush to ensure data written to disk
+// ///
+// /// # Edge Cases
+// ///
+// /// **Insert at EOF (position == file size):**
+// /// - Read after position returns 0 bytes
+// /// - Writes new bytes
+// /// - Nothing to shift back
+// /// - Equivalent to append operation
+// ///
+// /// **Insert at start (position == 0):**
+// /// - Reads entire file into buffer (up to 8KB)
+// /// - Writes new bytes at position 0
+// /// - Writes back original content (shifted right)
+// /// - Most expensive case (maximum data movement)
+// ///
+// /// **Insert with > 8KB after insertion point:**
+// /// - Only first 8KB shifted in this call
+// /// - Remaining bytes stay in original positions
+// /// - **BUG:** This corrupts the file if bytes_to_insert.len() + bytes_after > 8KB
+// /// - Should be fixed to loop-shift in chunks
+// /// - Current implementation assumes insert size + remaining < 8KB
+// ///
+// /// **Empty insertion (bytes.len() == 0):**
+// /// - Valid operation (no-op)
+// /// - Still performs read/seek/write/flush
+// /// - File unchanged but timestamp updated
+// ///
+// /// # Defensive Programming
+// ///
+// /// - No unwrap calls
+// /// - All I/O operations explicitly error-checked
+// /// - Flush called to ensure disk write
+// /// - No assumptions about file permissions (error if not writable)
+// ///
+// /// # Performance
+// ///
+// /// - **Time:** O(M) where M = bytes after insertion point (up to 8KB)
+// /// - **Space:** O(1) - fixed 8KB stack buffer
+// /// - **I/O:** 1 read, 2 seeks, 2 writes, 1 flush = 6 operations
+// /// - Not optimized for repeated insertions (each call shifts independently)
+// ///
+// /// # Known Limitations
+// ///
+// /// **8KB shift buffer limit:**
+// /// If inserting N bytes at position P, and (file_size - P) > 8KB:
+// /// - Only first 8KB shifted
+// /// - Data beyond 8KB may be overwritten
+// /// - Should loop to shift all remaining bytes
+// ///
+// /// **No atomic operation:**
+// /// If write fails mid-operation, file left in inconsistent state.
+// /// No rollback, no transaction, no recovery.
+// ///
+// /// # See Also
+// ///
+// /// * `delete_byte_at_position()` - Inverse operation (removes byte)
+// /// * `insert_file_at_cursor()` - Caller that uses this function repeatedly
+// fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io::Result<()> {
+//     // Open file for read+write
+//     // Requires file already exists (won't create new file)
+//     let mut file = OpenOptions::new().read(true).write(true).open(file_path)?;
+
+//     // Pre-allocated buffer for bytes after insertion point
+//     // N-bytes chosen as balance between stack usage and shift efficiency
+//     const BUFFER_SIZE: usize = 8;
+//     let mut after_buffer = [0u8; BUFFER_SIZE];
+
+//     // Seek to insertion position and read bytes that will be shifted
+//     file.seek(SeekFrom::Start(position))?;
+//     let bytes_after = file.read(&mut after_buffer)?;
+
+//     // Seek back to insertion position to write new bytes
+//     file.seek(SeekFrom::Start(position))?;
+//     file.write_all(bytes)?;
+
+//     // Write the shifted bytes (what was at position, now at position+insert_size)
+//     file.write_all(&after_buffer[..bytes_after])?;
+
+//     // Flush to ensure data written to disk
+//     // Without flush, data might sit in OS buffer cache
+//     file.flush()?;
+
+//     Ok(())
+// }
+
+// incomplete update for small-chunk version of lines
+// /// Inserts a chunk of text at cursor position using file operations
+// ///
+// /// # Overview
+// /// This function inserts text at the current cursor position and creates
+// /// inverse changelog entries for undo support. Text is inserted character-by-character
+// /// with proper UTF-8 handling.
+// ///
+// /// # Workflow
+// /// 1. Get cursor position from window map
+// /// 2. Read bytes after insertion point into buffer
+// /// 3. Insert new text at cursor position
+// /// 4. Write shifted bytes back
+// /// 5. Create inverse changelog entries (one per character)
+// /// 6. Update editor state (modified flag, cursor position)
+// /// 7. Handle cursor overflow and window scrolling
+// ///
+// /// # Arguments
+// /// * `state` - Editor state with cursor position
+// /// * `file_path` - Path to the read-copy file (absolute path)
+// /// * `text_bytes` - The bytes to insert (borrowed slice, can be read multiple times)
+// ///
+// /// # Returns
+// /// * `Ok(())` - Text inserted successfully (with or without undo logs)
+// /// * `Err(LinesError)` - File operation failed
+// ///
+// /// # Error Handling
+// /// - Cursor position errors: Log warning, return Ok() without inserting
+// /// - File operation errors: Propagate error (insertion critical)
+// /// - Changelog errors: Log error, continue (undo is non-critical)
+// /// - UTF-8 decoding errors: Log error, skip character, continue
+// /// - All errors handled gracefully without panic
+// ///
+// /// # Changelog Integration
+// /// After successful insertion, creates inverse logs:
+// /// - User action: Add character → Log: Rmv character
+// /// - One log entry per UTF-8 character
+// /// - Logging failures are non-critical (don't block insertion)
+// /// - Maximum 100 logging errors before stopping (fail-safe)
+// ///
+// /// # Performance
+// /// - Human typing speed: ~200ms between keystrokes
+// /// - Logging per char: <50ms typical, 150ms worst case (3 retries)
+// /// - Latency is imperceptible to user
+// ///
+// /// # Safety
+// /// - No heap allocation in production error messages
+// /// - No data exfiltration in production logs
+// /// - Stack-only buffers (8KB shift buffer already allocated)
+// /// - Debug/test builds have full diagnostic messages
+// /// - Production builds have terse, safe messages
+// pub fn insert_text_chunk_at_cursor_position(
+//     lines_editor_state: &mut EditorState,
+//     file_path: &Path,
+//     text_bytes: &[u8],
+// ) -> Result<()> {
+//     // ==================================================
+//     // Debug-Assert, Test-Assert, Production-Catch-Handle
+//     // ==================================================
+
+//     debug_assert!(file_path.is_absolute(), "File path must be absolute");
+
+//     #[cfg(test)]
+//     assert!(file_path.is_absolute(), "File path must be absolute");
+
+//     if !file_path.is_absolute() {
+//         #[cfg(debug_assertions)]
+//         log_error(
+//             &format!("Non-absolute path: {}", file_path.display()),
+//             Some("insert_text_chunk_at_cursor_position"),
+//         );
+
+//         #[cfg(not(debug_assertions))]
+//         log_error(
+//             "Non-absolute path",
+//             Some("insert_text_chunk_at_cursor_position"),
+//         );
+
+//         let _ = lines_editor_state.set_info_bar_message("path error");
+//         return Err(LinesError::StateError("Non-absolute path".into()));
+//     }
+
+//     // ============================================
+//     // Phase 1: Get Cursor Position
+//     // ============================================
+
+//     let file_pos = match lines_editor_state.get_row_col_file_position(
+//         lines_editor_state.cursor.tui_row,
+//         lines_editor_state.cursor.tui_visual_col,
+//     ) {
+//         Ok(Some(pos)) => pos,
+//         Ok(None) => {
+//             // Cursor not on valid position - log and return without crashing
+//             #[cfg(debug_assertions)]
+//             {
+//                 eprintln!("Warning: Cannot insert - cursor not on valid file position");
+//                 log_error(
+//                     "Insert failed: cursor not on valid file position",
+//                     Some("insert_text_chunk_at_cursor_position"),
+//                 );
+//             }
+
+//             #[cfg(not(debug_assertions))]
+//             log_error(
+//                 "Insert failed: invalid cursor",
+//                 Some("insert_text_chunk_at_cursor_position"),
+//             );
+
+//             let _ = lines_editor_state.set_info_bar_message("invalid cursor");
+//             return Ok(()); // Return success but do nothing
+//         }
+//         Err(_e) => {
+//             // Error getting position - log and return
+//             #[cfg(debug_assertions)]
+//             {
+//                 eprintln!("Warning: Cannot get cursor position: {}", _e);
+//                 log_error(
+//                     &format!("Insert failed: {}", _e),
+//                     Some("insert_text_chunk_at_cursor_position"),
+//                 );
+//             }
+
+//             #[cfg(not(debug_assertions))]
+//             log_error(
+//                 "Insert failed: cursor error",
+//                 Some("insert_text_chunk_at_cursor_position"),
+//             );
+
+//             let _ = lines_editor_state.set_info_bar_message("cursor error");
+//             return Ok(()); // Return success but do nothing
+//         }
+//     };
+
+//     let insert_position = file_pos.byte_offset_linear_file_absolute_position;
+
+//     // ============================================
+//     // Phase 2: Perform File Insertion
+//     // ============================================
+
+//     // Open file for read+write
+//     let mut file = OpenOptions::new()
+//         .read(true)
+//         .write(true)
+//         .open(file_path)
+//         .map_err(|e| LinesError::Io(e))?;
+
+//     // Read bytes after insertion point into N-bytes buffer (stack-allocated)
+//     let mut after_buffer = [0u8; 32];
+
+//     file.seek(SeekFrom::Start(insert_position))
+//         .map_err(|e| LinesError::Io(e))?;
+
+//     let bytes_after = file
+//         .read(&mut after_buffer)
+//         .map_err(|e| LinesError::Io(e))?;
+
+//     // =================================================
+//     // Debug-Assert, Test-Assert, Production-Catch-Handle
+//     // =================================================
+
+//     debug_assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
+
+//     #[cfg(test)]
+//     assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
+
+//     if bytes_after > 8192 {
+//         #[cfg(debug_assertions)]
+//         log_error(
+//             &format!("bytes_after {} exceeded buffer 8192", bytes_after),
+//             Some("insert_text_chunk_at_cursor_position"),
+//         );
+
+//         #[cfg(not(debug_assertions))]
+//         log_error(
+//             "Buffer overflow detected",
+//             Some("insert_text_chunk_at_cursor_position"),
+//         );
+
+//         let _ = lines_editor_state.set_info_bar_message("buffer error");
+//         return Err(LinesError::GeneralAssertionCatchViolation(
+//             "buffer overflow".into(),
+//         ));
+//     }
+
+//     // Write new text at insertion position
+//     file.seek(SeekFrom::Start(insert_position))
+//         .map_err(|e| LinesError::Io(e))?;
+
+//     file.write_all(text_bytes).map_err(|e| LinesError::Io(e))?;
+
+//     // Write the shifted bytes
+//     file.write_all(&after_buffer[..bytes_after])
+//         .map_err(|e| LinesError::Io(e))?;
+
+//     file.flush().map_err(|e| LinesError::Io(e))?;
+
+//     // Update lines_editor_state
+//     lines_editor_state.is_modified = true;
+
+//     // ============================================
+//     // Phase 3: Log the Edit (Existing Functionality)
+//     // ============================================
+
+//     let text_str = std::str::from_utf8(text_bytes).unwrap_or("[invalid UTF-8]");
+
+//     // ============================================
+//     // Phase 4: Create Inverse Changelog Entries
+//     // ============================================
+//     // Iterate through text_bytes to create undo logs
+//     // Each character gets an inverse log entry for undo support
+//     //
+//     // Important: This happens AFTER insertion completes successfully
+//     // If logging fails, insertion has already succeeded (non-critical failure)
+
+//     let log_directory_path = match get_undo_changelog_directory_path(file_path) {
+//         Ok(path) => path,
+//         Err(_e) => {
+//             // Non-critical: Log error but don't fail the insertion operation
+//             #[cfg(debug_assertions)]
+//             log_error(
+//                 &format!("Cannot get changelog directory: {}", _e),
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             #[cfg(not(debug_assertions))]
+//             log_error(
+//                 "Cannot get changelog directory",
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             let _ = lines_editor_state.set_info_bar_message("undo disabled");
+
+//             // Skip to Phase 5 (cursor update) - insertion succeeded, logging is optional
+//             // Continue with cursor update and return
+//             let char_count = text_str.chars().count();
+//             lines_editor_state.cursor.tui_visual_col += char_count;
+
+//             let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+//             if lines_editor_state.cursor.tui_visual_col > right_edge {
+//                 let overflow = lines_editor_state.cursor.tui_visual_col - right_edge;
+//                 lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
+//                 lines_editor_state.cursor.tui_visual_col = right_edge;
+//                 build_windowmap_nowrap(lines_editor_state, file_path)?;
+//             }
+
+//             return Ok(());
+//         }
+//     };
+
+//     // Initialize changelog iteration state
+//     let mut byte_offset: u64 = 0; // Offset within inserted text
+//     let mut logging_error_count: usize = 0;
+//     const MAX_LOGGING_ERRORS: usize = 100; // Stop logging after too many failures
+
+//     // =================================================
+//     // Debug-Assert, Test-Assert, Production-Catch-Handle
+//     // =================================================
+
+//     debug_assert!(
+//         MAX_LOGGING_ERRORS > 0,
+//         "Max logging errors must be positive"
+//     );
+
+//     #[cfg(test)]
+//     assert!(
+//         MAX_LOGGING_ERRORS > 0,
+//         "Max logging errors must be positive"
+//     );
+
+//     if MAX_LOGGING_ERRORS == 0 {
+//         #[cfg(debug_assertions)]
+//         log_error(
+//             "MAX_LOGGING_ERRORS is zero",
+//             Some("insert_text_chunk:changelog"),
+//         );
+
+//         #[cfg(not(debug_assertions))]
+//         log_error("Config error", Some("insert_text_chunk:changelog"));
+
+//         let _ = lines_editor_state.set_info_bar_message("config error");
+//         return Err(LinesError::GeneralAssertionCatchViolation(
+//             "zero max logging errors".into(),
+//         ));
+//     }
+
+//     // ============================================
+//     // Changelog Creation Loop
+//     // ============================================
+//     // Iterate through text_bytes character by character
+//     // No file reading needed - data already in memory
+
+//     let mut buffer_index: usize = 0;
+
+//     while buffer_index < text_bytes.len() {
+//         // Stop logging if too many errors (fail-safe)
+//         if logging_error_count >= MAX_LOGGING_ERRORS {
+//             #[cfg(debug_assertions)]
+//             log_error(
+//                 &format!("Logging stopped after {} errors", MAX_LOGGING_ERRORS),
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             #[cfg(not(debug_assertions))]
+//             log_error(
+//                 "Logging stopped after max errors",
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
+//             break;
+//         }
+
+//         let byte = text_bytes[buffer_index];
+
+//         // Detect UTF-8 character length
+//         let char_len = match detect_utf8_byte_count(byte) {
+//             Ok(len) => len,
+//             Err(_) => {
+//                 // Invalid UTF-8 start byte, skip it
+//                 #[cfg(debug_assertions)]
+//                 log_error(
+//                     &format!("Invalid UTF-8 start byte at offset {}", byte_offset),
+//                     Some("insert_text_chunk:changelog"),
+//                 );
+
+//                 #[cfg(not(debug_assertions))]
+//                 log_error(
+//                     "Invalid UTF-8 start byte",
+//                     Some("insert_text_chunk:changelog"),
+//                 );
+
+//                 buffer_index += 1;
+//                 byte_offset += 1;
+//                 logging_error_count += 1;
+//                 continue;
+//             }
+//         };
+
+//         // =================================================
+//         // Debug-Assert, Test-Assert, Production-Catch-Handle
+//         // =================================================
+
+//         debug_assert!(
+//             char_len >= 1 && char_len <= 4,
+//             "UTF-8 char length must be 1-4"
+//         );
+
+//         #[cfg(test)]
+//         assert!(
+//             char_len >= 1 && char_len <= 4,
+//             "UTF-8 char length must be 1-4"
+//         );
+
+//         if char_len < 1 || char_len > 4 {
+//             #[cfg(debug_assertions)]
+//             log_error(
+//                 &format!("Invalid char_len {} at offset {}", char_len, byte_offset),
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             #[cfg(not(debug_assertions))]
+//             log_error("Invalid char length", Some("insert_text_chunk:changelog"));
+
+//             buffer_index += 1;
+//             byte_offset += 1;
+//             logging_error_count += 1;
+//             continue;
+//         }
+
+//         // Check if complete character is available in slice
+//         if buffer_index + char_len <= text_bytes.len() {
+//             // Complete character available
+//             let char_bytes = &text_bytes[buffer_index..(buffer_index + char_len)];
+
+//             // Decode UTF-8 character
+//             match std::str::from_utf8(char_bytes) {
+//                 Ok(s) => {
+//                     if let Some(ch) = s.chars().next() {
+//                         // Calculate absolute position in file
+//                         // Converting from u64 to u128 (safe: u64 always fits in u128)
+//                         let char_position_u64 = insert_position + byte_offset;
+//                         let char_position_u128 = char_position_u64 as u128;
+
+//                         /*
+//                         pub fn button_make_changelog_from_user_character_action_level(
+//                             target_file: &Path,
+//                             character: Option<char>,
+//                             byte_value: Option<u8>, // raw byte input
+//                             position: u128,
+//                             edit_type: EditType,
+//                             log_directory_path: &Path,
+//                         ) -> ButtonResult<()> {
+//                         */
+//                         // Create inverse log entry (with retry)
+//                         // User action: Add → Inverse log: Rmv
+//                         for retry_attempt in 0..3 {
+//                             match button_make_changelog_from_user_character_action_level(
+//                                 file_path,
+//                                 Some(ch),
+//                                 None,
+//                                 char_position_u128,
+//                                 EditType::AddCharacter, // User added, inverse is remove
+//                                 &log_directory_path,
+//                             ) {
+//                                 Ok(_) => break, // Success
+//                                 Err(_e) => {
+//                                     if retry_attempt == 2 {
+//                                         // Final retry failed
+//                                         #[cfg(debug_assertions)]
+//                                         log_error(
+//                                             &format!(
+//                                                 "Failed to log char '{}' at position {}: {}",
+//                                                 ch, char_position_u128, _e
+//                                             ),
+//                                             Some("insert_text_chunk:changelog"),
+//                                         );
+
+//                                         #[cfg(not(debug_assertions))]
+//                                         log_error(
+//                                             "Failed to log character",
+//                                             Some("insert_text_chunk:changelog"),
+//                                         );
+
+//                                         logging_error_count += 1;
+//                                     } else {
+//                                         // Retry after brief pause (file may be temporarily busy)
+//                                         std::thread::sleep(std::time::Duration::from_millis(50));
+//                                     }
+//                                 }
+//                             }
+//                         }
+
+//                         byte_offset += char_len as u64;
+//                     }
+//                 }
+//                 Err(_) => {
+//                     // Invalid UTF-8 sequence
+//                     #[cfg(debug_assertions)]
+//                     log_error(
+//                         &format!("Invalid UTF-8 sequence at offset {}", byte_offset),
+//                         Some("insert_text_chunk:changelog"),
+//                     );
+
+//                     #[cfg(not(debug_assertions))]
+//                     log_error(
+//                         "Invalid UTF-8 sequence",
+//                         Some("insert_text_chunk:changelog"),
+//                     );
+
+//                     byte_offset += char_len as u64;
+//                     logging_error_count += 1;
+//                 }
+//             }
+
+//             buffer_index += char_len;
+//         } else {
+//             // Incomplete character at end - should not happen with valid UTF-8 input
+//             #[cfg(debug_assertions)]
+//             log_error(
+//                 &format!(
+//                     "Incomplete UTF-8 character at end, offset {}, need {} bytes, have {}",
+//                     byte_offset,
+//                     char_len,
+//                     text_bytes.len() - buffer_index
+//                 ),
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             #[cfg(not(debug_assertions))]
+//             log_error(
+//                 "Incomplete UTF-8 at end",
+//                 Some("insert_text_chunk:changelog"),
+//             );
+
+//             logging_error_count += 1;
+//             break; // Exit loop - cannot process incomplete character
+//         }
+//     }
+
+//     // Report if logging had errors
+//     if logging_error_count > 0 {
+//         #[cfg(debug_assertions)]
+//         log_error(
+//             &format!("Changelog completed with {} errors", logging_error_count),
+//             Some("insert_text_chunk:changelog"),
+//         );
+
+//         #[cfg(not(debug_assertions))]
+//         log_error(
+//             "Changelog completed with errors",
+//             Some("insert_text_chunk:changelog"),
+//         );
+
+//         let _ = lines_editor_state.set_info_bar_message("undo log incomplete");
+//     }
+
+//     // ============================================
+//     // Phase 5: Update Cursor Position
+//     // ============================================
+
+//     // Update cursor position
+//     let char_count = text_str.chars().count();
+//     lines_editor_state.cursor.tui_visual_col += char_count;
+
+//     // ==========================================
+//     // Check if cursor exceeded right edge
+//     // ==========================================
+//     let right_edge = lines_editor_state.effective_cols.saturating_sub(1);
+
+//     if lines_editor_state.cursor.tui_visual_col > right_edge {
+//         // Calculate how far past edge we went
+//         let overflow = lines_editor_state.cursor.tui_visual_col - right_edge;
+
+//         // Scroll window right to accommodate
+//         lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset += overflow;
+
+//         // Move cursor back to right edge
+//         lines_editor_state.cursor.tui_visual_col = right_edge;
+
+//         // Rebuild window to show new viewport
+//         build_windowmap_nowrap(lines_editor_state, file_path)?;
+//     }
+
+//     Ok(())
+// }
 
 /// Inserts a chunk of text at cursor position using file operations
 ///
@@ -18274,14 +19003,77 @@ fn insert_bytes_at_position(file_path: &Path, position: u64, bytes: &[u8]) -> io
 /// - Stack-only buffers (8KB shift buffer already allocated)
 /// - Debug/test builds have full diagnostic messages
 /// - Production builds have terse, safe messages
+///
+/// # Phase 2 Design: Scale-Agnostic Backward Block-Shift (In-Place Tail Relocation)
+///
+/// ## Why this design exists (project context for future developers)
+///
+/// Inserting `N` bytes in the MIDDLE of a file requires relocating every byte
+/// AFTER the insertion point forward by `N` bytes, so the new text can occupy
+/// the gap. This function performs that relocation **in place**, on the
+/// read-copy file, using a **bounded loop of fixed-size chunks**.
+///
+/// This replaces an earlier transitional approach that relocated the file tail
+/// with a single bounded read into a single fixed buffer. That approach could
+/// only relocate up to one buffer's worth of tail bytes and therefore corrupted
+/// any file where more than `TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE` bytes
+/// followed the cursor (middle-of-file inserts). The corruption also
+/// desynchronized byte offsets from the windowmap, which is a plausible source
+/// of downstream "cursor not on valid file position" symptoms on long lines.
+///
+/// ## The algorithm (why BACKWARD, why chunked)
+///
+/// To insert `N` bytes at `insert_position` in a file of length `L`:
+/// - The tail region is bytes `[insert_position .. L]`, of length `tail_len`.
+/// - It must move to `[insert_position + N .. L + N]`.
+/// - Source and destination OVERLAP, and destination > source. Copying
+///   front-to-back would overwrite tail bytes before they were read. Therefore
+///   we copy **back-to-front** (highest addresses first).
+///
+/// Chunk size is `TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE`. **Correctness does
+/// not depend on the chunk size** — any positive value yields identical results;
+/// only the number of loop iterations changes. This is what makes the design
+/// scale-agnostic and consistent with the modular small-chunk stdin brigade.
+///
+/// ## Bounded-loop guarantees (Power-of-10 rule 2)
+///
+/// - The shift loop's `bytes_remaining` strictly decreases each iteration and
+///   the loop exits at zero: it is intrinsically bounded.
+/// - An additional independent iteration cap
+///   (`ceil(tail_len / CHUNK) + 1`, plus a hard `limits::TEXT_INPUT_CHUNKS`
+///   ceiling) is enforced as a failsafe against a corrupted/short-read stream,
+///   so the loop can never spin.
+///
+/// ## Safety model (why no temp file, why no atomicity)
+///
+/// - This operates on the **read-copy**, which is disposable/regenerable from
+///   the untouched original file (see `create_a_readcopy_of_file()`). The
+///   original is never mutated by this function, so the user's real data is
+///   never at risk here.
+/// - No temporary file is used. A temp file would reintroduce cross-mount
+///   non-atomic-rename issues and temp-name collision/cleanup concerns, none of
+///   which Rust can portably guarantee away. Same-mount in-place editing avoids
+///   all of that.
+/// - Power-failure / torn-write atomicity is intentionally **out of scope**: an
+///   interrupted shift can only leave the read-copy inconsistent, and the
+///   read-copy is reconstructible from the original. We do not attempt journaling
+///   or rename-swap here.
+///
+/// ## Short-read handling
+///
+/// `Read::read` may legally return fewer bytes than requested. The shift loop
+/// therefore loops on each chunk position until the intended chunk length is
+/// fully read (bounded by an inner attempt cap), never assuming a single `read`
+/// filled the buffer.
+///
 pub fn insert_text_chunk_at_cursor_position(
     lines_editor_state: &mut EditorState,
     file_path: &Path,
     text_bytes: &[u8],
 ) -> Result<()> {
-    // =================================================
+    // ==================================================
     // Debug-Assert, Test-Assert, Production-Catch-Handle
-    // =================================================
+    // ==================================================
 
     debug_assert!(file_path.is_absolute(), "File path must be absolute");
 
@@ -18362,60 +19154,256 @@ pub fn insert_text_chunk_at_cursor_position(
     // Phase 2: Perform File Insertion
     // ============================================
 
-    // Open file for read+write
+    // ============================================
+    // Phase 2: Perform File Insertion
+    //          (Scale-Agnostic Backward Block-Shift)
+    // ============================================
+    //
+    // See the "Phase 2 Design" section in this function's doc-string for the
+    // full rationale. Summary:
+    //   - Relocate the file tail [insert_position .. L] forward by N bytes,
+    //     where N = text_bytes.len(), using fixed-size chunks.
+    //   - Copy BACK-TO-FRONT because source/destination overlap (dst > src).
+    //   - Chunk size is TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE; correctness
+    //     does not depend on its value.
+    //   - Operates on the disposable read-copy; original file is untouched.
+
+    let insert_byte_count: u64 = text_bytes.len() as u64;
+
+    // Nothing to insert: succeed without touching the file.
+    if insert_byte_count == 0 {
+        return Ok(());
+    }
+
+    // Open the read-copy for read+write (no truncation).
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(file_path)
         .map_err(|e| LinesError::Io(e))?;
 
-    // Read bytes after insertion point into N-bytes buffer (stack-allocated)
-    let mut after_buffer = [0u8; 32];
+    // Determine current file length (L) to know how much tail must move.
+    let file_length: u64 = file.seek(SeekFrom::End(0)).map_err(|e| LinesError::Io(e))?;
 
-    file.seek(SeekFrom::Start(insert_position))
-        .map_err(|e| LinesError::Io(e))?;
-
-    let bytes_after = file
-        .read(&mut after_buffer)
-        .map_err(|e| LinesError::Io(e))?;
-
-    // =================================================
-    // Debug-Assert, Test-Assert, Production-Catch-Handle
-    // =================================================
-
-    debug_assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
+    //    =================================================
+    // // Debug-Assert, Test-Assert, Production-Catch-Handle
+    //    =================================================
+    // Required-condition: insert_position must be within the file [0 .. L].
+    // A position past EOF would mean the windowmap and file are desynchronized.
+    #[cfg(all(debug_assertions, not(test)))]
+    debug_assert!(
+        insert_position <= file_length,
+        "insert_position beyond end of file"
+    );
 
     #[cfg(test)]
-    assert!(bytes_after <= 8192, "bytes_after exceeded buffer size");
+    assert!(
+        insert_position <= file_length,
+        "insert_position beyond end of file"
+    );
 
-    if bytes_after > 8192 {
+    if insert_position > file_length {
         #[cfg(debug_assertions)]
         log_error(
-            &format!("bytes_after {} exceeded buffer 8192", bytes_after),
-            Some("insert_text_chunk_at_cursor_position"),
+            &format!(
+                "itcacp: insert_position {} > file_length {}",
+                insert_position, file_length
+            ),
+            Some("insert_text_chunk_at_cursor_position:phase2"),
         );
 
         #[cfg(not(debug_assertions))]
         log_error(
-            "Buffer overflow detected",
-            Some("insert_text_chunk_at_cursor_position"),
+            "itcacp: insert pos beyond EOF",
+            Some("insert_text_chunk_at_cursor_position:phase2"),
         );
 
-        let _ = lines_editor_state.set_info_bar_message("buffer error");
+        let _ = lines_editor_state.set_info_bar_message("insert pos error");
         return Err(LinesError::GeneralAssertionCatchViolation(
-            "buffer overflow".into(),
+            "itcacp: insert position beyond EOF".into(),
         ));
     }
 
-    // Write new text at insertion position
+    // Length of the tail region that must be relocated forward.
+    // Safe: insert_position <= file_length checked above.
+    let tail_length: u64 = file_length - insert_position;
+
+    // Fixed-size stack buffer. Chunk size comes from the shared brigade
+    // constant; correctness is independent of this value (only iteration
+    // count changes).
+    let mut shift_buffer = [0u8; TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE];
+    let chunk_size: u64 = TEXT_BUCKET_BRIGADE_CHUNKING_BUFFER_SIZE as u64;
+
+    //    =================================================
+    // // Debug-Assert, Test-Assert, Production-Catch-Handle
+    //    =================================================
+    // Required-condition: chunk size must be positive, else the shift loop
+    // could never make progress.
+    #[cfg(all(debug_assertions, not(test)))]
+    debug_assert!(chunk_size > 0, "chunk_size must be positive");
+
+    #[cfg(test)]
+    assert!(chunk_size > 0, "chunk_size must be positive");
+
+    if chunk_size == 0 {
+        #[cfg(debug_assertions)]
+        log_error(
+            "itcacp: chunk_size is zero",
+            Some("insert_text_chunk_at_cursor_position:phase2"),
+        );
+
+        #[cfg(not(debug_assertions))]
+        log_error(
+            "itcacp: config error",
+            Some("insert_text_chunk_at_cursor_position:phase2"),
+        );
+
+        let _ = lines_editor_state.set_info_bar_message("config error");
+        return Err(LinesError::GeneralAssertionCatchViolation(
+            "itcacp: zero chunk size".into(),
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Backward block-shift: move [insert_position .. L] forward by N bytes.
+    //
+    // We walk from the END of the tail toward insert_position, copying one
+    // chunk at a time. Because destination > source and regions overlap,
+    // back-to-front ordering guarantees we never overwrite unread bytes.
+    // ------------------------------------------------------------------
+
+    // Failsafe iteration cap (independent of the intrinsic bound below).
+    // Number of chunks needed is ceil(tail_length / chunk_size). We add a
+    // margin and also clamp to a hard project ceiling, so a malformed stream
+    // can never cause an unbounded loop.
+    let expected_chunk_iterations: u64 = (tail_length / chunk_size) + 1 + 1; // ceil-ish + safety margin
+    let max_shift_iterations: u64 = expected_chunk_iterations.min(limits::TEXT_INPUT_CHUNKS as u64);
+
+    let mut bytes_remaining: u64 = tail_length;
+    let mut shift_iteration: u64 = 0;
+
+    while bytes_remaining > 0 {
+        // Independent failsafe bound (Power-of-10 rule 2).
+        shift_iteration += 1;
+        if shift_iteration > max_shift_iterations {
+            #[cfg(debug_assertions)]
+            log_error(
+                &format!(
+                    "itcacp: shift exceeded max iterations ({})",
+                    max_shift_iterations
+                ),
+                Some("insert_text_chunk_at_cursor_position:phase2"),
+            );
+
+            #[cfg(not(debug_assertions))]
+            log_error(
+                "itcacp: shift iteration overflow",
+                Some("insert_text_chunk_at_cursor_position:phase2"),
+            );
+
+            let _ = lines_editor_state.set_info_bar_message("shift error");
+            return Err(LinesError::GeneralAssertionCatchViolation(
+                "itcacp: shift iteration overflow".into(),
+            ));
+        }
+
+        // Size of the chunk to move this iteration: min(chunk_size, remaining).
+        // Safe cast: this_chunk_len <= chunk_size <= buffer length (usize).
+        let this_chunk_len: u64 = if bytes_remaining < chunk_size {
+            bytes_remaining
+        } else {
+            chunk_size
+        };
+        let this_chunk_len_usize: usize = this_chunk_len as usize;
+
+        // Source is the highest not-yet-moved slice of the tail.
+        // src = insert_position + (bytes_remaining - this_chunk_len)
+        // dst = src + insert_byte_count
+        // Safe: bytes_remaining >= this_chunk_len (branch above).
+        let source_offset: u64 = insert_position + (bytes_remaining - this_chunk_len);
+        let destination_offset: u64 = source_offset + insert_byte_count;
+
+        // --- Read the source chunk (handle short reads defensively) ---
+        file.seek(SeekFrom::Start(source_offset))
+            .map_err(|e| LinesError::Io(e))?;
+
+        let mut filled: usize = 0;
+        let mut read_attempts: u32 = 0;
+        // Inner failsafe: bound the short-read retry loop.
+        const MAX_READ_ATTEMPTS: u32 = 64;
+
+        while filled < this_chunk_len_usize {
+            read_attempts += 1;
+            if read_attempts > MAX_READ_ATTEMPTS {
+                #[cfg(debug_assertions)]
+                log_error(
+                    &format!(
+                        "itcacp: read stalled at offset {} ({} of {} bytes)",
+                        source_offset, filled, this_chunk_len_usize
+                    ),
+                    Some("insert_text_chunk_at_cursor_position:phase2"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "itcacp: read stalled",
+                    Some("insert_text_chunk_at_cursor_position:phase2"),
+                );
+
+                let _ = lines_editor_state.set_info_bar_message("read error");
+                return Err(LinesError::GeneralAssertionCatchViolation(
+                    "itcacp: read stalled during shift".into(),
+                ));
+            }
+
+            let n = file
+                .read(&mut shift_buffer[filled..this_chunk_len_usize])
+                .map_err(|e| LinesError::Io(e))?;
+
+            if n == 0 {
+                // Unexpected EOF inside a region we already sized from file_length.
+                // Treat as a torn/short read-copy: fail cleanly (read-copy is
+                // disposable and regenerable from the original).
+                #[cfg(debug_assertions)]
+                log_error(
+                    &format!(
+                        "itcacp: unexpected EOF at offset {} ({} of {} bytes)",
+                        source_offset, filled, this_chunk_len_usize
+                    ),
+                    Some("insert_text_chunk_at_cursor_position:phase2"),
+                );
+
+                #[cfg(not(debug_assertions))]
+                log_error(
+                    "itcacp: unexpected EOF",
+                    Some("insert_text_chunk_at_cursor_position:phase2"),
+                );
+
+                let _ = lines_editor_state.set_info_bar_message("read error");
+                return Err(LinesError::GeneralAssertionCatchViolation(
+                    "itcacp: unexpected EOF during shift".into(),
+                ));
+            }
+
+            filled += n;
+        }
+
+        // --- Write the chunk to its shifted destination ---
+        file.seek(SeekFrom::Start(destination_offset))
+            .map_err(|e| LinesError::Io(e))?;
+
+        file.write_all(&shift_buffer[..this_chunk_len_usize])
+            .map_err(|e| LinesError::Io(e))?;
+
+        // Progress: strictly decreasing -> intrinsic loop bound.
+        bytes_remaining -= this_chunk_len;
+    }
+
+    // --- Tail is now relocated; write the new text into the vacated gap ---
     file.seek(SeekFrom::Start(insert_position))
         .map_err(|e| LinesError::Io(e))?;
 
     file.write_all(text_bytes).map_err(|e| LinesError::Io(e))?;
-
-    // Write the shifted bytes
-    file.write_all(&after_buffer[..bytes_after])
-        .map_err(|e| LinesError::Io(e))?;
 
     file.flush().map_err(|e| LinesError::Io(e))?;
 
