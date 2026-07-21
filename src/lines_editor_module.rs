@@ -2713,7 +2713,7 @@ pub mod limits {
 
     /// Maximum iterations when skipping characters for horizontal offset
     /// Allows scrolling very far right in losng lines
-    pub const HORIZONTAL_SCROLL_CHARS: usize = 10_000;
+    pub const HORIZONTAL_SCROLL_CHARS: usize = usize::MAX;
 
     /// Maximum cursor movement iterations in a single command
     /// Allows "1000j" type commands while preventing integer overflow issues
@@ -2731,7 +2731,7 @@ pub mod limits {
     /// Allows up to 20-digit repeat counts (e.g., "12345678901234567890j")
     pub const COMMAND_PARSE_MAX_CHARS: usize = 20;
 
-    pub const TEXT_INPUT_CHUNKS: usize = 10_000_000;
+    pub const TEXT_INPUT_CHUNKS: usize = usize::MAX;
 
     pub const MAX_CHUNKS: usize = usize::MAX; // e.g. 16_777_216 allows ~4GB at 256-byte chunks
 }
