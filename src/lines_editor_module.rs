@@ -12767,6 +12767,9 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         }
 
         Command::GotoFileStart => {
+            // Step 1: go to start of current line
+            execute_command(lines_editor_state, Command::GotoLineStart)?;
+
             // same as go-to-line-1
             let line_number: usize = 0;
             // Convert 1-indexed (user display) to 0-indexed (file storage)
