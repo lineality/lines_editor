@@ -1351,6 +1351,7 @@ use super::buffy_format_write_module::{
 // the main-loop level (that would break all the cooked-input modes). Its Drop
 // implementation restores the terminal on every exit path, including panic.
 // ============================================================================
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use crate::raw_terminal_x86_module::RawTerminal;
 
 /// Style for line numbers - green, no bold
@@ -3662,8 +3663,13 @@ fn write_formatted_navigation_legend_to_tui() -> Result<()> {
     // Mode operations group
     write_red_hotkey("d", "el|")?;
     write_red_hotkey("n", "rm ")?;
-    // write_red_hotkey("i", "ns ")?;
-    write_red_green_hotkey("k", "i", "ns ")?;
+
+    // optional green-k for linux x86
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    write_red_green_hotkey("", "k", "")?;
+
+    write_red_hotkey("i", "")?;
+    write_red_hotkey("", "ns ")?;
     write_red_hotkey("v", "is ")?;
     write_red_hotkey("hex", "|")?;
 
@@ -7377,6 +7383,7 @@ impl EditorState {
     ///   bytes are dispatched per-byte so none is dropped (A2). Handler return
     ///   values are checked, not discarded: Ok(false) is unexpected in this
     ///   mode and recovers to Normal.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn handle_keystroke_input_session(&mut self, read_copy_path: &Path) -> Result<bool> {
         // ---------------------------------------------------------------------
         // Step 1: Enter raw terminal mode (RAII).
@@ -13113,12 +13120,16 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // persist until the next edit.
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
 
-            lines_editor_state.mode = EditorMode::KeystrokeInputMode;
+            // only for linux x86-64
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                lines_editor_state.mode = EditorMode::KeystrokeInputMode;
 
-            // Terse hint, in the same style as EnterInsertMode's hint.
-            // Non-critical: if setting the message fails, mode switch still
-            // succeeded, so we discard the result.
-            let _ = lines_editor_state.set_info_bar_message("ki: Esc>normal  type ascii");
+                // Terse hint, in the same style as EnterInsertMode's hint.
+                // Non-critical: if setting the message fails, mode switch still
+                // succeeded, so we discard the result.
+                let _ = lines_editor_state.set_info_bar_message("ki: Esc>normal  type ascii");
+            }
 
             Ok(true)
         }
@@ -24062,8 +24073,11 @@ pub fn lines_fullfile_editor_core(
             //
             // `read_copy` is cloned once at main-loop setup; we pass a borrow so
             // the path is not re-cloned per keystroke.
-            keep_editor_loop_running =
-                lines_editor_state.handle_keystroke_input_session(&read_copy)?;
+            #[cfg(target_os = "linux")]
+            {
+                keep_editor_loop_running =
+                    lines_editor_state.handle_keystroke_input_session(&read_copy)?;
+            }
         } else if lines_editor_state.mode == EditorMode::PastyMode {
             //  ==========
             //  Pasty Mode
