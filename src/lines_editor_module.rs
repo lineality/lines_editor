@@ -13839,6 +13839,7 @@ fn goto_line_end(lines_editor_state: &mut EditorState, file_path: &Path) -> Resu
 /// | `DownArrow`  | `0x1B 0x5B 0x42`    | `27 91 66`      |
 /// | `RightArrow` | `0x1B 0x5B 0x43`    | `27 91 67`      |
 /// | `LeftArrow`  | `0x1B 0x5B 0x44`    | `27 91 68`      |
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArrowKeyDirection {
     UpArrow,
@@ -13894,6 +13895,7 @@ enum ArrowKeyDirection {
 ///
 /// * `Some(ArrowKeyDirection)` if the slice is an exact arrow sequence.
 /// * `None` otherwise.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn classify_arrow_bytes(filled_buffer: &[u8]) -> Option<ArrowKeyDirection> {
     // An arrow sequence is exactly 3 bytes. Anything else cannot be an arrow.
     if filled_buffer.len() != 3 {
@@ -13979,6 +13981,7 @@ fn classify_arrow_bytes(filled_buffer: &[u8]) -> Option<ArrowKeyDirection> {
 /// - The direction is type-checked (`ArrowKeyDirection`), so there is no
 ///   "unknown direction" case to handle here; classification already rejected
 ///   non-arrow sequences upstream.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn handle_arrow_key_input_mode(
     lines_editor_state: &mut EditorState,
     arrow_direction: ArrowKeyDirection,
@@ -14096,6 +14099,7 @@ fn handle_arrow_key_input_mode(
 /// - Unknown bytes are silently ignored (handle-and-move-on): no edit, no log,
 ///   no state change. Goal: for arrow keys, Tab, and
 ///   stray escape-sequence fragments delivered one byte at a time in raw mode.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn handle_single_byte_keystroke_input_mode(
     lines_editor_state: &mut EditorState,
     keystroke: u8,
