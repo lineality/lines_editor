@@ -1249,6 +1249,16 @@ pub enum IoOperation {
 
     /// Replacing original file with modified version
     Replace,
+
+    /// Removing the backup file after a verified-successful replace.
+    ///
+    /// This failure occurs *after* the target file has already been modified
+    /// successfully — the caller's requested edit succeeded, but the
+    /// now-redundant backup file could not be deleted. Callers receiving
+    /// `IoError(BackupCleanup)` should treat the edit as complete and the
+    /// error as a cleanup problem only (a stale backup file remains in the
+    /// executable's directory).
+    BackupCleanup,
 }
 
 impl std::fmt::Display for ToggleCommentError {
@@ -2750,18 +2760,79 @@ pub fn write_unindented_file_bytewise(
     Ok(())
 }
 
+/// Resolve the absolute parent directory of the currently running executable.
+///
+/// # Project Context
+/// `toggle_comment_indent_module` anchors all backup and temporary files to the
+/// directory containing the executable binary rather than the ambient current
+/// working directory (CWD). CWD varies depending on how the calling process
+/// (shell, editor, CI job, etc.) invoked this tool, making it an unreliable and
+/// non-deterministic base for file placement. The executable's own directory is
+/// stable for the lifetime of the process and independent of caller context.
+///
+/// # Safety & Defensive Rules
+/// - No panics: no `.unwrap()` or `.expect()` calls.
+/// - `std::env::current_exe()` is documented by the standard library as
+///   potentially returning an unreliable path (symlinks, moved/deleted binary)
+///   on some platforms. This function canonicalizes that path and treats any
+///   canonicalization failure as a hard error rather than silently falling back
+///   to the unreliable raw path, per the project rule that errors must never be
+///   obscured.
+/// - The returned path is guaranteed absolute (canonicalization guarantees this).
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Absolute, canonicalized path to the directory containing
+///   the executable.
+/// * `Err(ToggleIndentError::PathError)` - The executable path could not be
+///   determined, could not be canonicalized, or has no parent directory.
+fn get_executable_parent_directory() -> Result<PathBuf, ToggleIndentError> {
+    // Query the OS for the path used to invoke this process.
+    let exe_path = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(_) => return Err(ToggleIndentError::PathError),
+    };
+
+    // Canonicalize to resolve symlinks and guarantee an absolute path.
+    // Deliberately NOT falling back to the raw `exe_path` on failure: doing so
+    // would silently use a path the standard library documents as potentially
+    // unreliable, obscuring a real failure condition.
+    let canonical_exe_path = match exe_path.canonicalize() {
+        Ok(resolved_path) => resolved_path,
+        Err(_) => return Err(ToggleIndentError::PathError),
+    };
+
+    // Extract the parent directory of the executable file itself.
+    match canonical_exe_path.parent() {
+        Some(parent_dir) => Ok(parent_dir.to_path_buf()),
+        None => Err(ToggleIndentError::PathError),
+    }
+}
+
 /// Add 4 spaces to the start of a specific line (bytewise)
 ///
 /// # Overview
 /// Bytewise implementation - adds exactly 4 spaces at column 0 of target line.
 /// No heap allocation, single byte buffer.
 ///
+/// # Backup & Temp File Lifecycle
+/// 1. A backup copy of the original file is placed in the **executable's parent
+///    directory** (not CWD): `backup_toggle_comment_{filename}`.
+/// 2. Modified content is written to a process-isolated temp file in the same
+///    directory, then copied over the original.
+/// 3. On verified success, both the temp file and the backup are removed.
+/// 4. On any failure before replacement completes, the backup is **retained**
+///    for manual recovery and the temp file is removed.
+/// 5. If the edit succeeds but the backup cannot be deleted, the function
+///    returns `Err(IoError(BackupCleanup))` — the edit itself has succeeded;
+///    only a stale backup file remains. Callers should treat this variant as
+///    "edit complete, cleanup incomplete".
+///
 /// # Arguments
 /// * `file_path` - Path to the source file
 /// * `line_number` - Zero-indexed line number to indent
 ///
 /// # Returns
-/// * `Ok(())` - Line indented successfully
+/// * `Ok(())` - Line indented successfully; temp and backup files removed
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
@@ -2794,15 +2865,25 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         }
     };
 
-    // Find line start position
-    let line_start_pos = match find_line_start_position(file_path, line_number)? {
-        Some(pos) => pos,
-        None => {
+    // string) so line lookup and file modification are guaranteed to target
+    // the identical file. Converted from `?` to explicit match per project
+    // error-visibility rule. ──
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        // Non-UTF-8 path: report rather than lossily converting, which would
+        // silently target a different (corrupted) path string.
+        None => return Err(ToggleIndentError::PathError),
+    };
+
+    let line_start_pos = match find_line_start_position(absolute_path_str, line_number) {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
             return Err(ToggleIndentError::LineNotFound {
                 requested: line_number,
                 file_lines: 0,
             });
         }
+        Err(e) => return Err(e),
     };
 
     // Get filename for backup
@@ -2811,17 +2892,21 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // Create backup
+    // backup and temp files (replaces implicit CWD-relative placement). ──
+    let exe_dir = match get_executable_parent_directory() {
+        Ok(dir) => dir,
+        Err(e) => return Err(e),
+    };
+
     let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
+    let backup_path = exe_dir.join(&backup_filename);
 
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
         return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
-    // Create temp file
     let temp_filename = format!("temp_indent_bytewise_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
+    let temp_path = exe_dir.join(&temp_filename);
 
     // Write indented file
     let process_result = write_indented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
@@ -2831,6 +2916,8 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         Ok(()) => {
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
+                // Backup deliberately retained here: replacement failed, so
+                // the backup is the recovery artifact.
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
@@ -2839,15 +2926,21 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
                 eprintln!("Warning: Failed to clean up temp file");
             }
 
+            // is surfaced as its own error variant rather than silently
+            // ignored; see docstring — the edit itself has succeeded. ──
+            if let Err(_) = std::fs::remove_file(&backup_path) {
+                return Err(ToggleIndentError::IoError(IoOperation::BackupCleanup));
+            }
+
             Ok(())
         }
         Err(e) => {
+            // Temp file removed; backup deliberately retained for recovery.
             let _ = std::fs::remove_file(&temp_path);
             Err(e)
         }
     }
 }
-
 /// Remove up to 4 spaces from the start of a specific line (bytewise)
 ///
 /// # Overview
@@ -2855,12 +2948,26 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
 /// If line has fewer than 4 spaces, removes only what's there.
 /// No heap allocation, single byte buffer.
 ///
+/// # Backup & Temp File Lifecycle
+/// 1. A backup copy of the original file is placed in the **executable's parent
+///    directory** (not CWD): `backup_toggle_comment_{filename}`.
+/// 2. Modified content is written to a process-isolated temp file in the same
+///    directory, then copied over the original.
+/// 3. On verified success, both the temp file and the backup are removed.
+/// 4. On any failure before replacement completes, the backup is **retained**
+///    for manual recovery and the temp file is removed.
+/// 5. If the edit succeeds but the backup cannot be deleted, the function
+///    returns `Err(IoError(BackupCleanup))` — the edit itself has succeeded;
+///    only a stale backup file remains. Callers should treat this variant as
+///    "edit complete, cleanup incomplete".
+///
 /// # Arguments
 /// * `file_path` - Path to the source file
 /// * `line_number` - Zero-indexed line number to unindent
 ///
 /// # Returns
-/// * `Ok(())` - Line unindented successfully (even if no spaces removed)
+/// * `Ok(())` - Line unindented successfully (even if no spaces removed);
+///   temp and backup files removed
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
@@ -2899,15 +3006,25 @@ pub fn unindent_line_bytewise(
         }
     };
 
-    // Find line start position
-    let line_start_pos = match find_line_start_position(file_path, line_number)? {
-        Some(pos) => pos,
-        None => {
+    // string) so line lookup and file modification are guaranteed to target
+    // the identical file. Converted from `?` to explicit match per project
+    // error-visibility rule. ──
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        // Non-UTF-8 path: report rather than lossily converting, which would
+        // silently target a different (corrupted) path string.
+        None => return Err(ToggleIndentError::PathError),
+    };
+
+    let line_start_pos = match find_line_start_position(absolute_path_str, line_number) {
+        Ok(Some(pos)) => pos,
+        Ok(None) => {
             return Err(ToggleIndentError::LineNotFound {
                 requested: line_number,
                 file_lines: 0,
             });
         }
+        Err(e) => return Err(e),
     };
 
     // Get filename for backup
@@ -2916,17 +3033,21 @@ pub fn unindent_line_bytewise(
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // Create backup
+    // backup and temp files (replaces implicit CWD-relative placement). ──
+    let exe_dir = match get_executable_parent_directory() {
+        Ok(dir) => dir,
+        Err(e) => return Err(e),
+    };
+
     let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
+    let backup_path = exe_dir.join(&backup_filename);
 
     if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
         return Err(ToggleIndentError::IoError(IoOperation::Backup));
     }
 
-    // Create temp file
     let temp_filename = format!("temp_unindent_bytewise_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
+    let temp_path = exe_dir.join(&temp_filename);
 
     // Write unindented file
     let process_result = write_unindented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
@@ -2936,6 +3057,8 @@ pub fn unindent_line_bytewise(
         Ok(()) => {
             if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
                 let _ = std::fs::remove_file(&temp_path);
+                // Backup deliberately retained here: replacement failed, so
+                // the backup is the recovery artifact.
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
@@ -2944,12 +3067,176 @@ pub fn unindent_line_bytewise(
                 eprintln!("Warning: Failed to clean up temp file");
             }
 
+            // is surfaced as its own error variant rather than silently
+            // ignored; see docstring — the edit itself has succeeded. ──
+            if let Err(_) = std::fs::remove_file(&backup_path) {
+                return Err(ToggleIndentError::IoError(IoOperation::BackupCleanup));
+            }
+
             Ok(())
         }
         Err(e) => {
+            // Temp file removed; backup deliberately retained for recovery.
             let _ = std::fs::remove_file(&temp_path);
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod exe_directory_and_backup_lifecycle_tests {
+    use super::*;
+
+    /// Verifies the resolved executable directory is an absolute, existing directory.
+    ///
+    /// # Project Context
+    /// This directory is the base for ALL backup and temp file placement; if
+    /// this resolution is wrong, every indent/unindent operation is silently
+    /// affected. Testing it directly isolates path-resolution failures from
+    /// file-operation failures.
+    #[test]
+    fn test_get_executable_parent_directory_is_absolute_existing_dir() {
+        let resolved_dir = get_executable_parent_directory()
+            .expect("Executable parent directory resolution must succeed in test env");
+
+        assert!(
+            resolved_dir.is_absolute(),
+            "Executable parent directory must be an absolute path"
+        );
+        assert!(
+            resolved_dir.is_dir(),
+            "Executable parent path must be an existing directory"
+        );
+    }
+
+    #[test]
+    fn test_indent_bytewise_cleans_up_backup_on_success() {
+        let content = "code\n";
+        let test_file = create_test_file("test_indent_cleanup.txt", content);
+
+        let exe_dir = get_executable_parent_directory().expect("Failed to get exe dir in test");
+        let backup_path = exe_dir.join("backup_toggle_comment_test_indent_cleanup.txt");
+
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok());
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "    code\n");
+
+        // Verify backup was removed automatically on success
+        assert!(
+            !backup_path.exists(),
+            "Backup file should be deleted on success"
+        );
+
+        cleanup_files(&[&test_file]);
+    }
+
+    /// Verifies backup file is created in the exe directory and removed on success.
+    ///
+    /// # Project Context
+    /// Goal 1 of the backup-lifecycle change: no stale backup files left behind
+    /// after a successful edit. Goal 2: the backup must live in the executable's
+    /// directory, never CWD.
+    #[test]
+    fn test_indent_bytewise_removes_backup_on_success() {
+        let content = "code\n";
+        let test_file = create_test_file("test_indent_backup_cleanup.txt", content);
+
+        let exe_dir = get_executable_parent_directory()
+            .expect("Executable parent directory resolution must succeed in test env");
+        let backup_path = exe_dir.join("backup_toggle_comment_test_indent_backup_cleanup.txt");
+
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok(), "Indent should succeed: {:?}", result);
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "    code\n");
+
+        // Backup must be gone after verified success.
+        assert!(
+            !backup_path.exists(),
+            "Backup file must be deleted on success"
+        );
+
+        cleanup_files(&[&test_file]);
+    }
+
+    /// Verifies backup file is removed on successful unindent (mirror of above).
+    #[test]
+    fn test_unindent_bytewise_removes_backup_on_success() {
+        let content = "    code\n";
+        let test_file = create_test_file("test_unindent_backup_cleanup.txt", content);
+
+        let exe_dir = get_executable_parent_directory()
+            .expect("Executable parent directory resolution must succeed in test env");
+        let backup_path = exe_dir.join("backup_toggle_comment_test_unindent_backup_cleanup.txt");
+
+        let result = unindent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok(), "Unindent should succeed: {:?}", result);
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "code\n");
+
+        assert!(
+            !backup_path.exists(),
+            "Backup file must be deleted on success"
+        );
+
+        cleanup_files(&[&test_file]);
+    }
+
+    /// Verifies temp files are also placed in (and removed from) the exe directory.
+    ///
+    /// # Project Context
+    /// Goal 2 covers temp files as well as backups. After a successful edit,
+    /// no `temp_indent_bytewise_*` artifact for this file should remain in the
+    /// exe directory.
+    #[test]
+    fn test_indent_bytewise_leaves_no_temp_file_on_success() {
+        let content = "code\n";
+        let test_file = create_test_file("test_indent_temp_cleanup.txt", content);
+
+        let exe_dir = get_executable_parent_directory()
+            .expect("Executable parent directory resolution must succeed in test env");
+        let temp_path = exe_dir.join(format!(
+            "temp_indent_bytewise_{}_test_indent_temp_cleanup.txt",
+            std::process::id()
+        ));
+
+        let result = indent_line_bytewise(test_file.to_str().unwrap(), 0);
+        assert!(result.is_ok(), "Indent should succeed: {:?}", result);
+
+        assert!(!temp_path.exists(), "Temp file must be deleted on success");
+
+        cleanup_files(&[&test_file]);
+    }
+
+    /// Verifies range operations work with a relative caller path and still
+    /// clean up all backups (canonicalize-once path is exercised end-to-end).
+    #[test]
+    fn test_indent_range_bytewise_cleans_up_backups() {
+        let content = "line0\nline1\nline2\n";
+        let test_file = create_test_file("test_range_backup_cleanup.txt", content);
+
+        let exe_dir = get_executable_parent_directory()
+            .expect("Executable parent directory resolution must succeed in test env");
+        let backup_path = exe_dir.join("backup_toggle_comment_test_range_backup_cleanup.txt");
+
+        let result = indent_range_bytewise(test_file.to_str().unwrap(), 0, 2);
+        assert!(result.is_ok(), "Range indent should succeed: {:?}", result);
+
+        let new_content = read_file_content(&test_file);
+        assert_eq!(new_content, "    line0\n    line1\n    line2\n");
+
+        // Per-line backups are created/removed sequentially; after full-range
+        // success none should remain.
+        assert!(
+            !backup_path.exists(),
+            "No backup file should remain after successful range operation"
+        );
+
+        cleanup_files(&[&test_file]);
     }
 }
 
@@ -2958,6 +3245,17 @@ pub fn unindent_line_bytewise(
 /// # Overview
 /// **Simple implementation:** Calls `indent_line_bytewise()` once for each
 /// line in the range. File opened/closed multiple times - intentional for simplicity.
+///
+/// # Path Handling & Recovery Caveat
+/// The caller-supplied path is canonicalized **once** here and the resulting
+/// absolute path is passed to every per-line call, guaranteeing all iterations
+/// target the identical file and avoiding redundant per-line canonicalization.
+///
+/// Note: backup/restore granularity is **per line**, not per range. Each
+/// per-line call creates and (on success) removes its own backup. If a line
+/// partway through the range fails, earlier lines remain modified and the
+/// retained backup reflects the file state before the *failing line only*,
+/// not before the whole range operation.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -2983,6 +3281,24 @@ pub fn indent_range_bytewise(
     start_line: usize,
     end_line: usize,
 ) -> Result<(), ToggleIndentError> {
+    // on the identical absolute path and per-line canonicalization work is
+    // not repeated N times. ──
+    let absolute_path = match Path::new(file_path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(ToggleIndentError::FileNotFound);
+            }
+            return Err(ToggleIndentError::PathError);
+        }
+    };
+
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        // Non-UTF-8 path: report rather than lossily converting.
+        None => return Err(ToggleIndentError::PathError),
+    };
+
     let (start, end) = sort_range(start_line, end_line);
 
     // Safety check
@@ -2997,7 +3313,11 @@ pub fn indent_range_bytewise(
 
     // Simple loop: indent each line independently
     for line_num in start..=end {
-        indent_line_bytewise(file_path, line_num)?;
+        // Explicit match instead of `?` per project error-visibility rule. ──
+        match indent_line_bytewise(absolute_path_str, line_num) {
+            Ok(()) => {}
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(())
@@ -3008,6 +3328,17 @@ pub fn indent_range_bytewise(
 /// # Overview
 /// **Simple implementation:** Calls `unindent_line_bytewise()` once for each
 /// line in the range. File opened/closed multiple times - intentional for simplicity.
+///
+/// # Path Handling & Recovery Caveat
+/// The caller-supplied path is canonicalized **once** here and the resulting
+/// absolute path is passed to every per-line call, guaranteeing all iterations
+/// target the identical file and avoiding redundant per-line canonicalization.
+///
+/// Note: backup/restore granularity is **per line**, not per range. Each
+/// per-line call creates and (on success) removes its own backup. If a line
+/// partway through the range fails, earlier lines remain modified and the
+/// retained backup reflects the file state before the *failing line only*,
+/// not before the whole range operation.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -3033,6 +3364,24 @@ pub fn unindent_range_bytewise(
     start_line: usize,
     end_line: usize,
 ) -> Result<(), ToggleIndentError> {
+    // on the identical absolute path and per-line canonicalization work is
+    // not repeated N times. ──
+    let absolute_path = match Path::new(file_path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(ToggleIndentError::FileNotFound);
+            }
+            return Err(ToggleIndentError::PathError);
+        }
+    };
+
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        // Non-UTF-8 path: report rather than lossily converting.
+        None => return Err(ToggleIndentError::PathError),
+    };
+
     let (start, end) = sort_range(start_line, end_line);
 
     // Safety check
@@ -3047,7 +3396,11 @@ pub fn unindent_range_bytewise(
 
     // Simple loop: unindent each line independently
     for line_num in start..=end {
-        unindent_line_bytewise(file_path, line_num)?;
+        // Explicit match instead of `?` per project error-visibility rule. ──
+        match unindent_line_bytewise(absolute_path_str, line_num) {
+            Ok(()) => {}
+            Err(e) => return Err(e),
+        }
     }
 
     Ok(())
@@ -3163,7 +3516,7 @@ mod indent_bytewise_tests {
         assert!(result.is_ok());
 
         let new_content = read_file_content(&test_file);
-        assert_eq!(new_content, "code\n"); // Unchanged
+        assert_eq!(new_content, "code\n");
 
         cleanup_files(&[
             &test_file,
