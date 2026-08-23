@@ -1622,6 +1622,15 @@ pub enum LinesError {
         lines_processed: usize,
         available_rows: usize,
     },
+
+    /// Save operation failed AND the attempt to restore the original file
+    /// from its safety-backup also failed (after bounded retries).
+    ///
+    /// This is the most severe save-path failure: the original file may be
+    /// in a partially-written or corrupted state. The safety-backup file is
+    /// deliberately NOT deleted in this situation; the error message includes
+    /// the backup file path so the user can recover manually.
+    BackupRestoreFailed(String),
 }
 
 impl std::fmt::Display for LinesError {
@@ -1635,6 +1644,9 @@ impl std::fmt::Display for LinesError {
             LinesError::StateError(msg) => write!(f, "State error: {}", msg),
             LinesError::GeneralAssertionCatchViolation(msg) => {
                 write!(f, "GeneralAssertionCatchViolation error: {}", msg)
+            }
+            LinesError::BackupRestoreFailed(msg) => {
+                write!(f, "BackupRestoreFailed error: {}", msg)
             }
             LinesError::LineCountExceeded {
                 lines_processed,
@@ -11163,85 +11175,756 @@ pub fn save_file_as_newfile_with_newname(
 // (end) SAVE-AS-COPY OPERATION: Main Function
 // ============================================================================
 
-/// Saves the current read-copy back to the original file with backup
+/// Saves the current read-copy back to the original file, with a safety-backup.
 ///
 /// # Purpose
 /// Safely saves changes by:
-/// 1. Creating timestamped backup of original file
-/// 2. Copying read-copy content to original file
-/// 3. Marking state as unmodified
+/// 1. Creating a timestamped safety-backup of the original file in an
+///    `archive/` directory. Preferred location: the executable's parent
+///    directory (centralized archive). If that attempt fails for ANY reason
+///    (e.g. read-only install location), falls back to the original file's
+///    parent directory (the legacy/default behavior). The location decision
+///    is made fresh on every call — no caching, no permission pre-checks.
+///    If BOTH locations fail, the save is aborted: the original file is
+///    never overwritten without a backup in hand.
+/// 2. Copying the read-copy content over the original file (the save).
+/// 3. On save success: marking state unmodified and deleting the now-redundant
+///    safety-backup. If that deletion fails, a message is printed and the
+///    save still reports success — a stray backup file is harmless.
+/// 4. On save failure: attempting to restore the original file from the
+///    safety-backup, up to `MAX_RESTORE_ATTEMPTS` times with a fixed
+///    `RESTORE_RETRY_DELAY_MILLISECONDS` pause between attempts. The backup
+///    is NEVER deleted on any failure path — it exists precisely for this.
 ///
 /// # Arguments
-/// * `state` - Editor state with file paths
+/// * `state` - Editor state holding `original_file_path` and `read_copy_path`.
 ///
 /// # Returns
-/// * `Ok(())` - Save successful
-/// * `Err(io::Error)` - Save operation failed
+/// * `Ok(())` - Save successful.
+/// * `Err(LinesError::InvalidInput)` - Required paths missing from state.
+/// * `Err(LinesError::Io)` - Backup creation failed in both locations (save
+///   aborted, original untouched), OR the save copy failed but the original
+///   was successfully restored from backup.
+/// * `Err(LinesError::BackupRestoreFailed)` - Worst case: the save copy
+///   failed AND restoring the original from backup also failed after all
+///   retries. The original file may be corrupted. The message includes the
+///   backup file path for manual recovery; the backup is retained.
 ///
 /// # Safety
-/// - Original file backed up before overwrite
-/// - Backup kept in archive directory
-/// - If save fails, original file unchanged
-fn save_file(state: &mut EditorState) -> io::Result<()> {
-    // Defensive: Check we have both paths
-    let original_path = state
+/// - Original file is backed up before overwrite (when it exists).
+/// - Save is aborted if no backup could be created anywhere.
+/// - The backup is retained on every failure path.
+fn save_file(state: &mut EditorState) -> Result<()> {
+    // ------------------------------------------------------------------
+    // Step 0: Defensive validation — both paths must be present.
+    // Paths are cloned so no borrow of `state` outlives this block,
+    // allowing the later `state.is_modified = false` mutation.
+    // ------------------------------------------------------------------
+    let original_path: PathBuf = state
         .original_file_path
         .as_ref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No original file path"))?;
+        .ok_or_else(|| {
+            LinesError::InvalidInput("No original file path in editor state".to_string())
+        })?
+        .clone();
 
-    let read_copy_path = state
+    let read_copy_path: PathBuf = state
         .read_copy_path
         .as_ref()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No read-copy path"))?;
+        .ok_or_else(|| LinesError::InvalidInput("No read-copy path in editor state".to_string()))?
+        .clone();
 
-    // Step 1: Create archive directory if it doesn't exist
-    let archive_dir = original_path
-        .parent()
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Cannot determine parent directory",
-            )
-        })?
-        .join("archive");
+    // ------------------------------------------------------------------
+    // Step 1: Create safety-backup (only if the original file exists;
+    // a brand-new file has nothing to protect).
+    //
+    // Location strategy (decided fresh on every call, no pre-checks):
+    //   Attempt A: {executable_parent}/archive/   (centralized archive)
+    //   Attempt B: {original_parent}/archive/     (legacy fallback)
+    // Any error in Attempt A (including failure to resolve the executable
+    // path itself) triggers Attempt B. If B also fails, abort the save.
+    // ------------------------------------------------------------------
+    let backup_path: Option<PathBuf> = if original_path.exists() {
+        // Build the desired backup filename: {timestamp}_{original_filename}
+        let timestamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
+        let original_filename = original_path.file_name().ok_or_else(|| {
+            LinesError::InvalidInput("Cannot determine filename of original file".to_string())
+        })?;
+        let desired_backup_filename = stack_format_it(
+            "{}_{}",
+            &[&timestamp, &original_filename.to_string_lossy()],
+            "N_N",
+        );
 
-    fs::create_dir_all(&archive_dir)?;
+        // Attempt A: executable-parent archive.
+        // Resolving the executable directory and writing the backup are
+        // both part of "the attempt": any Err falls through to Attempt B.
+        let attempt_a_result = get_absolute_path_to_executable_parentdirectory().and_then(
+            |executable_parent_directory| {
+                attempt_backup_in_directory(
+                    &executable_parent_directory,
+                    &original_path,
+                    &desired_backup_filename,
+                )
+            },
+        );
 
-    // Step 2: Create timestamped backup of original
-    let timestamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
-    let original_filename = original_path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?;
+        let confirmed_backup_path = match attempt_a_result {
+            Ok(path_from_attempt_a) => path_from_attempt_a,
+            Err(attempt_a_error) => {
+                // Fall back to legacy behavior: archive beside the original.
+                println!(
+                    "Note: centralized archive unavailable ({}), falling back to file-local archive.",
+                    attempt_a_error
+                );
 
-    let formatted_string = stack_format_it(
-        "{}_{}",
-        &[&timestamp, &original_filename.to_string_lossy()],
-        "N_N",
-    );
+                let original_parent_directory = original_path.parent().ok_or_else(|| {
+                    LinesError::InvalidInput(
+                        "Cannot determine parent directory of original file".to_string(),
+                    )
+                })?;
 
-    // let backup_path = archive_dir.join(format!(
-    //     "{}_{}",
-    //     timestamp,
-    //     original_filename.to_string_lossy()
-    // ));
+                // Attempt B: if this also fails, abort the save entirely —
+                // we do not overwrite the original without a backup.
+                attempt_backup_in_directory(
+                    original_parent_directory,
+                    &original_path,
+                    &desired_backup_filename,
+                )?
+            }
+        };
 
-    let backup_path = archive_dir.join(formatted_string);
+        println!("Backup created: {}", confirmed_backup_path.display());
+        Some(confirmed_backup_path)
+    } else {
+        // Original does not exist: nothing to back up, nothing to restore.
+        None
+    };
 
-    // Step 3: Copy original to backup (if original exists)
-    if original_path.exists() {
-        fs::copy(original_path, &backup_path)?;
-        println!("Backup created: {}", backup_path.display());
+    // ------------------------------------------------------------------
+    // Step 2: The actual save — copy read-copy over the original file.
+    // ------------------------------------------------------------------
+    if let Err(save_copy_error) = fs::copy(&read_copy_path, &original_path) {
+        // Save failed. If we hold a backup, attempt to restore the original.
+        match &backup_path {
+            Some(existing_backup_path) => {
+                // Bounded restore-retry loop with a fixed short delay,
+                // giving transient conditions (brief file locks, AV scans)
+                // a chance to clear. Worst-case added latency is small.
+                let mut restore_succeeded = false;
+                let mut last_restore_error: Option<io::Error> = None;
+
+                for restore_attempt_number in 1..=MAX_RESTORE_ATTEMPTS {
+                    match fs::copy(existing_backup_path, &original_path) {
+                        Ok(_) => {
+                            restore_succeeded = true;
+                            break;
+                        }
+                        Err(restore_error) => {
+                            println!(
+                                "Restore attempt {}/{} failed: {}",
+                                restore_attempt_number, MAX_RESTORE_ATTEMPTS, restore_error
+                            );
+                            last_restore_error = Some(restore_error);
+                            // No sleep after the final attempt.
+                            if restore_attempt_number < MAX_RESTORE_ATTEMPTS {
+                                std::thread::sleep(std::time::Duration::from_millis(
+                                    RESTORE_RETRY_DELAY_MILLISECONDS,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                if restore_succeeded {
+                    // Original restored: report the save failure itself.
+                    // Backup is retained (deleted only on full success).
+                    return Err(LinesError::Io(io::Error::new(
+                        save_copy_error.kind(),
+                        format!(
+                            "Save failed (original restored from backup): {}",
+                            save_copy_error
+                        ),
+                    )));
+                }
+
+                // Worst case: save failed AND restore failed. The backup
+                // is deliberately retained — its path is in the message
+                // so the user can recover manually.
+                let restore_error_description = match last_restore_error {
+                    Some(error_value) => error_value.to_string(),
+                    None => "unknown restore error".to_string(),
+                };
+                return Err(LinesError::BackupRestoreFailed(format!(
+                    "Save failed ({}) and restore from backup failed after {} attempts ({}). \
+                     Original file may be corrupted. Backup retained at: {}",
+                    save_copy_error,
+                    MAX_RESTORE_ATTEMPTS,
+                    restore_error_description,
+                    existing_backup_path.display()
+                )));
+            }
+            None => {
+                // No backup existed (original file was new): nothing to
+                // restore. Report the save failure with context.
+                return Err(LinesError::Io(io::Error::new(
+                    save_copy_error.kind(),
+                    format!(
+                        "Save failed writing new file {}: {}",
+                        original_path.display(),
+                        save_copy_error
+                    ),
+                )));
+            }
+        }
     }
 
-    // Step 4: Copy read-copy to original location
-    fs::copy(read_copy_path, original_path)?;
-
-    // Step 5: Mark as unmodified
+    // ------------------------------------------------------------------
+    // Step 3: Save succeeded — mark state unmodified.
+    // ------------------------------------------------------------------
     state.is_modified = false;
+
+    // ------------------------------------------------------------------
+    // Step 4: Remove the now-redundant safety-backup. Failure here is
+    // explicitly non-fatal (per design): print and move on. A stray
+    // backup file is harmless; the save itself succeeded.
+    // ------------------------------------------------------------------
+    if let Some(redundant_backup_path) = &backup_path {
+        if let Err(backup_removal_error) = fs::remove_file(redundant_backup_path) {
+            println!(
+                "Note: save succeeded but could not remove backup {}: {}",
+                redundant_backup_path.display(),
+                backup_removal_error
+            );
+        }
+    }
 
     println!("File saved: {}", original_path.display());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod save_backup_tests {
+    //! Tests for the save/backup pipeline:
+    //! - `find_noncolliding_backup_path` (collision-avoidance naming)
+    //! - `attempt_backup_in_directory` (single backup attempt unit)
+    //! - `save_file` (end-to-end: success path and restore-on-failure path)
+    //!
+    //! # Isolation strategy
+    //! Each test creates its own unique directory under the OS temp dir,
+    //! namespaced by process id + an atomic counter, and removes it at the
+    //! end. No shared state between tests; safe under parallel test runs.
+    //!
+    //! # Known coverage gaps (documented, not hidden)
+    //! - The `BackupRestoreFailed` path (save fails AND restore fails) is
+    //!   not tested: there is no portable, non-unsafe way to make the
+    //!   backup file unreadable between creation and restore.
+    //! - The exhaustion bound of the collision helper is tested by
+    //!   mechanism (several collisions) rather than by creating
+    //!   MAX_BACKUP_NAME_COLLISION_SUFFIX files.
+    //! - Under `cargo test`, the executable-parent directory is
+    //!   `target/debug/deps/` (writable), so `save_file` tests exercise
+    //!   the centralized-archive branch (Attempt A). The fallback branch
+    //!   is covered at the unit level by
+    //!   `attempt_backup_fails_when_parent_is_a_file`.
+
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Monotonic counter to keep per-test directories unique even when
+    /// tests run in parallel within the same process.
+    static TEST_DIRECTORY_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    /// Creates a unique, empty directory for one test and returns its path.
+    /// Caller is responsible for cleanup via `remove_test_directory`.
+    fn create_unique_test_directory(test_label: &str) -> PathBuf {
+        let counter_value = TEST_DIRECTORY_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let directory_path = std::env::temp_dir().join(format!(
+            "lines_editor_test_{}_{}_{}",
+            test_label,
+            std::process::id(),
+            counter_value
+        ));
+        fs::create_dir_all(&directory_path).unwrap();
+        directory_path
+    }
+
+    /// Best-effort recursive cleanup of a test directory.
+    /// Failure to clean up is not a test failure (stray temp dirs are
+    /// harmless), so errors are ignored deliberately.
+    fn remove_test_directory(directory_path: &Path) {
+        let _ = fs::remove_dir_all(directory_path);
+    }
+
+    /// Constructs an `EditorState` suitable for `save_file` tests.
+    ///
+    /// # Purpose
+    /// Delegates all field initialization to `EditorState::new()`, which
+    /// already establishes valid values for every field (display buffers,
+    /// cursor, hex state, etc. — none of which are relevant to the save/backup
+    /// logic under test). Only the three fields exercised by these tests are
+    /// overridden afterward.
+    ///
+    /// # Arguments
+    /// * `original_file_path` - Path to assign as the file's original location.
+    /// * `read_copy_path` - Path to assign as the read-copy location.
+    ///
+    /// # Returns
+    /// * `EditorState` - A fully-initialized state with `is_modified` set to
+    ///   `true`, matching the state of a file with unsaved changes about to
+    ///   be saved.
+    fn make_test_editor_state(original_file_path: PathBuf, read_copy_path: PathBuf) -> EditorState {
+        let mut state = EditorState::new();
+        state.original_file_path = Some(original_file_path);
+        state.read_copy_path = Some(read_copy_path);
+        state.is_modified = true;
+        state
+    }
+
+    // ==================================================================
+    // find_noncolliding_backup_path
+    // ==================================================================
+
+    #[test]
+    fn noncolliding_path_returns_unsuffixed_name_when_free() {
+        let test_dir = create_unique_test_directory("collision_free");
+
+        let result = find_noncolliding_backup_path(&test_dir, "backup.txt").unwrap();
+
+        assert_eq!(result, test_dir.join("backup.txt"));
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn noncolliding_path_appends_suffix_zero_on_first_collision() {
+        let test_dir = create_unique_test_directory("collision_one");
+
+        // Occupy the unsuffixed name.
+        fs::write(test_dir.join("backup.txt"), b"occupied").unwrap();
+
+        let result = find_noncolliding_backup_path(&test_dir, "backup.txt").unwrap();
+
+        // Suffix is not stripped (design decision): expect name + "_0".
+        assert_eq!(result, test_dir.join("backup.txt_0"));
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn noncolliding_path_skips_multiple_taken_suffixes() {
+        let test_dir = create_unique_test_directory("collision_many");
+
+        // Occupy the unsuffixed name and suffixes 0..=2.
+        fs::write(test_dir.join("backup.txt"), b"x").unwrap();
+        fs::write(test_dir.join("backup.txt_0"), b"x").unwrap();
+        fs::write(test_dir.join("backup.txt_1"), b"x").unwrap();
+        fs::write(test_dir.join("backup.txt_2"), b"x").unwrap();
+
+        let result = find_noncolliding_backup_path(&test_dir, "backup.txt").unwrap();
+
+        assert_eq!(result, test_dir.join("backup.txt_3"));
+        remove_test_directory(&test_dir);
+    }
+
+    // ==================================================================
+    // attempt_backup_in_directory
+    // ==================================================================
+
+    #[test]
+    fn attempt_backup_creates_archive_dir_and_copies_content() {
+        let test_dir = create_unique_test_directory("backup_happy");
+        let original_file = test_dir.join("document.txt");
+        fs::write(&original_file, b"important content").unwrap();
+
+        let backup_path =
+            attempt_backup_in_directory(&test_dir, &original_file, "ts_document.txt").unwrap();
+
+        // Backup lives inside {parent}/archive/ and content matches.
+        assert!(backup_path.starts_with(test_dir.join(ARCHIVE_DIRECTORY_NAME)));
+        assert_eq!(fs::read(&backup_path).unwrap(), b"important content");
+        // Original untouched.
+        assert_eq!(fs::read(&original_file).unwrap(), b"important content");
+
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn attempt_backup_fails_when_parent_is_a_file() {
+        // Portable way to force failure without permission games:
+        // the "parent directory" is actually a regular file, so
+        // create_dir_all("{file}/archive") must fail on all platforms.
+        // This exercises the same code path save_file uses to decide
+        // fallback: any Err from this unit triggers Attempt B.
+        let test_dir = create_unique_test_directory("backup_fail");
+        let fake_parent = test_dir.join("not_a_directory");
+        fs::write(&fake_parent, b"i am a file").unwrap();
+
+        let original_file = test_dir.join("document.txt");
+        fs::write(&original_file, b"content").unwrap();
+
+        let result = attempt_backup_in_directory(&fake_parent, &original_file, "ts_document.txt");
+
+        assert!(
+            result.is_err(),
+            "expected failure when parent path is a file"
+        );
+        remove_test_directory(&test_dir);
+    }
+
+    // ==================================================================
+    // save_file — end to end
+    // ==================================================================
+
+    #[test]
+    fn save_file_success_updates_original_and_clears_modified_flag() {
+        let test_dir = create_unique_test_directory("save_success");
+        let original_file = test_dir.join("document.txt");
+        let read_copy_file = test_dir.join("document.txt.readcopy");
+        fs::write(&original_file, b"old content").unwrap();
+        fs::write(&read_copy_file, b"new content").unwrap();
+
+        let mut state = make_test_editor_state(original_file.clone(), read_copy_file);
+
+        save_file(&mut state).unwrap();
+
+        assert_eq!(fs::read(&original_file).unwrap(), b"new content");
+        assert!(!state.is_modified);
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn save_file_success_removes_its_backup() {
+        // Under cargo test the centralized archive is target/debug/deps/archive.
+        // We can't easily assert "no backup anywhere" without knowing which
+        // location was chosen, so we assert the strongest checkable claim:
+        // no backup for THIS file remains in the fallback location, and the
+        // save reported success (backup removal failure is non-fatal by
+        // design, but removal of a just-created file in a writable dir
+        // should not fail in practice).
+        let test_dir = create_unique_test_directory("save_backup_removed");
+        let original_file = test_dir.join("unique_removal_test.txt");
+        let read_copy_file = test_dir.join("unique_removal_test.txt.readcopy");
+        fs::write(&original_file, b"old").unwrap();
+        fs::write(&read_copy_file, b"new").unwrap();
+
+        let mut state = make_test_editor_state(original_file.clone(), read_copy_file);
+        save_file(&mut state).unwrap();
+
+        // Fallback-location archive (if it was used) must not retain a backup.
+        let fallback_archive = test_dir.join(ARCHIVE_DIRECTORY_NAME);
+        if fallback_archive.exists() {
+            let leftover_count = fs::read_dir(&fallback_archive).unwrap().count();
+            assert_eq!(
+                leftover_count, 0,
+                "backup not removed after successful save"
+            );
+        }
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn save_file_new_file_saves_without_backup() {
+        // Original does not exist yet: no backup is made, save just writes it.
+        let test_dir = create_unique_test_directory("save_new_file");
+        let original_file = test_dir.join("brand_new.txt");
+        let read_copy_file = test_dir.join("brand_new.txt.readcopy");
+        fs::write(&read_copy_file, b"first ever content").unwrap();
+        assert!(!original_file.exists());
+
+        let mut state = make_test_editor_state(original_file.clone(), read_copy_file);
+        save_file(&mut state).unwrap();
+
+        assert_eq!(fs::read(&original_file).unwrap(), b"first ever content");
+        assert!(!state.is_modified);
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn save_file_failure_restores_original_and_retains_backup() {
+        // Force the save copy to fail deterministically: the read-copy path
+        // points at a file we delete AFTER constructing the state but BEFORE
+        // calling save_file. Backup creation succeeds (original exists),
+        // then fs::copy(read_copy, original) fails with NotFound,
+        // triggering the restore path. Restore must succeed (backup is
+        // readable), the original must be byte-identical to its pre-save
+        // content, is_modified must remain true, and the returned error
+        // must be Io (restored), NOT BackupRestoreFailed.
+        let test_dir = create_unique_test_directory("save_fail_restore");
+        let original_file = test_dir.join("document.txt");
+        let read_copy_file = test_dir.join("document.txt.readcopy");
+        fs::write(&original_file, b"precious original content").unwrap();
+        fs::write(&read_copy_file, b"doomed content").unwrap();
+
+        let mut state = make_test_editor_state(original_file.clone(), read_copy_file.clone());
+
+        // Sabotage: remove the read-copy so the save's fs::copy must fail.
+        fs::remove_file(&read_copy_file).unwrap();
+
+        let result = save_file(&mut state);
+
+        // Assertion 1: correct error variant. Save failed but restore
+        // succeeded, so this must be Io — BackupRestoreFailed would mean
+        // the restore path is broken, and Ok would mean the failure was
+        // silently swallowed. Both are test failures.
+        match result {
+            Err(LinesError::Io(_)) => {
+                // Expected: save failed, original restored from backup.
+            }
+            Err(LinesError::BackupRestoreFailed(message)) => {
+                panic!(
+                    "restore from backup failed but should have succeeded: {}",
+                    message
+                );
+            }
+            Err(other_error) => {
+                panic!("unexpected error variant: {}", other_error);
+            }
+            Ok(()) => {
+                panic!("save_file reported success but the save copy should have failed");
+            }
+        }
+
+        // Assertion 2: original file content is fully intact (restored).
+        assert_eq!(
+            fs::read(&original_file).unwrap(),
+            b"precious original content",
+            "original file content was not restored after failed save"
+        );
+
+        // Assertion 3: modified flag NOT cleared — the save did not happen.
+        assert!(
+            state.is_modified,
+            "is_modified must remain true after a failed save"
+        );
+
+        // Assertion 4: the backup is retained (never deleted on failure).
+        // Which archive location was used depends on the environment
+        // (under cargo test, Attempt A / target/debug/deps/archive is
+        // normally writable and used). Check both possible locations and
+        // require at least one retained backup for this file. The filename
+        // is timestamped, so match on the original filename appearing in
+        // the backup name.
+        let mut retained_backup_found = false;
+        let mut candidate_archive_directories: Vec<PathBuf> =
+            vec![test_dir.join(ARCHIVE_DIRECTORY_NAME)];
+        if let Ok(executable_parent) = get_absolute_path_to_executable_parentdirectory() {
+            candidate_archive_directories.push(executable_parent.join(ARCHIVE_DIRECTORY_NAME));
+        }
+        for archive_directory in &candidate_archive_directories {
+            if !archive_directory.exists() {
+                continue;
+            }
+            for entry in fs::read_dir(archive_directory).unwrap() {
+                let entry = entry.unwrap();
+                let entry_name = entry.file_name().to_string_lossy().to_string();
+                if entry_name.contains("document.txt") {
+                    retained_backup_found = true;
+                    // Cleanup: remove this test's backup so repeated test
+                    // runs don't accumulate files in target/debug/deps/archive.
+                    // Cleanup failure is not a test failure.
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        assert!(
+            retained_backup_found,
+            "backup file must be retained after a failed save (that is why it exists)"
+        );
+
+        remove_test_directory(&test_dir);
+    }
+
+    // ==================================================================
+    // save_file — input validation
+    // ==================================================================
+
+    #[test]
+    fn save_file_rejects_missing_original_path() {
+        let test_dir = create_unique_test_directory("save_no_original");
+        let read_copy_file = test_dir.join("orphan.readcopy");
+        fs::write(&read_copy_file, b"content").unwrap();
+
+        // State with original_file_path deliberately absent.
+        let mut state = make_test_editor_state(
+            PathBuf::new(), // placeholder; overwritten to None below
+            read_copy_file,
+        );
+        state.original_file_path = None;
+
+        let result = save_file(&mut state);
+
+        match result {
+            Err(LinesError::InvalidInput(_)) => { /* expected */ }
+            other => panic!("expected InvalidInput, got: {:?}", other),
+        }
+        remove_test_directory(&test_dir);
+    }
+
+    #[test]
+    fn save_file_rejects_missing_read_copy_path() {
+        let test_dir = create_unique_test_directory("save_no_readcopy");
+        let original_file = test_dir.join("document.txt");
+        fs::write(&original_file, b"content").unwrap();
+
+        let mut state = make_test_editor_state(
+            original_file,
+            PathBuf::new(), // placeholder; overwritten to None below
+        );
+        state.read_copy_path = None;
+
+        let result = save_file(&mut state);
+
+        match result {
+            Err(LinesError::InvalidInput(_)) => { /* expected */ }
+            other => panic!("expected InvalidInput, got: {:?}", other),
+        }
+        remove_test_directory(&test_dir);
+    }
+}
+
+/// Maximum number of attempts to restore the original file from the
+/// safety-backup if the save operation fails. Bounded to prevent an
+/// unbounded retry loop against a persistently failing filesystem.
+const MAX_RESTORE_ATTEMPTS: u32 = 3;
+
+/// Fixed delay between restore attempts, in milliseconds.
+/// A short pause gives transient conditions (e.g. a file briefly locked
+/// by another process, antivirus scan) a chance to clear. Deliberately
+/// a simple fixed delay rather than exponential backoff: total worst-case
+/// added latency is under half a second.
+const RESTORE_RETRY_DELAY_MILLISECONDS: u64 = 150;
+
+/// Upper bound on the `_{n}` collision-avoidance suffix when choosing a
+/// backup filename. If this many collisions occur something is deeply
+/// wrong (or the archive directory needs manual cleanup), so we return
+/// an error rather than loop indefinitely.
+const MAX_BACKUP_NAME_COLLISION_SUFFIX: u32 = 1000;
+
+/// Name of the archive directory created under the chosen parent
+/// directory (executable-parent preferred, original-file-parent fallback).
+const ARCHIVE_DIRECTORY_NAME: &str = "archive";
+
+/// Finds a non-colliding file path inside `archive_directory` for a backup file.
+///
+/// # Purpose
+/// Backups from all edited files share one centralized archive directory
+/// (the executable's parent directory), so cross-file and same-timestamp
+/// collisions are possible. This helper guarantees a unique target path
+/// using the simplest viable scheme:
+///
+/// 1. Try `{desired_filename}` as-is.
+/// 2. If it exists, try `{desired_filename}_{n}` for n = 0, 1, 2, ...
+///    (the file suffix is deliberately NOT stripped — simplest approach,
+///    per design decision).
+/// 3. Give up after `MAX_BACKUP_NAME_COLLISION_SUFFIX` attempts.
+///
+/// # Arguments
+/// * `archive_directory` - Absolute path to the directory the backup will be
+///   written into. Assumed to already exist (caller creates it).
+/// * `desired_filename` - The preferred filename, e.g. `{timestamp}_{original_name}`.
+///
+/// # Returns
+/// * `Ok(PathBuf)` - An absolute path in `archive_directory` that does not
+///   currently exist.
+/// * `Err(LinesError::Io)` - All candidate names up to the bound were taken.
+///
+/// # Note on TOCTOU
+/// There is an inherent time-of-check/time-of-use window between this check
+/// and the subsequent copy. For this editor's single-user save path that
+/// risk is accepted as negligible.
+fn find_noncolliding_backup_path(
+    archive_directory: &Path,
+    desired_filename: &str,
+) -> Result<PathBuf> {
+    // First preference: the desired name with no suffix at all.
+    let unsuffixed_candidate = archive_directory.join(desired_filename);
+    if !unsuffixed_candidate.exists() {
+        return Ok(unsuffixed_candidate);
+    }
+
+    // Collision: append _{n} until a free name is found, within the bound.
+    for collision_suffix_number in 0..MAX_BACKUP_NAME_COLLISION_SUFFIX {
+        let suffix_string = collision_suffix_number.to_string();
+        let suffixed_filename = stack_format_it(
+            "{}_{}",
+            &[&desired_filename, &suffix_string.as_str()],
+            "N_N",
+        );
+        let suffixed_candidate = archive_directory.join(suffixed_filename);
+        if !suffixed_candidate.exists() {
+            return Ok(suffixed_candidate);
+        }
+    }
+
+    // Bound exhausted: wrap in the module error type at point of creation.
+    Err(LinesError::Io(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "Exhausted collision-avoidance suffixes for backup filename in archive directory",
+    )))
+}
+
+/// Attempts to create a timestamped safety-backup of `original_path` inside
+/// an `archive` subdirectory of `archive_parent_directory`.
+///
+/// # Purpose
+/// This is the single "attempt" unit for the two-location backup strategy:
+/// `save_file` calls this first with the executable's parent directory, and
+/// if ANY step here fails (directory creation, collision resolution, or the
+/// copy itself), `save_file` calls it again with the original file's parent
+/// directory as the fallback location. No permission pre-checking is done
+/// anywhere — failure of the real operations IS the check.
+///
+/// # Arguments
+/// * `archive_parent_directory` - Directory under which `archive/` will be created.
+/// * `original_path` - Absolute path of the file being backed up. Must exist
+///   (caller checks existence before calling).
+/// * `desired_backup_filename` - Preferred backup filename, e.g.
+///   `{timestamp}_{original_name}`.
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Absolute path of the backup file that was written.
+/// * `Err(LinesError::Io)` - Any step failed; caller decides whether to fall
+///   back to the other archive location. The fallback triggers on any error,
+///   so no error-kind inspection is needed by the caller.
+fn attempt_backup_in_directory(
+    archive_parent_directory: &Path,
+    original_path: &Path,
+    desired_backup_filename: &str,
+) -> Result<PathBuf> {
+    let archive_directory = archive_parent_directory.join(ARCHIVE_DIRECTORY_NAME);
+
+    // Step A: ensure the archive directory exists.
+    // Explicit match instead of bare `?` so the error carries context
+    // identifying which step failed and on which path.
+    if let Err(directory_creation_error) = fs::create_dir_all(&archive_directory) {
+        return Err(LinesError::Io(io::Error::new(
+            directory_creation_error.kind(),
+            format!(
+                "Failed to create archive directory {}: {}",
+                archive_directory.display(),
+                directory_creation_error
+            ),
+        )));
+    }
+
+    // Step B: choose a non-colliding backup path.
+    // Helper already returns the module Result type; propagation is safe
+    // and does not obscure the error (context was attached at creation).
+    let backup_path = find_noncolliding_backup_path(&archive_directory, desired_backup_filename)?;
+
+    // Step C: perform the actual backup copy.
+    if let Err(copy_error) = fs::copy(original_path, &backup_path) {
+        return Err(LinesError::Io(io::Error::new(
+            copy_error.kind(),
+            format!(
+                "Failed to copy original file to backup {}: {}",
+                backup_path.display(),
+                copy_error
+            ),
+        )));
+    }
+
+    Ok(backup_path)
 }
 
 // ============================================================================

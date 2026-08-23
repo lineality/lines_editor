@@ -6371,3 +6371,87 @@ pub fn stack_format_byte_escape<'a>(byte: u8, buf: &'a mut [u8]) -> Option<&'a s
 /// - FILE_APPEND_MAX_CHUNKS: 16,777,216 (same value, different operation)
 /// - Both ensure consistent safety limits across file operations
 const SAVE_AS_COPY_MAX_CHUNKS: usize = 16_777_216;
+
+
+
+// // Simple, works
+// /// Saves the current read-copy back to the original file with backup
+// ///
+// /// # Purpose
+// /// Safely saves changes by:
+// /// 1. Creating timestamped backup of original file
+// /// 2. Copying read-copy content to original file
+// /// 3. Marking state as unmodified
+// ///
+// /// # Arguments
+// /// * `state` - Editor state with file paths
+// ///
+// /// # Returns
+// /// * `Ok(())` - Save successful
+// /// * `Err(io::Error)` - Save operation failed
+// ///
+// /// # Safety
+// /// - Original file backed up before overwrite
+// /// - Backup kept in archive directory
+// /// - If save fails, original file unchanged
+// fn save_file(state: &mut EditorState) -> io::Result<()> {
+//     // Defensive: Check we have both paths
+//     let original_path = state
+//         .original_file_path
+//         .as_ref()
+//         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No original file path"))?;
+
+//     let read_copy_path = state
+//         .read_copy_path
+//         .as_ref()
+//         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "No read-copy path"))?;
+
+//     // Step 1: Create archive directory if it doesn't exist
+//     let archive_dir = original_path
+//         .parent()
+//         .ok_or_else(|| {
+//             io::Error::new(
+//                 io::ErrorKind::InvalidInput,
+//                 "Cannot determine parent directory",
+//             )
+//         })?
+//         .join("archive");
+
+//     fs::create_dir_all(&archive_dir)?;
+
+//     // Step 2: Create timestamped backup of original
+//     let timestamp = createarchive_timestamp_with_precision(SystemTime::now(), true);
+//     let original_filename = original_path
+//         .file_name()
+//         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Cannot determine filename"))?;
+
+//     let formatted_string = stack_format_it(
+//         "{}_{}",
+//         &[&timestamp, &original_filename.to_string_lossy()],
+//         "N_N",
+//     );
+
+//     // let backup_path = archive_dir.join(format!(
+//     //     "{}_{}",
+//     //     timestamp,
+//     //     original_filename.to_string_lossy()
+//     // ));
+
+//     let backup_path = archive_dir.join(formatted_string);
+
+//     // Step 3: Copy original to backup (if original exists)
+//     if original_path.exists() {
+//         fs::copy(original_path, &backup_path)?;
+//         println!("Backup created: {}", backup_path.display());
+//     }
+
+//     // Step 4: Copy read-copy to original location
+//     fs::copy(read_copy_path, original_path)?;
+
+//     // Step 5: Mark as unmodified
+//     state.is_modified = false;
+
+//     println!("File saved: {}", original_path.display());
+
+//     Ok(())
+// }
