@@ -13497,6 +13497,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             }
         }
 
+        /*
+        // clean simple default version, works
         Command::GotoFileLastLine => {
             // Count lines in file
             let (total_lines, _) = count_lines_in_file(&base_edit_filepath)?;
@@ -13511,6 +13513,61 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             execute_command(lines_editor_state, Command::GotoLine(total_lines))?;
 
             Ok(true)
+        }
+        */
+        // experimental: last line on last TUI line version
+        Command::GotoFileLastLine => {
+            // Count total lines in file (1-indexed count)
+            let (total_lines, _) = count_lines_in_file(&base_edit_filepath)?;
+
+            // If file is empty, stay at current position
+            if total_lines == 0 {
+                let _ = lines_editor_state.set_info_bar_message("File is empty");
+                return Ok(true);
+            }
+
+            // Convert to 0-indexed line number of the last line
+            let last_line_idx = total_lines.saturating_sub(1);
+
+            // Calculate bottom-most row index and ideal top line
+            let bottom_row = lines_editor_state.effective_rows.saturating_sub(1);
+            let target_top_line = last_line_idx.saturating_sub(bottom_row);
+
+            #[cfg(debug_assertions)]
+            lines_editor_state
+                .debug_inspect_position("execute_command() Command::GotoFileLastLine");
+
+            // Seek to the byte position where target_top_line starts
+            match seek_to_line_number(&mut File::open(&base_edit_filepath)?, target_top_line) {
+                Ok(byte_pos) => {
+                    lines_editor_state.line_count_at_top_of_window = target_top_line;
+                    lines_editor_state.file_position_of_topline_start = byte_pos;
+
+                    // Position cursor row on the last line inside the viewport
+                    let actual_row_for_last_line = last_line_idx.saturating_sub(target_top_line);
+                    lines_editor_state.cursor.tui_row = actual_row_for_last_line;
+
+                    // Position cursor at line start after the line-number gutter
+                    let line_num_width = calculate_line_number_width(
+                        lines_editor_state.line_count_at_top_of_window,
+                        lines_editor_state.cursor.tui_row,
+                        lines_editor_state.effective_rows,
+                    );
+                    lines_editor_state.cursor.tui_visual_col = line_num_width;
+                    lines_editor_state.tui_window_horizontal_utf8txt_line_char_offset = 0;
+
+                    // Rebuild window layout map
+                    build_windowmap_nowrap(lines_editor_state, &base_edit_filepath)?;
+
+                    let _ = lines_editor_state.set_info_bar_message("Jumped to end of file");
+                    Ok(true)
+                }
+                Err(_) => {
+                    let _ =
+                        lines_editor_state.set_info_bar_message("Failed to seek to end of file");
+                    Ok(true)
+                }
+            }
         }
 
         Command::GotoLineStart => {
