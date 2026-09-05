@@ -1398,6 +1398,21 @@ const WHOLE_COMMAND_BUFFER_SIZE: usize = 16; //
 
 const MAX_DISPLAY_BUFFER_BYTES: usize = 182;
 
+// ============================================
+// OS sepcific buffer+enter ESC and DEL strings
+// ============================================
+#[cfg(target_os = "windows")]
+const DELETE_KEY_STR: &str = "DEL";
+
+#[cfg(not(target_os = "windows"))]
+const DELETE_KEY_STR: &str = "\x1b[3~";
+
+#[cfg(target_os = "windows")]
+const ESC_KEY_STR: &str = "ESC";
+
+#[cfg(not(target_os = "windows"))]
+const ESC_KEY_STR: &str = "\x1b";
+
 // for iterating chunks of text to be inserted into file
 /// Two-Purpose Buffer (alternate plan is )
 /// A. processes command-input that does not go to file
@@ -4869,7 +4884,7 @@ impl EditorState {
 
         // 2. Explicit commands (take absolute priority)
 
-        if trimmed == "b" || trimmed == "q" || trimmed == "n" || trimmed == "\x1b" {
+        if trimmed == "b" || trimmed == "q" || trimmed == "n" || trimmed == ESC_KEY_STR {
             return Ok(PastyInputPathOrCommand::Back);
         }
 
@@ -7034,7 +7049,7 @@ impl EditorState {
             }
 
             // === MODE SWITCHING ===
-            "n" | "\x1b" | "q" | "b" => {
+            "n" | ESC_KEY_STR | "q" | "b" => {
                 // Exit to normal mode
                 keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
             }
@@ -7907,9 +7922,9 @@ impl EditorState {
         // Check for exit insert mode commands
         // Only escape key to leave insert mode
         // possible to turn off all ascii keys
-        if trimmed == "\x1b" {
+        if trimmed == ESC_KEY_STR {
             keep_editor_loop_running = execute_command(self, Command::EnterNormalMode)?;
-        } else if trimmed == "\x1b[3~" {
+        } else if trimmed == DELETE_KEY_STR {
             // This is delete-key
             // Do nothing if delete key entered...
             keep_editor_loop_running = execute_command(self, Command::DeleteBackspace)?;
@@ -8189,12 +8204,12 @@ impl EditorState {
         // In insert mode, most keys are text, not commands
         if current_mode == EditorMode::Insert {
             // Check for escape sequences to exit insert mode
-            if trimmed == "\x1b" {
+            if trimmed == ESC_KEY_STR {
                 return Command::EnterNormalMode;
             }
 
             // delete key
-            if trimmed == "\x1b[3~" {
+            if trimmed == DELETE_KEY_STR {
                 return Command::None;
             }
             // Everything else is text input (handled separately)
@@ -8491,7 +8506,7 @@ impl EditorState {
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
                 "d" => Command::DeleteLine,
-                "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
+                DELETE_KEY_STR => Command::DeleteBackspace, // delete key -> \x1b[3~
                 _ => Command::None,
             }
         } else if current_mode == EditorMode::VisualSelectMode {
@@ -8527,11 +8542,11 @@ impl EditorState {
                 "q" => Command::Quit,
                 "c" | "y" => Command::Copyank,
                 "s" | "ww" => Command::SaveFileStandard,
-                "n" | "\x1b" => Command::EnterNormalMode,
+                "n" | ESC_KEY_STR => Command::EnterNormalMode,
                 "wq" | "sq" => Command::SaveAndQuit,
                 // "d" => Command::DeleteBackspace, // minimal, works
                 "d" => Command::DeleteRange,
-                "\x1b[3~" => Command::DeleteBackspace, // delete key -> \x1b[3~
+                DELETE_KEY_STR => Command::DeleteBackspace, // delete key -> \x1b[3~
 
                 "v" | "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
@@ -21848,15 +21863,22 @@ fn create_new_draft_copy(
 /// Displays usage information and available commands.
 /// Called when user runs `lines --help`.
 pub fn print_help() {
+    println!(" _ _");
+    println!("| (_)_ __   __   __");
+    println!("| | | '_ \\ /_ \\/ _/");
+    println!("| | | | | |   _\\_ \\");
+    println!("|_|_|_| |_|\\__/\\__/");
+    println!("");
     println!("About Lines Editor: (note: ctrl+s can block terminal, ctrl+z unblocks)");
-    println!("USAGE:");
+    println!("USAGE: (When in home/dir, defaults to memo-mode");
+    println!("    lines               # Creates memo in /Documents in append-mode");
     println!("    lines [FILE]");
-    println!("    lines FILE:LINE          # Open at : specific line");
+    println!("    lines FILE:LINE     # Open at : specific line");
     println!("OPTIONS:");
-    println!("    --help, -h      Show this help message");
+    println!("    --help,    -h   Show this help message");
     println!("    --version, -v   Show version information");
     println!("HELP MENU:");
-    println!("    help            For a help menue with sections.)");
+    println!("    help            Command in Normal mode, for help menue w/ sections.)");
     println!("QUIT & SAVE:");
     println!("                    If you 'quit' without saving, your work is gone.)");
     println!("                    If session ends without 'quit' then a backup exists.");
