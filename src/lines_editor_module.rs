@@ -8978,8 +8978,7 @@ fn is_leap_year(year: u64) -> bool {
 /// ```
 pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
-    const STDIN_CHUNK_SIZE: usize = 4;
-    const MAX_CHUNKS: usize = 1_000_000; // Safety limit to prevent infinite loops
+    const STDIN_CHUNK_SIZE: usize = 8;
 
     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
 
@@ -9016,7 +9015,7 @@ pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     loop {
         // Defensive: prevent infinite loop
         chunk_counter += 1;
-        if chunk_counter > MAX_CHUNKS {
+        if chunk_counter > limits::MAX_CHUNKS {
             return Err(LinesError::Io(io::Error::new(
                 io::ErrorKind::Other,
                 "Maximum iteration limit exceeded",
@@ -15875,11 +15874,10 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
         let mut carry_over_count: usize = 0;
         let mut logging_error_count: usize = 0;
         const MAX_LOGGING_ERRORS: usize = 100;
-        const MAX_CHUNKS: usize = 16_777_216;
 
         // Logging loop (same pattern as file insertion)
         loop {
-            if logging_chunk_counter >= MAX_CHUNKS {
+            if logging_chunk_counter >= limits::MAX_CHUNKS {
                 #[cfg(debug_assertions)]
                 log_error(
                     "Logging iteration exceeded MAX_CHUNKS",
@@ -17187,7 +17185,7 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
 
     // TODO: determining ideal default buffer & chunk size
     // Pre-allocated N-bytes buffer
-    const DBRC_CHUNK_SIZE: usize = 4;
+    const DBRC_CHUNK_SIZE: usize = 8;
     let mut buffer = [0u8; DBRC_CHUNK_SIZE];
 
     let mut source = File::open(file_path)?;
@@ -21559,7 +21557,7 @@ pub fn create_a_readcopy_of_file(
     const FILENAME_DISPLAY_SIZE: usize = 32;
 
     // Input buffer for stdin read (single digit + newline)
-    const USER_INPUT_BUFFER_SIZE: usize = 4;
+    const USER_INPUT_BUFFER_SIZE: usize = 8;
 
     // Defensive: Validate inputs
     if !original_path.exists() {
