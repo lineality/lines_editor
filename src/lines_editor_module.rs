@@ -2718,6 +2718,8 @@ const SAVE_AS_COPY_RETRY_DELAY_MS: u64 = 200;
 // ============================================================================
 
 // TODO: Why does this 'mod' exist? Why not use normal constants??
+// Notes: since moving from a fixed window map to an on-the-fly window map
+//        some limitations may not be needed (or needed to be as limited)
 /// Defensive programming limits to prevent infinite loops and resource exhaustion
 /// Following NASA Power of 10 rules: all loops must have explicit upper bounds
 pub mod limits {
@@ -2728,7 +2730,7 @@ pub mod limits {
     /// Maximum bytes to scan when seeking to a line number
     /// Prevents infinite loops on corrupted files or extremely large files
     /// 10 million bytes = ~10MB, reasonable for text files
-    pub const FILE_SEEK_BYTES: usize = 10_000_000;
+    pub const FILE_SEEK_BYTES: usize = usize::MAX;
 
     /// Maximum lines to process when building window display
     /// Should match or exceed MAX_TUI_ROWS (45) with generous margin
@@ -2745,7 +2747,7 @@ pub mod limits {
 
     /// Maximum cursor movement iterations in a single command
     /// Allows "1000j" type commands while preventing integer overflow issues
-    pub const CURSOR_MOVEMENT_STEPS: usize = 1_000_000;
+    pub const CURSOR_MOVEMENT_STEPS: usize = usize::MAX;
 
     /// Maximum iterations in main editor loop
     /// Effectively unlimited (100k commands per session is very generous)
@@ -15256,7 +15258,7 @@ fn find_line_start(file_path: &Path, from_byte: u64) -> io::Result<u64> {
 /// - Walk back up to 3 more bytes checking for UTF-8 start byte
 /// - UTF-8 start bytes: 0b0xxxxxxx or 0b11xxxxxx
 /// - Continuation bytes: 0b10xxxxxx
-fn find_previous_utf8_boundary(file_path: &Path, cursor_byte: u64) -> io::Result<u64> {
+pub fn find_previous_utf8_boundary(file_path: &Path, cursor_byte: u64) -> io::Result<u64> {
     if cursor_byte == 0 {
         return Ok(0);
     }

@@ -3201,3 +3201,45 @@ mod tempname_tests {
         assert!(true);
     }
 }
+
+#[cfg(test)]
+mod backspace_newline_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(name);
+        let mut f = File::create(&p).unwrap();
+        f.write_all(bytes).unwrap();
+        p
+    }
+
+    #[test]
+    fn boundary_before_lf_is_lf_itself() {
+        let p = write_temp("bs_lf.txt", b"ab\ncd");
+        // cursor at 'c' (byte 3); previous char is '\n' at byte 2
+        assert_eq!(find_previous_utf8_boundary(&p, 3).unwrap(), 2);
+    }
+
+    #[test]
+    fn boundary_before_crlf_is_lf_only() {
+        // Documents current behaviour: boundary scan is byte-level, does NOT
+        // widen to CRLF. CRLF policy lives in backspace_style_delete_noload.
+        let p = write_temp("bs_crlf.txt", b"ab\r\ncd");
+        assert_eq!(find_previous_utf8_boundary(&p, 4).unwrap(), 3);
+    }
+
+    #[test]
+    fn boundary_before_four_byte_char() {
+        let p = write_temp("bs_emoji.txt", "a😀b".as_bytes()); // 😀 = 4 bytes at 1..5
+        assert_eq!(find_previous_utf8_boundary(&p, 5).unwrap(), 1);
+    }
+
+    #[test]
+    fn boundary_at_start_of_file() {
+        let p = write_temp("bs_start.txt", b"x");
+        assert_eq!(find_previous_utf8_boundary(&p, 0).unwrap(), 0);
+        assert_eq!(find_previous_utf8_boundary(&p, 1).unwrap(), 0);
+    }
+}
