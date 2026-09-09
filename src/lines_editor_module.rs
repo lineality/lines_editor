@@ -13621,6 +13621,13 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
             // =================================================
+            /*
+            A. Deletes contents of line if not empty
+            B. If empty, deletes line itself.
+
+            Note: by design,
+            this does not support windows CRLF (\r\n),
+            */
             let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
                 Ok(success) => success,
                 Err(_e) => {
@@ -15683,10 +15690,39 @@ fn delete_current_line_noload(state: &mut EditorState, file_path: &Path) -> Resu
         row_col_file_pos.byte_offset_linear_file_absolute_position,
     )?;
 
-    // Step 3: Include the newline character if present
-    let delete_end = if line_end_has_newline(file_path, line_end)? {
+    // // Step 3: Include the newline character if present
+    // let delete_end = if line_end_has_newline(file_path, line_end)? {
+    //     line_end + 1
+    // } else {
+    //     line_end
+    // };
+
+    // =========================================================================
+    // Step 3: Determine deletion boundary
+    // ========================================================================
+    /*
+    If non-standard for an editor, the idea is this.
+    Deleting a line often means deleting the contents to replace it,
+    not removing the newline itself.
+    This allows both routes.
+    */
+
+    // If start == end, there are 0 text characters between them (the line is empty).
+    let is_line_empty = line_start == line_end;
+
+    let delete_end = if is_line_empty && line_end_has_newline(file_path, line_end)? {
+        // ---------------------------------------------------------------------
+        // FUNCTIONALITY A: The line is empty.
+        // We add +1 so the deletion range includes the '\n' byte,
+        // which completely removes this empty line from the file.
+        // ---------------------------------------------------------------------
         line_end + 1
     } else {
+        // ---------------------------------------------------------------------
+        // FUNCTIONALITY B: The line has content.
+        // We stop at `line_end` (before the '\n').
+        // This deletes the text from line_start..line_end, leaving '\n' intact.
+        // ---------------------------------------------------------------------
         line_end
     };
 
