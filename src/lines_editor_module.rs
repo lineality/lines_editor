@@ -14143,54 +14143,59 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             unindent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
 
-            /*
-            more elaborate lookup
-            to see if cursor is at zero (e.g. scrolling down from start)
-            */
-            let (in_line_byte_usize, _file_position_string) = match lines_editor_state
-                .get_row_col_file_position(
-                    lines_editor_state.cursor.tui_row,
-                    lines_editor_state.cursor.tui_visual_col,
-                ) {
-                Ok(Some(row_col_file_pos)) => (
-                    row_col_file_pos.byte_in_line,
-                    row_col_file_pos
-                        .byte_offset_linear_file_absolute_position
-                        .to_string(),
-                ),
-                _ => (0, "n/a".to_string()),
-            };
+            // /*
+            // more elaborate lookup
+            // to see if cursor is at zero (e.g. scrolling down from start)
+            // */
+            // let (in_line_byte_usize, _file_position_string) = match lines_editor_state
+            //     .get_row_col_file_position(
+            //         lines_editor_state.cursor.tui_row,
+            //         lines_editor_state.cursor.tui_visual_col,
+            //     ) {
+            //     Ok(Some(row_col_file_pos)) => (
+            //         row_col_file_pos.byte_in_line,
+            //         row_col_file_pos
+            //             .byte_offset_linear_file_absolute_position
+            //             .to_string(),
+            //     ),
+            //     _ => (0, "n/a".to_string()),
+            // };
 
-            // Simple cheat to detect if cursor is at 'start' of line (given number prefix)
-            let in_line_byte_zero_bool = match in_line_byte_usize {
-                0 => true,
-                _ => false,
-            };
-
-            // // Simple cheat to detect if cursor is
-            // // at 'start' of line (given number prefix)
-            // let cursor_is_past_line_start = match lines_editor_state.cursor.tui_visual_col {
-            //     3 | 4 | 5 => true,
+            // // Simple cheat to detect if cursor is at 'start' of line (given number prefix)
+            // let in_line_byte_zero_bool = match in_line_byte_usize {
+            //     0 => true,
             //     _ => false,
             // };
 
-            // TODO: newly added, still testing
-            // println!(
-            //     "lines_editor_state.cursor.tui_visual_col {}",
-            //     lines_editor_state.cursor.tui_visual_col
-            // );
-            // println!("cursor_is_past_line_start {}", cursor_is_past_line_start);
+            // // // Simple cheat to detect if cursor is
+            // // // at 'start' of line (given number prefix)
+            // // let cursor_is_past_line_start = match lines_editor_state.cursor.tui_visual_col {
+            // //     3 | 4 | 5 => true,
+            // //     _ => false,
+            // // };
+
+            // // TODO: newly added, still testing
+            // // println!(
+            // //     "lines_editor_state.cursor.tui_visual_col {}",
+            // //     lines_editor_state.cursor.tui_visual_col
+            // // );
+            // println!("in_line_byte_usize {}", in_line_byte_usize);
+
+            // // println!("cursor_is_past_line_start {}", cursor_is_past_line_start);
             // println!("in_line_byte_zero_bool {}", in_line_byte_zero_bool);
 
-            // for simple cheat appraoch:
-            // if !cursor_is_past_line_start {
+            // // for simple cheat appraoch:
+            // // if !cursor_is_past_line_start {
+            // //     execute_command(lines_editor_state, Command::MoveLeft(4))?;
+            // // }
+
+            // // If not at start of line already, move cursor back as you unindent
+            // if !in_line_byte_zero_bool {
             //     execute_command(lines_editor_state, Command::MoveLeft(4))?;
             // }
 
-            // If not at start of line already, move cursor back as you unindent
-            if !in_line_byte_zero_bool {
-                execute_command(lines_editor_state, Command::MoveLeft(4))?;
-            }
+            // Simplest
+            execute_command(lines_editor_state, Command::MoveLeft(4))?;
 
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
