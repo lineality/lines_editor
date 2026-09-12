@@ -8978,7 +8978,7 @@ fn is_leap_year(year: u64) -> bool {
 /// ```
 pub fn memo_mode_mini_editor_loop(original_file_path: &Path) -> Result<()> {
     // Pre-allocated buffer for bucket brigade stdin reading
-    const STDIN_CHUNK_SIZE: usize = 8;
+    const STDIN_CHUNK_SIZE: usize = 16;
 
     let mut stdin_chunk_buffer = [0u8; STDIN_CHUNK_SIZE];
 
@@ -14141,8 +14141,57 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 }
             };
 
-            // println!("line_number {line_number}");
             unindent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
+
+            /*
+            more elaborate lookup
+            to see if cursor is at zero (e.g. scrolling down from start)
+            */
+            let (in_line_byte_usize, _file_position_string) = match lines_editor_state
+                .get_row_col_file_position(
+                    lines_editor_state.cursor.tui_row,
+                    lines_editor_state.cursor.tui_visual_col,
+                ) {
+                Ok(Some(row_col_file_pos)) => (
+                    row_col_file_pos.byte_in_line,
+                    row_col_file_pos
+                        .byte_offset_linear_file_absolute_position
+                        .to_string(),
+                ),
+                _ => (0, "n/a".to_string()),
+            };
+
+            // Simple cheat to detect if cursor is at 'start' of line (given number prefix)
+            let in_line_byte_zero_bool = match in_line_byte_usize {
+                0 => true,
+                _ => false,
+            };
+
+            // // Simple cheat to detect if cursor is
+            // // at 'start' of line (given number prefix)
+            // let cursor_is_past_line_start = match lines_editor_state.cursor.tui_visual_col {
+            //     3 | 4 | 5 => true,
+            //     _ => false,
+            // };
+
+            // TODO: newly added, still testing
+            // println!(
+            //     "lines_editor_state.cursor.tui_visual_col {}",
+            //     lines_editor_state.cursor.tui_visual_col
+            // );
+            // println!("cursor_is_past_line_start {}", cursor_is_past_line_start);
+            // println!("in_line_byte_zero_bool {}", in_line_byte_zero_bool);
+
+            // for simple cheat appraoch:
+            // if !cursor_is_past_line_start {
+            //     execute_command(lines_editor_state, Command::MoveLeft(4))?;
+            // }
+
+            // If not at start of line already, move cursor back as you unindent
+            if !in_line_byte_zero_bool {
+                execute_command(lines_editor_state, Command::MoveLeft(4))?;
+            }
+
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
@@ -14170,6 +14219,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             // println!("line_number {line_number}");
             indent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
+
+            // When using the ']' indent operation, move the cursor 4 positions to the right
+            execute_command(lines_editor_state, Command::MoveRight(4))?;
+
             build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             Ok(true)
         }
@@ -17221,7 +17274,7 @@ fn delete_byte_range_chunked(file_path: &Path, start_byte: u64, end_byte: u64) -
 
     // TODO: determining ideal default buffer & chunk size
     // Pre-allocated N-bytes buffer
-    const DBRC_CHUNK_SIZE: usize = 8;
+    const DBRC_CHUNK_SIZE: usize = 16;
     let mut buffer = [0u8; DBRC_CHUNK_SIZE];
 
     let mut source = File::open(file_path)?;
@@ -18237,7 +18290,7 @@ pub fn insert_file_at_cursor(state: &mut EditorState, source_file_path: &Path) -
     // ============================================
     // Counters and constants for the insertion loop
 
-    const IFAC_CHUNK_SIZE: usize = 8;
+    const IFAC_CHUNK_SIZE: usize = 16;
 
     let mut chunk_counter: usize = 0;
     let mut total_bytes_written: u64 = 0;
@@ -21593,7 +21646,7 @@ pub fn create_a_readcopy_of_file(
     const FILENAME_DISPLAY_SIZE: usize = 32;
 
     // Input buffer for stdin read (single digit + newline)
-    const USER_INPUT_BUFFER_SIZE: usize = 8;
+    const USER_INPUT_BUFFER_SIZE: usize = 16;
 
     // Defensive: Validate inputs
     if !original_path.exists() {
