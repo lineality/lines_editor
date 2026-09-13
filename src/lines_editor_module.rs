@@ -13149,6 +13149,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
            - Look at char UNDER/AT cursor (at current byte-set)
            - If syntax char or EOF → STOP
            - If not-syntax → iterate and repeat
+           - EXCEPT: if syntax char is space/tab AND the char one ahead is also
+             space/tab, this is mid-gap, not a stop → iterate and repeat
 
          */
         // Moves cursor forward to next syntax character (Helix-style 'w' command)
@@ -13158,13 +13160,18 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // then repeatedly checks if on syntax character. Stops when landing ON a syntax
         // character (space, tab, newline, or punctuation) or EOF.
         //
+        // A run of spaces/tabs is ONE gap, so it is ONE stop: the cursor lands on the
+        // last whitespace byte of the run, not on every whitespace byte in it.
+        //
         // # Algorithm
         // For each count iteration:
         // 1. Move cursor forward 1 position (call MoveRight(1))
         // 2. Loop:
-        //    - Get byte at current cursor position from file
+        //    - Get byte at current cursor position from file, and the byte one ahead
         //    - Check if byte is syntax character or EOF
         //    - If syntax or EOF → STOP (cursor positioned on it)
+        //      unless byte and byte-one-ahead are both space/tab, which means the
+        //      cursor is mid-gap → Move forward 1 position and loop back
         //    - If not syntax → Move forward 1 position and loop back
         //
         // # Arguments
@@ -13175,6 +13182,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // - MoveRight handles all scrolling (horizontal and vertical)
         // - MoveRight handles newline crossing via existing logic
         // - This function just provides the "stop at syntax" logic
+        // - The byte one ahead is the cursor's linear file offset + 1, so it comes
+        //   from the same seek and the same read, into a 2-byte buffer
         //
         // # Return Value
         // * `Ok(true)` - Movement completed, editor loop continues
@@ -13185,6 +13194,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // - Reaches EOF: stops at EOF position
         // - Long line requiring horizontal scroll: MoveRight handles it
         // - Line crossing: MoveRight's newline detection handles it
+        // - Run of N spaces: one stop, on the Nth space, not N stops
+        // - Newline is deliberately not collapsed: line ends stay their own stop,
+        //   so 'w' never leaps across blank lines in a single press
+        // - Last byte of file: read returns 1 byte, byte-one-ahead reported as EOF
+        // - WORD_MOVE_MAX_ITERATIONS bounds the loop, whitespace skipping included
         //
         // # Example
         // File: "hello world"
@@ -13195,6 +13209,15 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         // 4. Not syntax, MoveRight(1) → cursor on 'o'
         // 5. Not syntax, MoveRight(1) → cursor on space
         // 6. IS syntax → STOP
+        //
+        // # Example (whitespace run)
+        // File: "hello    world"   (four spaces)
+        // Cursor at 'o' (last letter of "hello")
+        // 1. MoveRight(1) → cursor on space 1, next byte is space → mid-gap
+        // 2. MoveRight(1) → cursor on space 2, next byte is space → mid-gap
+        // 3. MoveRight(1) → cursor on space 3, next byte is space → mid-gap
+        // 4. MoveRight(1) → cursor on space 4, next byte is 'w'
+        // 5. IS syntax, not mid-gap → STOP
         Command::MoveWordForward(count) => {
             for _ in 0..count {
                 // Step 1: Move forward 1 position
@@ -13213,27 +13236,39 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     }
                     iteration += 1;
 
-                    // Get byte at current cursor position
-                    let current_byte = match lines_editor_state.get_row_col_file_position(
-                        lines_editor_state.cursor.tui_row,
-                        lines_editor_state.cursor.tui_visual_col,
-                    ) {
+                    // Get byte at current cursor position, and the byte one ahead
+                    let (current_byte, next_byte) = match lines_editor_state
+                        .get_row_col_file_position(
+                            lines_editor_state.cursor.tui_row,
+                            lines_editor_state.cursor.tui_visual_col,
+                        ) {
                         Ok(Some(pos)) => {
-                            let mut byte_buf = [0u8; 1];
+                            let mut byte_buf = [0u8; 2];
                             let mut f = File::open(&base_edit_filepath)?;
                             f.seek(io::SeekFrom::Start(
                                 pos.byte_offset_linear_file_absolute_position,
                             ))?;
                             match f.read(&mut byte_buf) {
-                                Ok(1) => byte_buf[0],
-                                _ => 0, // EOF
+                                Ok(2) => (byte_buf[0], byte_buf[1]),
+                                Ok(1) => (byte_buf[0], 0), // last byte of file
+                                _ => (0, 0),               // EOF
                             }
                         }
-                        _ => 0,
+                        _ => (0, 0),
                     };
 
                     // Check if syntax or EOF
                     match is_syntax_char(current_byte) {
+                        // Mid-gap: inside a run of spaces/tabs, not a stop.
+                        // The last whitespace byte of the run fails this guard
+                        // and falls to the plain Ok(true) arm below, so the
+                        // cursor still stops ON a syntax char, once per gap.
+                        Ok(true)
+                            if matches!(current_byte, b' ' | b'\t')
+                                && matches!(next_byte, b' ' | b'\t') =>
+                        {
+                            execute_command(lines_editor_state, Command::MoveRight(1))?;
+                        }
                         Ok(true) => break,               // STOP - on syntax
                         _ if current_byte == 0 => break, // STOP - at EOF
                         _ => {
@@ -13334,6 +13369,120 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
+        /*'b' rules: Helix-type, move to just AFTER previous 'space or symbol'
+        1. Move cursor back 2 positions
+        2. Loop:
+           - Look at char BEFORE cursor (peek backward, current byte-set minus 1)
+           - If that char is syntax, or start-of-file → STOP
+           - If not-syntax → iterate and repeat
+           - EXCEPT: if that char is space/tab AND the char UNDER the cursor is
+             also space/tab, the cursor is standing inside a gap, not at the far
+             edge of one, so this is not a stop → iterate and repeat
+
+         */
+        // Moves cursor backward to just after previous syntax character (Helix-style 'b')
+        //
+        // # Purpose
+        // Implements 'b' command for word navigation. Moves cursor back two positions,
+        // then repeatedly peeks at the byte BEFORE the cursor. Stops when the byte before
+        // the cursor is a syntax character (space, tab, newline, or punctuation) or when
+        // the cursor reaches start of file.
+        //
+        // Note the asymmetry with MoveWordForward: 'w' stops ON a syntax character,
+        // 'b' stops on the character immediately AFTER one, i.e. at a word start.
+        //
+        // A run of spaces/tabs is never a resting place: if the cursor lands inside one
+        // it keeps going, through the gap and back through the word before it, stopping
+        // at that word's start. So a gap of N spaces costs zero stops, not N.
+        //
+        // # Why The Mid-Gap Test Looks At The Byte UNDER The Cursor
+        // The stop position for 'b' is a word start, and a word start's preceding byte
+        // is the LAST whitespace byte of the gap. On an indented line the byte before
+        // that one is whitespace too. So a mid-gap test that peeked two bytes backward
+        // would fire at the word start itself and skip the word. Testing the byte under
+        // the cursor instead asks the correct question: "am I standing in the gap?"
+        //
+        // # Algorithm
+        // For each count iteration:
+        // 1. Move cursor back 2 positions (call MoveLeft(1) twice)
+        //    Assumption: current position might be syntax, skip past it
+        // 2. Loop:
+        //    - Get current cursor byte offset in file
+        //    - If offset is 0 → STOP (start of file, cannot go back further)
+        //    - Read byte at offset-1 (prev) and byte at offset (under cursor)
+        //    - If prev is syntax → STOP (cursor sits just after it)
+        //      unless prev and the byte under the cursor are both space/tab, which
+        //      means the cursor is inside a gap → Move back 1 position and loop back
+        //    - If prev is not syntax → Move back 1 position and loop back
+        //
+        // # Arguments
+        // * `count` - Number of word starts to move back to (usually 1)
+        //
+        // # How It Works
+        // - Uses existing MoveLeft command for each backward step
+        // - MoveLeft handles all scrolling (horizontal and vertical)
+        // - MoveLeft handles newline crossing via existing logic
+        // - This function just provides the "stop after syntax" logic
+        // - Both peeked bytes are contiguous (offset-1, offset), so they come from the
+        //   same seek and the same read, into a 2-byte buffer
+        //
+        // # Return Value
+        // * `Ok(true)` - Movement completed, editor loop continues
+        // * `Err(LinesError)` - File open failed
+        //
+        // # Edge Cases
+        // - Cursor at or near start of file: loop breaks on offset 0, cursor stays put
+        // - Cursor at offset 1: the 2-byte read starts at offset 0, still valid
+        // - Cursor at EOF: read returns 1 byte, byte-under-cursor reported as sentinel 0,
+        //   which is not whitespace, so the normal stop rule applies
+        // - Indentation: leading whitespace is a gap like any other, so 'b' from inside
+        //   a word lands on that word's first character, indented or not
+        // - Cursor standing in leading indentation: moving back exits the gap onto the
+        //   newline of the previous line, which is syntax but not space/tab, so the
+        //   guard cannot fire and the cursor stops at column 0 of the current line
+        // - Newline is deliberately not collapsed: line ends stay their own stop,
+        //   so 'b' never leaps across blank lines in a single press
+        // - Position lookup failure, seek failure, read error: stop where we are,
+        //   cursor is left in a valid position rather than the command erroring out
+        // - Hitting WORD_MOVE_MAX_ITERATIONS stops silently here, unlike
+        //   MoveWordForward which posts a "long word limit" info bar message
+        // - Multi-byte UTF-8: continuation bytes are >= 0x80, never space or tab,
+        //   so the mid-gap guard can never misfire on them
+        //
+        // # Example
+        // File: "hello world"
+        // Byte offsets: h=0 e=1 l=2 l=3 o=4 space=5 w=6 o=7 r=8 l=9 d=10
+        // Cursor on 'd' (offset 10)
+        // 1. MoveLeft(1) twice → cursor on 'r' (offset 8)
+        // 2. prev (offset 7) is 'o', not syntax → MoveLeft(1) → offset 7
+        // 3. prev (offset 6) is 'w', not syntax → MoveLeft(1) → offset 6
+        // 4. prev (offset 5) IS syntax (space), byte under cursor is 'w' → STOP
+        // Cursor rests on 'w', the start of the word
+        //
+        // # Example (indented line, the case that exposed the old bug)
+        // File line: "    for i in list_1:"
+        // Byte offsets: spaces=0,1,2,3  f=4 o=5 r=6 space=7 i=8
+        // Cursor on 'i' (offset 8)
+        // 1. MoveLeft(1) twice → cursor on 'r' (offset 6)
+        // 2. prev (offset 5) is 'o', not syntax → MoveLeft(1) → offset 5
+        // 3. prev (offset 4) is 'f', not syntax → MoveLeft(1) → offset 4
+        // 4. prev (offset 3) IS syntax (space), byte under cursor is 'f',
+        //    not whitespace, so not mid-gap → STOP
+        // Cursor rests on 'f', the start of "for"
+        //
+        // # Example (whitespace run)
+        // File: "hello    world"   (four spaces)
+        // Byte offsets: h=0..o=4, spaces=5,6,7,8, w=9
+        // Cursor on 'w' (offset 9)
+        // 1. MoveLeft(1) twice → cursor on space 3 (offset 7)
+        // 2. prev (offset 6) is space AND byte under cursor is space → in the gap
+        //    → MoveLeft(1) → offset 6
+        // 3. prev (offset 5) is space AND byte under cursor is space → in the gap
+        //    → MoveLeft(1) → offset 5
+        // 4. prev (offset 4) is 'o', not syntax → MoveLeft(1) → offset 4
+        // 5. walks back through "hello" and breaks at offset 0, start of file
+        // Cursor rests on 'h', the start of the previous word, never in the gap
         Command::MoveWordBack(count) => {
             for _ in 0..count {
                 // ===================================================================
@@ -13376,6 +13525,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
                     // ===================================================================
                     // PEEK BACKWARD: Look at PREVIOUS byte (before current position)
+                    // and the byte UNDER the cursor, so a gap of spaces can be detected
                     // ===================================================================
 
                     let prev_byte_pos = current_pos.saturating_sub(1);
@@ -13388,10 +13538,11 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                         break; // Seek failed, probably at start of file
                     }
 
-                    // Read previous byte
-                    let mut byte_buf = [0u8; 1];
-                    let prev_byte = match f.read(&mut byte_buf) {
-                        Ok(1) => byte_buf[0],
+                    // Read previous byte, and the byte under the cursor
+                    let mut byte_buf = [0u8; 2];
+                    let (prev_byte, byte_under_cursor) = match f.read(&mut byte_buf) {
+                        Ok(2) => (byte_buf[0], byte_buf[1]),
+                        Ok(1) => (byte_buf[0], 0), // cursor is at EOF
                         Ok(0) => {
                             // Unexpected EOF
                             break;
@@ -13404,6 +13555,18 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                     // ===================================================================
 
                     match is_syntax_char(prev_byte) {
+                        // In-gap: the cursor is standing inside a run of spaces/tabs,
+                        // which is not a resting place. Keep going left. Once the cursor
+                        // leaves the gap, prev is a word byte and the Ok(false) arm walks
+                        // back to that word's start. A word start itself never matches
+                        // this guard, because the byte under the cursor is the word's
+                        // first character, not whitespace.
+                        Ok(true)
+                            if matches!(prev_byte, b' ' | b'\t')
+                                && matches!(byte_under_cursor, b' ' | b'\t') =>
+                        {
+                            execute_command(lines_editor_state, Command::MoveLeft(1))?;
+                        }
                         Ok(true) => {
                             // Previous byte IS syntax → STOP HERE
                             // Cursor is positioned AFTER the syntax character
@@ -13424,6 +13587,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             Ok(true)
         }
+
         Command::GotoLine(line_number) => {
             /*
             This goes to the beginning of a line.
