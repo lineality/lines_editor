@@ -2,6 +2,10 @@
 //! lines is minimal text editor
 //! test files in: src/tests.rs
 //!
+//! Note: The current version of this code predates and so does not follow
+//! the Mode & Case Handling policy guidelines below; fixing that problem
+//! is a high(est) priority TODO item.
+//!
 //! Originally lines used a byte-to-tui lookup table to interface TUI
 //! and user actions and the file bytes. Now that lookup functionality is done
 //! using a virtual-lookup-table calculated on the fly to conserve memory.
@@ -186,314 +190,238 @@ full IDE competing with Zed, Helix, vsCode, etc.
 - Where possible, as in legacy-mini-lines-editor, do not leave a file 'open' to read/write/append. Read what you need, when you need to, then stop reading the file, close out the read/write process so that the file is not locked or conflicted for another application or process (outside or inside of Lines).
 
 
+#### rust_lang_rules
+(Production-Rust rules of thumb)
 
-# 🦀 Rust rules 🦀:
-(production-Rust rules)
+#### Also see [Mode & Case-Handling](https://github.com/lineality/modes_and_case_handling/blob/main/mode_case_handling_framework_summary.md)
 
-# 🦀 Rust rules 🦀:
+# 🦀 Rust Guidelines 🦀:
 - Always best practice.
-- Always extensive doc strings: what the code is doing with project context
+- Never ~unsafe code.
+- Always extensive doc strings: what the code is doing with project-context.
 - Always clear comments.
-- Always cargo tests (where possible).
-- Never remove (still-current) documentation.
-- Always clear, meaningful, unique names (e.g. variables, functions).
-- Always absolute file paths.
-- Always error handling.
-- Never unsafe code.
-- Never use unwrap (in production builds).
+- Include cargo tests (where possible).
+- Functions should return result (in real life everything will fail at some point).
+- Never remove (current) documentation.
+- Always clear, meaningful, globally unique names (e.g. variables, functions, etc.): Do not give two things one name, do not give one thing two names.
+- Always absolute file paths
+- Always error handling
+- '?' should be avoided where it would obscure an error
+- Never use unwrap (in Production-Release builds / mode; use in Test Mode, cargo-tests, is obviously valid).
+- Always [handle](https://github.com/lineality/modes_and_case_handling) modes (Test Mode | Debug Mode | Production-Release Mode) and cases/errors appropriately, case by case, for that project. (There is no one-size-fits-all lazy-ideology.)
+- Always follow boy-scout values
+- Single-Flat: Default to a single-flat-file module x.rs. The crate src/ contains two files: main.rs and x.rs. main.rs uses "mod x; use x::FUNCTIONNAME;" to run the module. The single-flat-file module x.rs (where x = the name of the module) is portable to be added to other crates and projects).
+- Default to Vanilla-Rust: No third party crates.
+- Take performance and security into consideration when designing parts and architectures.
+- Specify development-phase and use-type context (and related design-priorities): POC, MVP-1, use-once, long term production, etc.
 
-Theory and real life are completely different in production code.
-Production code must be designed for bitflips, hardware failures, OS errors, etc.  Not pure platonic nirvana.
-E.g. According to Linus Torvalds, many or most windows blue screen of death issues in 1990-2010 happened because code did not account for real-world physical hard drive behaviors (including memory errors). According to Steve Gibson (and maybe Designing Data-Intensive Applications: by Martin Kleppmann) many network and database issues are caused by hard-radiation ("cosmic-ray") bitflips.
-
-Power failures happen. Hardware failures happen. Cyberattacks happen. Misbehaving applications happen. Rare edge cases happen. Race conditions happen. Undefined behavior happens. Most code does not have guardrails like either Rust or NASA's 'Power of Ten rules'. Etc.
-
-Much code is only for R&D and internal one-off use, and that is fine. Printing 'hello world' to test should not require elaborate production-hardening. Not all code is or needs to be "production" code. But production code must be smart.
-
-In production: Every line of code will fail eventually. Not 'if': every line of code will fail eventually. Production code is written to handle the failures when, (not 'if,' when) they happen. There is no 'should not fail.' There is no 'can not fail.' Every function will fail. Every call to every function will malfunction. Everything (in production) must be checked and handled so that when (not 'if,' when) these expected errors happen the process does not misbehave, crash, abort, or escalate malfunction, etc.
-
-Empirical processes are more "statistical," less tautological; and "statistical" quickly reaches into the unknown and the undefined.
-
-### Rules of Thumb (there will be exceptions and edge cases):
-
-- Classic ~quote from Sid Meyer's Civilization Game: "The bureaucracy has expanded to meet the needs of the expanding bureaucracy." Bloat and project collapse due to nihilist mismanagement and bad project skills is not new to computer science.
-
-#### Rules Require Context:
-- Rules such as 'Don't Repeat Yourself' or 'Separation of Concerns' require a context to be coherent and a compelling reason: Do not repeat yourself IF there is a compelling reason in a clear context. Does aerospace engineering have a blind policy of zero redundancy? No, it does not. Context matters.
-
-
-#### Flat is better than nested. (Just like in the zen of python.)
-- Always consider the flat option first.
-- Be wary of ever-more nested structs that claim to infinitely 'separate concerns' for the sake of 'separating concerns.'
-
-
-#### 'Get [what is] needed, when [it is] needed.':
-- Do not load more into state than you need.
-- Do not store more information than you need.
-- Do not use more storage capacity than you need.
-- Do not keep a hold/handle on a file longer than is needed (e.g. forever).
-
-
-#### Grace Hopper ~"The most damaging phrase in the language is 'we've always done it this way.' The second most damaging is 'storage is cheap.'"
-- Be as caring and vigilant about memory-economics as Grace Hopper (who famously walked around with a piece of wire 30 cm long — "a nanosecond" — to make engineers physically feel the cost of waste). Before suggesting the size for a variable (such as apathetically using more memory than is needed) imagine you are suggesting this to Grace Hopper to her face. Only use as much memory as you are absolutely required to use.
-
-- Load what is needed when it is needed: Do not ever load a whole file or line, rarely load a whole anything. Increment and load only what is required pragmatically. Do not fill 'state' with anything that is not both necessary and actually used. Do not insecurity output information broadly in the case of production errors and exceptions (testing and debugging.
-
-- Always use defensive best practice.
-
-- Smoothly handle everything: Every part of every function will eventually fail, if only due to hardware failures or bit-flip noise (both of which are common in reality). As Linus Torvalds has explained, at the root of many 'blue screen of death' incessant window crashes in year's past were hardware irregularities that were not 'handled' by software. Production functions are not pure logic bubbles, they are physical engines that must account for all physically-possible (not just ideally-logically pure) outcomes. If a function gets a result from another function that is (for whatever reason, however logically impossible) malformed and broken, this needs to be handled, e.g. with the classic "let it fail and try again" resiliency model. Every return should be checked for what can be checked, with issues handled (structs and enums can be useful here to define what a healthy return value is allowed to be).
-
-Always error and exception handling: Every part of code, every process, function, and operation will fail at some point, if only because of cosmic-ray bit-flips (which are common), hardware failures, power-supply failures, adversarial attacks, etc. There must always be fail-safe error handling where production-release-build code handles issues and moves on without panic-crashing ever. Every failure must be handled smoothly: let it fail and move on. This does not mean that no function can return an error, nor does this mean that errors cannot be logged or reported. Case by case, a process can be retried or skipped, but the overall program must smoothly continue.
-
-## "Do not stop" in production: Case Handling
-Somehow there seems to be no clear vocabulary for 'Do not stop.' In production build code, when you come to something to handle, handle it:
-- Handle and move on: Do not halt the program.
-- Handle and move on: Do not terminate the program.
-- Handle and move on: Do not exit the program.
-- Handle and move on: Do not crash the program.
-- Handle and move on: Do not panic the program.
-- Handle and move on: Do not coredump the program.
-- Handle and move on: Do not finish the program.
-- Handle and move on: Do not spiral into undefined behavior of the program.
-- Handle and move on: Do not stop the program.
-
-## Project-Level Context For Functions, Comments, & Doc-Strings
-Comments and docs for functions and groups of functions must include project level information: To paraphrase Jack Welch, "The most dangerous thing in the world is a flawless operation that should never have been done in the first place." For projects, functions are not pure platonic abstractions; the project has a need that the function is or is not meeting. It happens constantly that a function does 'the wrong thing' well and so this 'bug' is never detected when functions are examined in isolation. Project-level (strategic level, architecture level) documentation and logic-level (tactical level) documentation are two different things that must both exist such that discrepancies must be identifiable; Project-level documentation, logic-level documentation, and the code, must align and align with user-needs, real conditions, the results of tests, and future conditions.
-
-Safety, reliability, maintainability, fail-safe, communication-documentation, are the goals: not ideology, aesthetics, popularity, momentum-tradition, bad habits, convenience, nihilism, lazyness, lack of impulse control, cooties, etc.
-
-## No third party libraries (or very very strictly avoid third party libraries where possible).
-
-## Scale: Code should be future-proof and scale well. The Y2K bug was not a wonderful feature, it was a horrendous mistake. Scale and size should be handled in a modular no-load way, not arbitrarily capped so that everything breaks.
-
-## Power-of-10-style Rules of Thumb
-We can derive a list of '10 Rust Production Rules' updated for general systems programming in 2026 (derived) from NASA's 2006 'Power of 10' rules that were originally narrowly framed for c for embedded-systems.
-
-These are ideals to be followed where possible and sensible, not absolute pedantic rules:
-
-1. no unsafe stuff:
+# 🦀 10 Rust Rules 🦀:
+1. Avoid Risky Methodologies:
 - no recursion
 - no goto
-- no pointers
+- no fancy pointer use
 - no preprocessor branching
-(Term collision: Technically an 'unsafe code' block in Rust may be required for cases such as naked/assembly code or to interact with a Posix-OS, as in the case of raw-terminals. While use of jargon-'unsafe' blocks should be avoided where possible, the term 'unsafe' does not mean that a specific best-practice rule was violated.)
+('unsafe' code blocks in Rust may be unavoidable, but using '#![forbid(unsafe_code)]' is a good starting default)
 
-2. Loops: either firmly bounded or unbounded:
-- Upper bound on all normal-loops (to make sure they do **not** keep looping)
-- Failsafe for all always-loops to make sure they **do** keep looping (e.g. additional restart layer)
+2. Loops: either firmly bounded or unbounded w/ recovery
 
-3. Pre-allocate all memory (no dynamic memory allocation)
-- Production code should minimize or eliminate use of heap (e.g. very terse error messages that do not leak any user-data)
-- Debug and testing often make sense to use heap and this code is not in production-binaries (e.g. detailed error messages)
-- Clearly separate lazy-convention from real-need. With tools such as "Buffy'
-github.com/lineality/buffy_stack_format_write_module, it is not necessary to use heap for string formatting.
+3. Attempt to Pre-allocate all memory (stack, not heap)
+- case by case, avoid heap in production-release-mode where sound
 
-4. Clear Function Scope and Data Ownership:
-Part of having a function be 'focused' means knowing if the function is in scope. Functions should be neither swiss-army-knife functions that do too many things, nor scope-less micro-functions that may be doing something that should not be done. Many functions should have a narrow focus and a short length, but definition of actual-project scope functionality must be explicit. Replacing one long clear in-scope function with 50 scope-agnostic generic sub-functions with no clear way of telling if they are in scope or how they interact (e.g. hidden indirect recursion) is dangerous. Rust's ownership and borrowing rules focus on Data ownership and hidden dependencies, making it even less appropriate to scatter borrowing and ownership over a spray of microfunctions purely for the ideology of turning every sub-operation into a microfunction just for the sake of doing so. (See more in rule 9.)
+4. Clear Function Scope and Data Ownership
 
-5. 'Case Handling' & Defensive Programming: debug-assert, test-assert, prod safely check & handle, not 'assert!' panic in production
-
-Note: Terminology varies across "error" / "fail" / "exception" / "catch" / "case" et al. The standard terminology is 'error handling' but 'case handling' or 'issue handling' may be a more accurate description, especially where 'error' refers to the output when unable to handle a case (which becomes semantically paradoxical). The goal is that a program will not terminate / halt / end / shut down / stop, etc., or crash / fail / panick / coredump / do undefined-behavior, etc. when 'expected' cases occur. Here production and debugging/testing starkly diverge: during testing you **DO** want/need to see how (and where in the code) the program may 'fail' and where and when cases are encountered. In testing you need to stop with extensive details. In debugging you want to show extensive issue-details. But in production you need to never stop and you need to keep logs memory-terse and privacy-safe.
-The proverbial satellite must never fall out of the sky, ever, regardless of how pedantically beautiful the error-message in the ball of flames may have been.
-
-#### Six aspects of case-handlng (Rule 5 of revised 'power of 10' for Rust)
-For production-release code:
-
-1 of 6: Check and handle without stop/panic/halt in production
-
-2 of 6: return result (such as Result<T, E>) and smoothly handle "errors" (not halt-panic stopping the application): no assert!() outside of test-only code
-Return Result<T, E>, with case/error/exception handling, so long as that is caught somewhere. Only in cases where there is no way (or no where) to handle the error-output should the function always return OK(), failing completely silently (sometimes internal-to-function error logging is best). Allow-to-fail and handle is not the same as no-handling. This is case-by case.
-
-3 of 6: test assert: use #[cfg(test)] assert!() to test production binaries (not in prod builds, not in debug builds)
-
-4 of 6: debug assert: use debug_assert! with  #[cfg(all(debug_assertions, not(test)))] to run tests in debug builds (not in prod, not in test)
-
-5 of 6: Note: #[cfg(debug_assertions)] and debug_assert! ARE active in test builds
-
-6 of 6: Use defensive programming with recovery of all issues at all times
-- use cargo tests
-- use debug_asserts
-- do not leave test-panic assertions in production code
-- use no-panic error/case handling in production code
-- use Option
-- use enums and structs
-- check bounds
-- check returns
-- note: a test-flagged assert can test a production release build (whereas debug_assert cannot); cargo test --release
-```
-#[cfg(test)]
-assert!(
-```
-
-e.g.
-# "Assert & Catch-Handle" 3-part System for organizing production behavior, debug behavior, and cargo-test behavior:
-
-A three-part rule of thumb:
-
-1 of 3: For Debug assertions: Only in debug builds, NOT in tests - use: #[cfg(all(debug_assertions, not(test)))]
-
-2 of 3:. For Test assertions: use in test functions themselves, not in the function body (easy to conflict with debug/prod handling)
-E.g.
-When we run a cargo test:
-- The #[cfg(test)] assert compiles and is active
-- the cargo-test calls string_concat_list_function()
-- an assert! in the abc_function (not in the test) panics immediately inside the abc_function
-- abc_function never reaches the production error handling
-- so abc_function never returns an Err(...)
-- so the cargo-test 'fails' with a panic, not with a cargo-test error result
-
-3 of 3:. Production catches: Always present, return production-safe no-heap terse errors (no panic, no open-ended data exfiltration), with unique error prefixes to identify the function, e.g. 'SCLF error: arg empty' for string_concat_list_function()
-
-Terminology: for consistency, "assert" will be used to mean inducing panic, which is the goal only for cargo-test and debug-builds (not production).
-
-For production, the term "required-condition" will be used (e.g. instead of invariant), to avoid the circular terminology vortex that the original 'Power of 10' is not clear on: ' "assert" handing in production without "asserting" because "asserts" are removed in production... but something is still "asserted" without "assert"ing..." etc.
-
-e.g.
-"required-condition" — each rule itself, e.g. len <= 8, Independent of build mode
-
-"requirement-check" — the code that tests a required-condition
-
-"reaction-to-check" — what happens when a check fails. This varies by tier:
-
-Test: panic (assert!) (heap)
-Debug: panic (debug_assert!), may also eprintln! (heap)
-Production: return terse error (no panic, no print) (no heap)
-
-Note: Buffy may be useful in production error string formatting https://github.com/lineality/buffy_stack_format_write_module
-
-// template/example for check/assert format
-//    =================================================
-// // Debug-Assert, Test-Asset, Production-Catch-Handle
-//    =================================================
-// This is not included in production builds
-// debug_assert: IS also active during test-builds
-// use #[cfg(not(test))] to run in debug-build only: will panic
-#[cfg(all(debug_assertions, not(test)))]
-debug_assert!(
-    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
-    "Info bar buffer must have non-zero capacity"
-);
-
-// this is included in debug builds AND in test builds
-#[cfg(debug_assertions)]
-{
-xyz
-}
-
-// Production safe output example (Buffy is a no-heap alternative)
-Err(_e) => {
-    #[cfg(debug_assertions)]
-    eprintln!("function-acronym: process-name: {}", _e);
-
-    // safe log
-    buffy_println!("function-acronym: process-name: failed", &[])?;
-}
-
-// Note: This is located only in cargo test functions.
-// This is not included in production builds.
-// assert: only when running cargo test: will panic
-#[cfg(test)]
-assert!(
-    INFOBAR_MESSAGE_BUFFER_SIZE > 0,
-    "Info bar buffer must have non-zero capacity"
-);
-// Catch & Handle without panic in production
-// This IS included in production to safe-catch
-if !INFOBAR_MESSAGE_BUFFER_SIZE == 0 {
-    // state.set_info_bar_message("Config error");
-    return Err(LinesError::GeneralAssertionCatchViolation(
-        "zero buffer size error".into(),
-    ));
-}
-
-Depending on the test, you may need a test-assert to be in a cargo-test function and not in the main function.
-
-Warning: Do not collide or mix up test-asserts and debug asserts, or forget that debug code also runs in test builds by default.;
-use #[cfg(all(debug_assertions, not(test)))] for debug build only (not test build).
-use #[cfg(test)] assert!(  for test build only, not debug).
-Give descriptive non-colliding names to cargo-tests and test sets.
-
-Note: production-use characters and strings can be formatted, written, printed using modules such as Buffy
-https://github.com/lineality/buffy_stack_format_write_module
-instead of using standard Rust macros such as format! print! write! that use heap-memory.
-
-Note: Error messages must be unique per function (e.g. name of function (or abbreviation) in the error message). Colliding generic error messages that cannot be traced to a specific function are a significant liability.
-
-
-Avoid heap for error messages and for all things:
-Is heap used for error messages because that is THE best way, the most secure, the most efficient, proper separation of debug testing vs. secure production code?
-Or is heap used because of oversights and apathy: "it's future dev's problem, let's party."
-
-We can use heap in debug/test builds only.
-
-Production software must not insecurely output debug diagnostics.
-Debug information must not be included in production builds: "developers accidentally left development code in the software" is a classic error (not a desired design spec) that routinely leads to security and other issues. That is NOT supposed to happen. It is not coherent to insist that open ended heap output 'must' or 'should' be in a production build.
-
-This is central to the question about testing vs. a pedantic ban on conditional compilation; not putting full traceback insecurity into production code is not a different operational process logic tree for process operations.
-
-Just like with the pedantic "all loops being bounded" rule, there is a fundamental exception with conditional compilations: code that must NEVER be in production-builds must ALWAYS be excluded using conditional-compilation flags. This is not an OS or algo-tree conditional compilation, or a hardware conditional compilation; This is an 'unsafe-testing-only' vs. 'safe-production-code' condition. This includes several types of items, such as panic-inducing 'assert' statements (as opposed to proverbial-assert checks that do not panic-halt), and error-message data: Error messages and error outcomes in 'production' 'release' (real-use, not debug/testing) must not ever contain any information that could be a security vulnerability or attack surface. Failing to remove debugging inspection is a major category of security and hygiene problems.
-
-Security: Error messages in production must NOT contain:
-- File paths (can reveal system structure)
-- File contents
-- environment variables
-- user, file, state, data
-- pii data
-- internal implementation details
-- etc.
-
-All debug-prints not for production must be tagged with:
-```
-#[cfg(debug_assertions)]
-```
-
-Production output following an error / exception / case must be managed and defined, not not open to whatever an api or OS-call wants to dump out.
-The three tiers can be handled with a Fieldless enum type system and exit-codes for behavior such as retry-ing in some cases.
-
-(see more below)
-
-
-
-
-
+5. Mode & Case Handling, & Defensive-Programming:
+- Modes: test-mode, debug-mode, production-release-mode;
+- continual state-recovery (without panic/halt) in production-release-mode
+- See Example/Default Framework: [github.com/lineality/modes_and_case_handling](https://github.com/lineality/modes_and_case_handling)
 
 6. Manage ownership and borrowing
-- Rust is designed to greatly assist here (vs. c).
 
-7. Manage return values:
-- use null-void return values
-- check non-void-null returns
-- see above for designing and checking return values to handle cases of invalid other return-value cases.
-- always have functions return a 'result' so errors and cases can be handled
+7. Manage return values
 
-8. Manage conditional compilation: Navigate debugging and testing on the one hand and not-dangerous conditional-compilation on the other hand:
-- Here 'conditional compilation' is interpreted as significant changes to the overall 'tree' of operation depending on build settings/conditions, such as using different modules and basal functions. E.g. "GDPR compliance mode compilation"
-- Any LLVM type compilation or build-flag will modify compilation details, but not the target tree logic of what the software does (arguably).
-- 2025+ "compilation" and "conditions" cannot be simplistically compared with single-architecture 1970 pdp-11-only C or similar embedded device compilation.
+8. Manage conditional compilation
 
 9. Communicate:
 - Use doc strings; use comments.
-- Document use-cases, edge-cases, and policies (These are project specific and cannot be telepathed from generic micro-function code. When a Mars satellite failed because one team used SI-metric units and another team did not, that problem could not have been detected by looking at, and auditing, any individual function in isolation without documentation. Breaking a process into innumerable undocumented micro-functions can make scope and policy impossible to track. To paraphrase Jack Welch: "The most dangerous thing in the world is a flawless operation that should never have been done in the first place.")
-- Rather than using '?' for terse function calling, when possible have detailed error handling.
-- Rather than having a result hidden in let _ =, allow that result to be shown in debugging
+- Document use-cases, edge-cases, policies, intent: features vs. bugs, etc.
+- Rather than let _ =, allow that result to be shown in debugging
+- log errors (MVP: append log file in executable-parent dir)
 
-10. Use state-less operations when possible:
-- a seemingly invisibly small increase in state often completely destroys projects
-- expanding state destroys projects with unmaintainable over-reach
+10. Use state-less operations when possible
 
-
-Also: As per Mara Bos's 'Rust Atomics and Locks' (O'Reilly) note the specific use-case and needs for threads, parallelism, concurrency, atomics, async, etc. Distributed processing varies significantly per project, and implementations of production functions, algorithms, and data structures, are rarely the same as abstract text-book examples.
-🦀Vigilance🦀: Properly written code supports users, developers, and the people who depend upon maintainable software. Maintainable software supports the future for us all.
-
-#### Links:
+#### References & Links:
 - https://en.wikipedia.org/wiki/The_Power_of_10:_Rules_for_Developing_Safety-Critical_Code
 - https://spinroot.com/gerard/pdf/P10.pdf
 - https://spinroot.com/static/index.html
 - https://web.eecs.umich.edu/~imarkov/10rules.pdf
-- https://www.youtube.com/watch?v=JWKadu0ks20
 - https://en.wikipedia.org/wiki/Static_program_analysis
 - https://www.oreilly.com/library/view/designing-data-intensive-applications/9781491903063/
+- https://www.oreilly.com/library/view/rust-atomics-and/9781098119430/
+- Books by https://en.wikipedia.org/wiki/P._J._Plauger
 
+#### mode_case_handling_framework_summary
+
+
+
+# Mode & Case Handling Bullet Points Summary
+## Framework: Three Modes & Rules
+
+### Three Modes of Operation:
+1. Production-Release Mode:
+- Never panics, halts, or leaks data.
+- Uses 2-byte error codes (no heap, no strings, no PII).
+- Smoothly handles all cases via "Let It Fail & Recover" (with optional logging).
+- Uses a Three-Level Recovery Hierarchy
+
+2. Debug Mode:
+- Similar to production but logs verbose diagnostics (heap allowed).
+- Uses `eprintln!` for errors and `debug_assert!` for internal invariants (gated to avoid running in test/production).
+- Optional debug printing/logging for inspection.
+
+3. Test Mode:
+- Uses `assert!` in test functions.
+- Deliberately crashes/panics to generate stack traces for debugging.
+
+
+
+### Rules:
+
+1. All functions return `Result<T, YourProjectError>`. The error payload is always the 2-byte `YourProjectError` enum. All operations are expected to eventually fail in some way; all such failures must be smoothly handled.
+
+2. Production-Release Mode (Result-Error case-handling):
+- never panics
+- no heap in error-code-return from functions
+- no print or log of that code by the function before the code is returned
+
+3. Separate Debug-Mode Assertions from Cargo-Tests:
+- `debug_assert!` must be gated with `#[cfg(all(debug_assertions, not(test)))]` to exclude from test mode and production mode builds.
+
+4. Use Gated Verbose Debug-Mode Diagnostics:
+- Use `eprintln!` (gated with `#[cfg(debug_assertions)]`) for debug-only output. Heap is allowed/needed here.
+
+5. Test-Mode Isolation:
+- Test code must be gated with `#[cfg(test)]`.
+- Avoid using test-mode tests inside functions for stable code.
+
+6. Use a Fieldless Enum error-code system.
+
+7. Use Enforced-Custom-Types for Value-Integrity.
+
+8. Use a Three-Level Recovery Hierarchy for recovery and state.
+
+
+### Enforced-Custom-Types & Value-Integrity:
+- Use `struct`/`enum`/`impl` to enforce value boundaries for inputs and intermediate values. This ensures invalid states (including bit-flips, corruption) are caught and handled as errors, not passed silently.
+- required: add a validity-recheck into the .get() method
+- Optionally use a .validity_recheck() method
+- While a custom type in Rust can enforce and validate that a value is within the definition boundaries, this check only happens once when the constructor is run ( .new() ), assuming that the constructor was correctly written to carry out that check correctly. If memory-corruption happens after that initial check there are no automatic checks that will catch that the value is now invalid (e.g. as the value is returned from and accepted by another function). Additional .validity_recheck() methods can be made and used to manually check at specific points.
+- Using custom types helps to manage compatibility within the design (e.g. narrowing scope of function inputs)
+- vanilla custom types (without additional validity-checks) guard against design errors (coding-mistakes) and 'expected' errors.
+- additional validity-rechecks can add guards against some electrical, hardware, and adversarial based errors, or 'unexpected errors.'
+- Getting and mutation/updating use methods that must be manually designed to check & enforce boundary checks and validity.
+#### Public & Private
+- note: the individual rules for structs, enums, impls, and their combinations, vary.
+- A struct CAN be safely pub (so other modules can use the type name in signatures).
+- The struct's inner fields should NOT be pub (so other modules cannot bypass checks).
+- Example of safety for combinations: if an enum variant carries data then do not put raw unbounded primitives inside that; rather, put a bounded struct inside.
+
+### Three-Level Recovery Hierarchy ("Let It Fail & Recover")
+Production-release failures should fit one of three bounded recovery tiers:
+- Recovery Tier 1: Micro-Retry (Local) — If err.is_retryable() is true, a caller repeats the bounded operation (with backoff/sleep).
+- Recovery Tier 2: Step Fallback / Safe Degradation (Subsystem) — This is at a level above which any retry-errors would be thrown. If non-retryable, or retry attempts are exhausted, the subsystem safely aborts the current command, and handles what to do next. This is highly case dependent, and might include trying another function, reverting to a previous state, exiting silently, etc. Some internal state may need to be reset. Ultimately move on with or without logging the case or "error."
+- Recovery Tier 3: Macro Re-initialization — An outer loop reinitializes state and continues execution without halting. The largest case for Tier 3 reboots the entire program.
+
+#### Recovery & State-Recovery:
+Recovery tiers represent functional layers of 'state' in terms of 'recovery levels' to plan for, e.g. what to do when some state-values may not exist. Tier 1 covers the state in question. Tiers 2 and 3 range from small to large 'reboot/retry' scales up to the whole program. Full system restart will likely often have at least some state that it can be restarted with (resulting in no noticeable interruption), sometimes implying that state should be managed outside of retry-loops, to retain intact values.
+
+
+### Error Handling System
+- Single Fieldless Enum:
+  A global `YourProjectError` enum (e.g., `#[repr(u16)]`) defines all error codes.
+  Properties:
+  - No heap (2-byte `Copy` values).
+  - No `String` or `io::Error` payloads (prevents PII leaks).
+  - Exhaustive `match` for retryability (`is_retryable()` method).
+  - Append-only codes: Never reuse or renumber.
+
+- Error Code Table Rules:
+  1. Codes are unique and permanent (e.g., `Fs32tFromStrInputTooLong = 101`).
+  2. Reserve blocks per module/feature (e.g., 100–199 for `FixedSize32Timestamp`).
+  3. Variant names: `AcronymFunctionCondition` (e.g., `IoPermissionDenied`).
+  4. Document codes in the enum’s doc comment.
+
+- Display for Debug Only:
+  `Display` impl (for human-readable text) is compiled only for debug/test builds.
+
+#### Error Sites & Propagation:
+- Unique codes permit use of '?' because the unique code of the root-cause error is preserved (not obscured) by propagating the error.
+- If an error site is of note, that site needs to throw a specific error code.
+- This acts as a proxy for manually checking for most internal-invariant type issues.
+
+
+### Two Detection Patterns
+1. If-Detection-Pattern:
+   For direct condition checks (e.g., `if len > 32`).
+   - Debug: `debug_assert!` (internal invariants only) + `eprintln!`.
+   - Production: Return terse error code.
+
+2. Match-A-Function-Call-Pattern:
+   For handling `Result` from fallible calls (e.g., `std::str::from_utf8`).
+   - Debug: `debug_assert!(false, ...)` (for internal invariants) + `eprintln!`.
+   - Production: Drop callee’s error (to avoid heap/PII), return project error code.
+
+
+## Key Principles
+- No Heap in Production: Ban `String`, `format!`, `Box<dyn Error>`, etc.
+- No Panics in Production: Use `checked_add`, `.get()`, etc., to avoid silent wraps/panics.
+- Defensive Programming:
+  - Input Validation: Expected issues (e.g., bad user input) → return error code + debug `eprintln!`.
+  - Internal Invariant: "Should-not-happen" checks (e.g., bit-flips) → `debug_assert!` + production catch.
+- Retry Logic: Defined per error code (not ranges) in `is_retryable()`.
+
+
+### Example Code
+#### Error Enum
+```rust
+#[repr(u16)]
+pub enum YourProjectError {
+    IoNotFound = 50,
+    Fs32tFromStrInputTooLong = 101,
+    RetryMaxAttemptsZero = 200,
+}
+```
+
+#### If-Detection-Pattern
+```rust
+if !condition {
+    #[cfg(debug_assertions)]
+    eprintln!("ACRO-101: detail: {}", value);
+    return Err(YourProjectError::AcroFnCondition);
+}
+```
+
+#### Match-A-Function-Call-Pattern
+```rust
+match fallible_call(input) {
+    Ok(v) => Ok(v),
+    Err(_detail) => {
+        #[cfg(debug_assertions)]
+        eprintln!("ACRO-101: {}", _detail);
+        Err(YourProjectError::AcroFnCondition)
+    }
+}
+```
+
+### Banned in Production
+- `unwrap`/`expect`/`panic!`
+- Heap allocations (`String`, `format!`, `Box<dyn Error>`)
+- Error messages with PII (file/dir paths, user data, etc.)
+- Unchecked Arithmetic: Arithmetic operators that can panic in production (use `checked_add`, etc.)
+
+
+#### Suggestions (TODO: under construction; move to rules, for manageable use of codes?)
+- Allow effective "blocks" of codes for functions, to allow coherent numbering and easy incrementing in case two developers collide. e.g. if the last two digits are internal to a function, u16 would allow for 654 functions to each have 99 internal errors (or depending on average function size, ten per function may be enough on average).
+- alt phrasing: allow 10 or 100 error-codes per function to manage allocations and changes to codes
 
 
 */
@@ -14307,10 +14235,12 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
 
             unindent_line_bytewise(&edit_file_path.display().to_string(), line_number)?;
 
-            // /*
-            // more elaborate lookup
-            // to see if cursor is at zero (e.g. scrolling down from start)
-            // */
+            // // /*
+            // // more elaborate lookup
+            // // to see if cursor is at zero (e.g. scrolling down from start)
+            // //
+            // // */
+            // build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
             // let (in_line_byte_usize, _file_position_string) = match lines_editor_state
             //     .get_row_col_file_position(
             //         lines_editor_state.cursor.tui_row,
@@ -14338,20 +14268,20 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             // //     _ => false,
             // // };
 
-            // // TODO: newly added, still testing
-            // // println!(
-            // //     "lines_editor_state.cursor.tui_visual_col {}",
-            // //     lines_editor_state.cursor.tui_visual_col
-            // // );
+            // // // TODO: newly added, still testing
+            // // // println!(
+            // // //     "lines_editor_state.cursor.tui_visual_col {}",
+            // // //     lines_editor_state.cursor.tui_visual_col
+            // // // );
             // println!("in_line_byte_usize {}", in_line_byte_usize);
 
-            // // println!("cursor_is_past_line_start {}", cursor_is_past_line_start);
+            // // // println!("cursor_is_past_line_start {}", cursor_is_past_line_start);
             // println!("in_line_byte_zero_bool {}", in_line_byte_zero_bool);
 
-            // // for simple cheat appraoch:
-            // // if !cursor_is_past_line_start {
-            // //     execute_command(lines_editor_state, Command::MoveLeft(4))?;
-            // // }
+            // // // for simple cheat appraoch:
+            // // // if !cursor_is_past_line_start {
+            // // //     execute_command(lines_editor_state, Command::MoveLeft(4))?;
+            // // // }
 
             // // If not at start of line already, move cursor back as you unindent
             // if !in_line_byte_zero_bool {
