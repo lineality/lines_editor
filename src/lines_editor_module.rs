@@ -4364,6 +4364,12 @@ pub struct EditorState {
     pub file_position_of_topline_start: u64,
     // start end for visual-mode selection
     pub file_position_of_vis_select_start: u64,
+
+    // // For curstor restore (e.g. after vis del)
+    // pub line_number_vis_select_start: usize,
+    // pub byte_in_line_vis_select_start: usize,
+    // pub line_number_vis_select_end: usize,
+    // pub byte_in_line_vis_select_end: usize,
     pub file_position_of_vis_select_end: u64,
 
     /// TODO making this bigger/ribbon?
@@ -4443,6 +4449,12 @@ impl EditorState {
 
             // Clipboard/Pasty
             file_position_of_vis_select_start: 0,
+
+            // // experimental
+            // line_number_vis_select_start: 0,
+            // byte_in_line_vis_select_start: 0,
+            // line_number_vis_select_end: 0,
+            // byte_in_line_vis_select_end: 0,
             file_position_of_vis_select_end: 0,
 
             tui_window_horizontal_utf8txt_line_char_offset: 0,
@@ -13744,6 +13756,76 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             Ok(true)
         }
 
+        // under costruction
+        // needs 'top vs. bottom' checking for 'top;
+        // being sometimes end of vis-window
+        // and cases:
+        // 1. in tui (below works at least sometimes)
+        // 2. scroll up above TUI
+        // 3. scroll down below TUI
+        // // TODO: This only works for within TUI
+        // Command::DeleteRange => {
+        //     let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+        //         Ok(success) => success,
+        //         Err(_e) => {
+        //             #[cfg(debug_assertions)]
+        //             eprintln!("Error clearing redo logs: {:?}", _e);
+        //             log_error("Cannot clear redo logs", Some("DeleteRange"));
+        //             let _ = lines_editor_state.set_info_bar_message("Redo-clear failed");
+        //             false
+        //         }
+        //     };
+
+        //     // 1. Save the target line and the TUI row we were currently sitting on
+        //     let target_line = lines_editor_state.line_number_vis_select_start;
+        //     let target_byte_in_line = lines_editor_state.byte_in_line_vis_select_start;
+        //     let saved_tui_row = lines_editor_state.cursor.tui_row;
+
+        //     // 2. Delete the range
+        //     delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+
+        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+
+        //     // 3. STEP 1: GO TO LINE (using your trusted existing command)
+        //     execute_command(lines_editor_state, Command::GotoLine(target_line + 1))?;
+
+        //     // 4. STEP 2: FRAME-SHIFT
+        //     // GotoLine puts the target line at TUI row 0.
+        //     // To frame-shift it back to `saved_tui_row`, we shift the window up
+        //     // by `saved_tui_row` lines, and set our cursor row to match.
+        //     if lines_editor_state.line_count_at_top_of_window >= saved_tui_row {
+        //         lines_editor_state.line_count_at_top_of_window -= saved_tui_row;
+        //     } else {
+        //         lines_editor_state.line_count_at_top_of_window = 0;
+        //     }
+        //     lines_editor_state.cursor.tui_row = saved_tui_row;
+
+        //     // Rebuild map so the frame shift is painted correctly
+        //     build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+
+        //     // 5. Move right to the exact byte offset N
+        //     execute_command(lines_editor_state, Command::GotoLineStart)?;
+        //     if target_byte_in_line > 0 {
+        //         execute_command(lines_editor_state, Command::MoveRight(target_byte_in_line))?;
+        //     }
+
+        //     // 6. Update selection markers
+        //     if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
+        //         lines_editor_state.cursor.tui_row,
+        //         lines_editor_state.cursor.tui_visual_col,
+        //     ) {
+        //         lines_editor_state.line_number_vis_select_start = file_pos.line_number;
+        //         lines_editor_state.byte_in_line_vis_select_start = file_pos.byte_in_line;
+        //         lines_editor_state.file_position_of_vis_select_start =
+        //             file_pos.byte_offset_linear_file_absolute_position;
+        //         lines_editor_state.file_position_of_vis_select_end =
+        //             file_pos.byte_offset_linear_file_absolute_position;
+        //     }
+
+        //     Ok(true)
+        // }
+
+        // Old simple works
         Command::DeleteRange => {
             // =================================================
             // Clear Redo Stack Before Editing: Insert or Delete
@@ -13769,6 +13851,8 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
             };
 
             // v2: delete selection and reset selection-range to current location
+            // delete_position_range_noload() uses Command::GotoLineStart)
+            // to reset the cursor to the start of the line (simple, works)
             delete_position_range_noload(lines_editor_state, &edit_file_path)?;
 
             // Set cursor position to file_position_of_vis_select_start
@@ -13777,6 +13861,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 lines_editor_state.cursor.tui_row,
                 lines_editor_state.cursor.tui_visual_col,
             ) {
+                // // experimental, needs end-2 also
+                // lines_editor_state.line_number_vis_select_start = file_pos.line_number;
+                // lines_editor_state.byte_in_line_vis_select_start = file_pos.byte_in_line;
+
                 // Set/Reset BOTH start and end to same position initially
                 lines_editor_state.file_position_of_vis_select_start =
                     file_pos.byte_offset_linear_file_absolute_position;
@@ -13942,6 +14030,10 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
                 lines_editor_state.cursor.tui_row,
                 lines_editor_state.cursor.tui_visual_col,
             ) {
+                // // experimental, needs end-2 also
+                // lines_editor_state.line_number_vis_select_start = file_pos.line_number;
+                // lines_editor_state.byte_in_line_vis_select_start = file_pos.byte_in_line;
+
                 // Set/Reset BOTH start and end to same position initially
                 lines_editor_state.file_position_of_vis_select_start =
                     file_pos.byte_offset_linear_file_absolute_position;

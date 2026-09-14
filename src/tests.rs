@@ -2029,6 +2029,12 @@ mod hexedit_tests {
             line_count_at_top_of_window: 0,
             file_position_of_topline_start: 0,
             file_position_of_vis_select_start: 0,
+
+            // // experimental
+            // line_number_vis_select_start: 0,
+            // byte_in_line_vis_select_start: 0,
+            // line_number_vis_select_end: 0,
+            // byte_in_line_vis_select_end: 0,
             file_position_of_vis_select_end: 0,
             tui_window_horizontal_utf8txt_line_char_offset: 0,
 

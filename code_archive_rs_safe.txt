@@ -6653,3 +6653,50 @@ original 'w' and 'b'
 
         //     Ok(true)
         // }
+
+
+simple and works:
+
+        Command::DeleteRange => {
+            // =================================================
+            // Clear Redo Stack Before Editing: Insert or Delete
+            // =================================================
+            let _: bool = match button_safe_clear_all_redo_logs(&base_edit_filepath) {
+                Ok(success) => success,
+                Err(_e) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "button_safe_clear_all_redo_logs Error clearing redo logs: {:?}",
+                        _e
+                    );
+
+                    // Log error and continue (non-fatal)
+                    log_error(
+                        "button_safe_clear_all_redo_logs Cannot clear redo logs",
+                        Some("DeleteRange"),
+                    );
+                    let _ = lines_editor_state.set_info_bar_message("Redo-clear failed");
+
+                    false // Treat error as failure
+                }
+            };
+
+            // v2: delete selection and reset selection-range to current location
+            delete_position_range_noload(lines_editor_state, &edit_file_path)?;
+
+            // Set cursor position to file_position_of_vis_select_start
+            // Get current cursor position in FILE
+            if let Ok(Some(file_pos)) = lines_editor_state.get_row_col_file_position(
+                lines_editor_state.cursor.tui_row,
+                lines_editor_state.cursor.tui_visual_col,
+            ) {
+                // Set/Reset BOTH start and end to same position initially
+                lines_editor_state.file_position_of_vis_select_start =
+                    file_pos.byte_offset_linear_file_absolute_position;
+                lines_editor_state.file_position_of_vis_select_end =
+                    file_pos.byte_offset_linear_file_absolute_position;
+            }
+
+            build_windowmap_nowrap(lines_editor_state, &edit_file_path)?;
+            Ok(true)
+        }
