@@ -1249,16 +1249,6 @@ pub enum IoOperation {
 
     /// Replacing original file with modified version
     Replace,
-
-    /// Removing the backup file after a verified-successful replace.
-    ///
-    /// This failure occurs *after* the target file has already been modified
-    /// successfully — the caller's requested edit succeeded, but the
-    /// now-redundant backup file could not be deleted. Callers receiving
-    /// `IoError(BackupCleanup)` should treat the edit as complete and the
-    /// error as a cleanup problem only (a stale backup file remains in the
-    /// executable's directory).
-    BackupCleanup,
 }
 
 impl std::fmt::Display for ToggleCommentError {
@@ -1807,6 +1797,17 @@ fn write_toggled_file_bytewise(
 /// 2. Handles `Ok(None)` gracefully (line not found - not treated as error initially)
 /// 3. Calls `write_toggled_file_bytewise()` - performs byte-wise toggle
 /// 4. Preserves existing backup/temp file behavior
+///    (Updated: backup/temp location and cleanup policy — see below.)
+///
+/// # Backup & Temp File Lifecycle
+/// 1. Backup `backup_toggle_comment_{pid}_{filename}` is created in the
+///    executable's parent directory, falling back to CWD
+///    (`create_backup_with_fallback`). If both fail, no edit is made.
+/// 2. Temp file is written in the same directory as the backup, then copied
+///    over the original.
+/// 3. On success: temp and backup are removed; removal failures print a note
+///    and still return `Ok(())` (save_file policy).
+/// 4. On failure: temp is removed, backup is retained, and its path is printed.
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
@@ -1852,6 +1853,14 @@ pub fn toggle_basic_singleline_comment_bytewise(
         }
     };
 
+    // Use the canonical path string for detection so detection and
+    // modification are guaranteed to target the identical file.
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        // Non-UTF-8 path: report rather than lossily converting.
+        None => return Err(ToggleCommentError::PathError),
+    };
+
     // Extract and validate file extension
     let extension = match absolute_path.extension() {
         Some(ext) => ext.to_string_lossy().to_string(),
@@ -1868,15 +1877,16 @@ pub fn toggle_basic_singleline_comment_bytewise(
     // NEW: Combined find and detect in single pass
     // ==================================================
     let (line_start_pos, has_tag) =
-        match find_and_detect_tag_state(file_path, row_line_zeroindex, comment_flag)? {
-            Some((pos, tag_state)) => (pos, tag_state),
-            None => {
+        match find_and_detect_tag_state(absolute_path_str, row_line_zeroindex, comment_flag) {
+            Ok(Some((pos, tag_state))) => (pos, tag_state),
+            Ok(None) => {
                 // Line not found - return appropriate error
                 return Err(ToggleCommentError::LineNotFound {
                     requested: row_line_zeroindex,
                     file_lines: 0, // Unknown in bytewise mode
                 });
             }
+            Err(detect_error) => return Err(detect_error),
         };
 
     // Get filename for backup naming
@@ -1885,18 +1895,16 @@ pub fn toggle_basic_singleline_comment_bytewise(
         None => return Err(ToggleCommentError::PathError),
     };
 
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
+    // Backup: exe-parent directory first, CWD fallback. No backup → no edit.
+    let (backup_path, working_directory) =
+        match create_backup_with_fallback(&absolute_path, &filename) {
+            Ok(backup_locations) => backup_locations,
+            Err(()) => return Err(ToggleCommentError::IoError(IoOperation::Backup)),
+        };
 
-    // Create backup copy of original file
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
-
-    // Create working temp file in CWD
+    // Working temp file beside the backup
     let temp_filename = format!("temp_toggle_bytewise_{}_{}", std::process::id(), filename);
-    let temp_path = PathBuf::from(&temp_filename);
+    let temp_path = working_directory.join(&temp_filename);
 
     // ==================================================
     // NEW: Byte-wise write operation
@@ -1910,26 +1918,65 @@ pub fn toggle_basic_singleline_comment_bytewise(
         comment_flag,
     );
 
-    // Handle processing result (same as before)
+    // Handle processing result
     match process_result {
         Ok(()) => {
             // Success: replace original with temp file
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
+            if let Err(replace_error) = std::fs::copy(&temp_path, &absolute_path) {
+                if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                    if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Note: could not remove temp file {}: {}",
+                            temp_path.display(),
+                            temp_removal_error
+                        );
+                    }
+                }
+                // Backup retained: it is the recovery artifact.
+                println!(
+                    "Comment toggle failed replacing original ({}). Backup retained at: {}",
+                    replace_error,
+                    backup_path.display()
+                );
                 return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
-            // Clean up temp file
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
+            // Clean up temp file (non-fatal)
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                println!(
+                    "Note: comment toggle succeeded but could not remove temp file {}: {}",
+                    temp_path.display(),
+                    temp_removal_error
+                );
+            }
+
+            // Clean up backup (non-fatal, save_file policy)
+            if let Err(backup_removal_error) = std::fs::remove_file(&backup_path) {
+                println!(
+                    "Note: comment toggle succeeded but could not remove backup {}: {}",
+                    backup_path.display(),
+                    backup_removal_error
+                );
             }
 
             Ok(())
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
+        Err(write_error) => {
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                    println!(
+                        "Note: could not remove temp file {}: {}",
+                        temp_path.display(),
+                        temp_removal_error
+                    );
+                }
+            }
+            println!(
+                "Comment toggle failed ({:?}). Original not replaced. Backup retained at: {}",
+                write_error,
+                backup_path.display()
+            );
+            Err(write_error)
         }
     }
 }
@@ -2770,6 +2817,12 @@ pub fn write_unindented_file_bytewise(
 /// non-deterministic base for file placement. The executable's own directory is
 /// stable for the lifetime of the process and independent of caller context.
 ///
+/// If this directory cannot be resolved (or is not writable), callers fall back
+/// to the CWD via `create_backup_with_fallback`. That is why the error type is
+/// `()`: every caller reacts to any failure the same way (fall back), so no
+/// error detail needs to be carried. The detail is printed in debug builds
+/// so it is not lost during development.
+///
 /// # Safety & Defensive Rules
 /// - No panics: no `.unwrap()` or `.expect()` calls.
 /// - `std::env::current_exe()` is documented by the standard library as
@@ -2783,13 +2836,23 @@ pub fn write_unindented_file_bytewise(
 /// # Returns
 /// * `Ok(PathBuf)` - Absolute, canonicalized path to the directory containing
 ///   the executable.
-/// * `Err(ToggleIndentError::PathError)` - The executable path could not be
-///   determined, could not be canonicalized, or has no parent directory.
-fn get_executable_parent_directory() -> Result<PathBuf, ToggleIndentError> {
+/// * `Err(())` - The executable path could not be determined, could not be
+///   canonicalized, or has no parent directory. Caller should fall back.
+fn get_executable_parent_directory() -> Result<PathBuf, ()> {
     // Query the OS for the path used to invoke this process.
     let exe_path = match std::env::current_exe() {
         Ok(path) => path,
-        Err(_) => return Err(ToggleIndentError::PathError),
+        Err(current_exe_error) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Debug: get_executable_parent_directory: current_exe failed: {}",
+                current_exe_error
+            );
+            // Silence unused-variable warning in release builds.
+            #[cfg(not(debug_assertions))]
+            let _unused_in_release = current_exe_error;
+            return Err(());
+        }
     };
 
     // Canonicalize to resolve symlinks and guarantee an absolute path.
@@ -2798,13 +2861,138 @@ fn get_executable_parent_directory() -> Result<PathBuf, ToggleIndentError> {
     // unreliable, obscuring a real failure condition.
     let canonical_exe_path = match exe_path.canonicalize() {
         Ok(resolved_path) => resolved_path,
-        Err(_) => return Err(ToggleIndentError::PathError),
+        Err(canonicalize_error) => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Debug: get_executable_parent_directory: canonicalize failed for {}: {}",
+                exe_path.display(),
+                canonicalize_error
+            );
+            #[cfg(not(debug_assertions))]
+            let _unused_in_release = canonicalize_error;
+            return Err(());
+        }
     };
 
     // Extract the parent directory of the executable file itself.
     match canonical_exe_path.parent() {
         Some(parent_dir) => Ok(parent_dir.to_path_buf()),
-        None => Err(ToggleIndentError::PathError),
+        None => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Debug: get_executable_parent_directory: no parent for {}",
+                canonical_exe_path.display()
+            );
+            Err(())
+        }
+    }
+}
+
+/// Creates a safety-backup of a file about to be edited, preferring the
+/// executable's parent directory and falling back to the current working
+/// directory (CWD).
+///
+/// # Project Context
+/// Every editing function in `toggle_comment_indent_module` (comment toggles,
+/// docstring toggles, indent, block comments) backs up the target file before
+/// modifying it. This helper is the single place that decides where that
+/// backup goes. The editing function then places its temp files in the same
+/// directory, so all scratch files for one edit live together.
+///
+/// # Location Strategy (decided fresh on every call; no caching, no pre-checks)
+/// 1. Attempt A: `{executable_parent_directory}/{backup_filename}`
+/// 2. Attempt B (any failure in A): `{current_working_directory}/{backup_filename}`
+/// 3. Both fail: `Err(())`. The caller must NOT edit the file without a backup.
+///
+/// Failure of the real copy operation IS the permission check; no separate
+/// writability probing is performed (it would be a TOCTOU race anyway).
+///
+/// # Naming
+/// `backup_toggle_comment_{pid}_{filename}`. The PID isolates concurrent
+/// processes editing same-named files.
+///
+/// # Known Limitation (accepted, Option A policy)
+/// The name is constant for (process, filename). If an edit fails and its
+/// backup is retained, a later edit of the same file in the same process
+/// overwrites that retained backup.
+///
+/// # Arguments
+/// * `original_absolute_path` - Canonical absolute path of the file to back up.
+/// * `original_filename` - File name component of that path (for naming).
+///
+/// # Returns
+/// * `Ok((backup_path, working_directory))` - Absolute path of the written
+///   backup, and the absolute directory it was written into (use it for
+///   temp files).
+/// * `Err(())` - No backup could be created in either location. Notes
+///   describing each failure have already been printed.
+fn create_backup_with_fallback(
+    original_absolute_path: &Path,
+    original_filename: &str,
+) -> Result<(PathBuf, PathBuf), ()> {
+    let backup_filename = format!(
+        "backup_toggle_comment_{}_{}",
+        std::process::id(),
+        original_filename
+    );
+
+    // ── Attempt A: executable's parent directory ──
+    match get_executable_parent_directory() {
+        Ok(executable_parent_directory) => {
+            let primary_backup_path = executable_parent_directory.join(&backup_filename);
+            match std::fs::copy(original_absolute_path, &primary_backup_path) {
+                Ok(_) => return Ok((primary_backup_path, executable_parent_directory)),
+                Err(primary_copy_error) => {
+                    println!(
+                        "Note: could not create backup in executable directory {} ({}); \
+                         falling back to current working directory.",
+                        executable_parent_directory.display(),
+                        primary_copy_error
+                    );
+                    // A failed copy may leave a partial file behind; remove it
+                    // so it is never mistaken for a valid backup.
+                    if let Err(partial_removal_error) = std::fs::remove_file(&primary_backup_path) {
+                        if partial_removal_error.kind() != std::io::ErrorKind::NotFound {
+                            println!(
+                                "Note: could not remove partial backup {}: {}",
+                                primary_backup_path.display(),
+                                partial_removal_error
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Err(()) => {
+            println!(
+                "Note: executable directory unavailable; falling back to current working directory."
+            );
+        }
+    }
+
+    // ── Attempt B: current working directory (absolute) ──
+    let current_working_directory = match std::env::current_dir() {
+        Ok(directory) => directory,
+        Err(current_dir_error) => {
+            println!(
+                "Note: current working directory unavailable ({}); no backup location available.",
+                current_dir_error
+            );
+            return Err(());
+        }
+    };
+
+    let fallback_backup_path = current_working_directory.join(&backup_filename);
+    match std::fs::copy(original_absolute_path, &fallback_backup_path) {
+        Ok(_) => Ok((fallback_backup_path, current_working_directory)),
+        Err(fallback_copy_error) => {
+            println!(
+                "Note: could not create backup in current working directory {} ({}); edit aborted.",
+                current_working_directory.display(),
+                fallback_copy_error
+            );
+            Err(())
+        }
     }
 }
 
@@ -2816,23 +3004,27 @@ fn get_executable_parent_directory() -> Result<PathBuf, ToggleIndentError> {
 ///
 /// # Backup & Temp File Lifecycle
 /// 1. A backup copy of the original file is placed in the **executable's parent
-///    directory** (not CWD): `backup_toggle_comment_{filename}`.
+///    directory** (not CWD): `backup_toggle_comment_{pid}_{filename}`.
+///    If that fails for any reason, the backup is placed in the current working
+///    directory instead (see `create_backup_with_fallback`). If both fail, the
+///    edit is aborted and the original file is untouched.
 /// 2. Modified content is written to a process-isolated temp file in the same
-///    directory, then copied over the original.
+///    directory as the backup, then copied over the original.
 /// 3. On verified success, both the temp file and the backup are removed.
 /// 4. On any failure before replacement completes, the backup is **retained**
-///    for manual recovery and the temp file is removed.
-/// 5. If the edit succeeds but the backup cannot be deleted, the function
-///    returns `Err(IoError(BackupCleanup))` — the edit itself has succeeded;
-///    only a stale backup file remains. Callers should treat this variant as
-///    "edit complete, cleanup incomplete".
+///    for manual recovery (its path is printed) and the temp file is removed.
+/// 5. If the edit succeeds but the backup (or temp) cannot be deleted, a note
+///    is printed and the function still returns `Ok(())`, matching
+///    `save_file`. A stray backup file is harmless.
+///    (Previously this returned `Err(IoError(BackupCleanup))`; that variant
+///    is no longer returned.)
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
 /// * `line_number` - Zero-indexed line number to indent
 ///
 /// # Returns
-/// * `Ok(())` - Line indented successfully; temp and backup files removed
+/// * `Ok(())` - Line indented successfully
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
@@ -2865,9 +3057,9 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         }
     };
 
-    // string) so line lookup and file modification are guaranteed to target
-    // the identical file. Converted from `?` to explicit match per project
-    // error-visibility rule. ──
+    // Use the canonical path (as a string) so line lookup and file
+    // modification are guaranteed to target the identical file. Converted
+    // from `?` to explicit match per project error-visibility rule.
     let absolute_path_str = match absolute_path.to_str() {
         Some(path_str) => path_str,
         // Non-UTF-8 path: report rather than lossily converting, which would
@@ -2892,21 +3084,16 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // backup and temp files (replaces implicit CWD-relative placement). ──
-    let exe_dir = match get_executable_parent_directory() {
-        Ok(dir) => dir,
-        Err(e) => return Err(e),
-    };
+    // Backup: exe-parent directory first, CWD fallback. No backup → no edit.
+    let (backup_path, working_directory) =
+        match create_backup_with_fallback(&absolute_path, &filename) {
+            Ok(backup_locations) => backup_locations,
+            Err(()) => return Err(ToggleIndentError::IoError(IoOperation::Backup)),
+        };
 
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = exe_dir.join(&backup_filename);
-
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleIndentError::IoError(IoOperation::Backup));
-    }
-
+    // Temp file lives beside the backup (same, already-proven-writable dir).
     let temp_filename = format!("temp_indent_bytewise_{}_{}", std::process::id(), filename);
-    let temp_path = exe_dir.join(&temp_filename);
+    let temp_path = working_directory.join(&temp_filename);
 
     // Write indented file
     let process_result = write_indented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
@@ -2914,30 +3101,64 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
     // Handle result
     match process_result {
         Ok(()) => {
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
+            if let Err(replace_error) = std::fs::copy(&temp_path, &absolute_path) {
+                if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                    if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Note: could not remove temp file {}: {}",
+                            temp_path.display(),
+                            temp_removal_error
+                        );
+                    }
+                }
                 // Backup deliberately retained here: replacement failed, so
                 // the backup is the recovery artifact.
+                println!(
+                    "Indent failed replacing original ({}). Backup retained at: {}",
+                    replace_error,
+                    backup_path.display()
+                );
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                println!(
+                    "Note: indent succeeded but could not remove temp file {}: {}",
+                    temp_path.display(),
+                    temp_removal_error
+                );
             }
 
-            // is surfaced as its own error variant rather than silently
-            // ignored; see docstring — the edit itself has succeeded. ──
-            if let Err(_) = std::fs::remove_file(&backup_path) {
-                return Err(ToggleIndentError::IoError(IoOperation::BackupCleanup));
+            // Backup-deletion failure is non-fatal (save_file policy): the
+            // edit itself has succeeded; a stray backup is harmless.
+            if let Err(backup_removal_error) = std::fs::remove_file(&backup_path) {
+                println!(
+                    "Note: indent succeeded but could not remove backup {}: {}",
+                    backup_path.display(),
+                    backup_removal_error
+                );
             }
 
             Ok(())
         }
-        Err(e) => {
+        Err(write_error) => {
             // Temp file removed; backup deliberately retained for recovery.
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
+            // (The temp may not exist if creation itself failed: NotFound is quiet.)
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                    println!(
+                        "Note: could not remove temp file {}: {}",
+                        temp_path.display(),
+                        temp_removal_error
+                    );
+                }
+            }
+            println!(
+                "Indent failed ({:?}). Original not replaced. Backup retained at: {}",
+                write_error,
+                backup_path.display()
+            );
+            Err(write_error)
         }
     }
 }
@@ -2951,24 +3172,27 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
 ///
 /// # Backup & Temp File Lifecycle
 /// 1. A backup copy of the original file is placed in the **executable's parent
-///    directory** (not CWD): `backup_toggle_comment_{filename}`.
+///    directory** (not CWD): `backup_toggle_comment_{pid}_{filename}`.
+///    If that fails for any reason, the backup is placed in the current working
+///    directory instead (see `create_backup_with_fallback`). If both fail, the
+///    edit is aborted and the original file is untouched.
 /// 2. Modified content is written to a process-isolated temp file in the same
-///    directory, then copied over the original.
+///    directory as the backup, then copied over the original.
 /// 3. On verified success, both the temp file and the backup are removed.
 /// 4. On any failure before replacement completes, the backup is **retained**
-///    for manual recovery and the temp file is removed.
-/// 5. If the edit succeeds but the backup cannot be deleted, the function
-///    returns `Err(IoError(BackupCleanup))` — the edit itself has succeeded;
-///    only a stale backup file remains. Callers should treat this variant as
-///    "edit complete, cleanup incomplete".
+///    for manual recovery (its path is printed) and the temp file is removed.
+/// 5. If the edit succeeds but the backup (or temp) cannot be deleted, a note
+///    is printed and the function still returns `Ok(())`, matching
+///    `save_file`. A stray backup file is harmless.
+///    (Previously this returned `Err(IoError(BackupCleanup))`; that variant
+///    is no longer returned.)
 ///
 /// # Arguments
 /// * `file_path` - Path to the source file
 /// * `line_number` - Zero-indexed line number to unindent
 ///
 /// # Returns
-/// * `Ok(())` - Line unindented successfully (even if no spaces removed);
-///   temp and backup files removed
+/// * `Ok(())` - Line unindented successfully (even if no spaces removed)
 /// * `Err(ToggleIndentError)` - Specific error code
 ///
 /// # Example
@@ -3007,9 +3231,9 @@ pub fn unindent_line_bytewise(
         }
     };
 
-    // string) so line lookup and file modification are guaranteed to target
-    // the identical file. Converted from `?` to explicit match per project
-    // error-visibility rule. ──
+    // Use the canonical path (as a string) so line lookup and file
+    // modification are guaranteed to target the identical file. Converted
+    // from `?` to explicit match per project error-visibility rule.
     let absolute_path_str = match absolute_path.to_str() {
         Some(path_str) => path_str,
         // Non-UTF-8 path: report rather than lossily converting, which would
@@ -3034,21 +3258,19 @@ pub fn unindent_line_bytewise(
         None => return Err(ToggleIndentError::PathError),
     };
 
-    // backup and temp files (replaces implicit CWD-relative placement). ──
-    let exe_dir = match get_executable_parent_directory() {
-        Ok(dir) => dir,
-        Err(e) => return Err(e),
-    };
+    // Backup: exe-parent directory first, CWD fallback. No backup → no edit.
+    // (Replaces the direct get_executable_parent_directory() call, whose
+    // error type is now `()`; the helper's `()` is mapped to this module's
+    // indent error at the point of use.)
+    let (backup_path, working_directory) =
+        match create_backup_with_fallback(&absolute_path, &filename) {
+            Ok(backup_locations) => backup_locations,
+            Err(()) => return Err(ToggleIndentError::IoError(IoOperation::Backup)),
+        };
 
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = exe_dir.join(&backup_filename);
-
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleIndentError::IoError(IoOperation::Backup));
-    }
-
+    // Temp file lives beside the backup (same, already-proven-writable dir).
     let temp_filename = format!("temp_unindent_bytewise_{}_{}", std::process::id(), filename);
-    let temp_path = exe_dir.join(&temp_filename);
+    let temp_path = working_directory.join(&temp_filename);
 
     // Write unindented file
     let process_result = write_unindented_file_bytewise(&absolute_path, &temp_path, line_start_pos);
@@ -3056,30 +3278,64 @@ pub fn unindent_line_bytewise(
     // Handle result
     match process_result {
         Ok(()) => {
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
+            if let Err(replace_error) = std::fs::copy(&temp_path, &absolute_path) {
+                if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                    if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Note: could not remove temp file {}: {}",
+                            temp_path.display(),
+                            temp_removal_error
+                        );
+                    }
+                }
                 // Backup deliberately retained here: replacement failed, so
                 // the backup is the recovery artifact.
+                println!(
+                    "Unindent failed replacing original ({}). Backup retained at: {}",
+                    replace_error,
+                    backup_path.display()
+                );
                 return Err(ToggleIndentError::IoError(IoOperation::Replace));
             }
 
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                println!(
+                    "Note: unindent succeeded but could not remove temp file {}: {}",
+                    temp_path.display(),
+                    temp_removal_error
+                );
             }
 
-            // is surfaced as its own error variant rather than silently
-            // ignored; see docstring — the edit itself has succeeded. ──
-            if let Err(_) = std::fs::remove_file(&backup_path) {
-                return Err(ToggleIndentError::IoError(IoOperation::BackupCleanup));
+            // Backup-deletion failure is non-fatal (save_file policy): the
+            // edit itself has succeeded; a stray backup is harmless.
+            if let Err(backup_removal_error) = std::fs::remove_file(&backup_path) {
+                println!(
+                    "Note: unindent succeeded but could not remove backup {}: {}",
+                    backup_path.display(),
+                    backup_removal_error
+                );
             }
 
             Ok(())
         }
-        Err(e) => {
+        Err(write_error) => {
             // Temp file removed; backup deliberately retained for recovery.
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
+            // (The temp may not exist if creation itself failed: NotFound is quiet.)
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                    println!(
+                        "Note: could not remove temp file {}: {}",
+                        temp_path.display(),
+                        temp_removal_error
+                    );
+                }
+            }
+            println!(
+                "Unindent failed ({:?}). Original not replaced. Backup retained at: {}",
+                write_error,
+                backup_path.display()
+            );
+            Err(write_error)
         }
     }
 }
@@ -3663,6 +3919,12 @@ fn sort_range(from: usize, to: usize) -> (usize, usize) {
 /// Bytewise implementation of docstring toggle. Identical to
 /// `toggle_basic_singleline_comment_bytewise()` but uses TripleSlash flag.
 ///
+/// # Backup & Temp File Lifecycle
+/// Same policy as `toggle_basic_singleline_comment_bytewise()`:
+/// backup in exe-parent dir (CWD fallback), temp beside backup, both removed
+/// on success (removal failure = printed note, still `Ok`), backup retained
+/// and its path printed on failure.
+///
 /// # Arguments
 /// * `file_path` - Path to the source file
 /// * `row_line_zeroindex` - Zero-indexed line number to toggle
@@ -3699,19 +3961,26 @@ pub fn toggle_rust_docstring_singleline_comment_bytewise(
         }
     };
 
+    // Canonical path string: detection and modification target the same file.
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        None => return Err(ToggleCommentError::PathError),
+    };
+
     // Use TripleSlash flag (no extension check needed)
     let comment_flag = CommentFlag::TripppleSlash;
 
     // Combined find and detect in single pass
     let (line_start_pos, has_tag) =
-        match find_and_detect_tag_state(file_path, row_line_zeroindex, comment_flag)? {
-            Some((pos, tag_state)) => (pos, tag_state),
-            None => {
+        match find_and_detect_tag_state(absolute_path_str, row_line_zeroindex, comment_flag) {
+            Ok(Some((pos, tag_state))) => (pos, tag_state),
+            Ok(None) => {
                 return Err(ToggleCommentError::LineNotFound {
                     requested: row_line_zeroindex,
                     file_lines: 0,
                 });
             }
+            Err(detect_error) => return Err(detect_error),
         };
 
     // Get filename for backup naming
@@ -3720,22 +3989,20 @@ pub fn toggle_rust_docstring_singleline_comment_bytewise(
         None => return Err(ToggleCommentError::PathError),
     };
 
-    // Create backup path in CWD
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
+    // Backup: exe-parent directory first, CWD fallback. No backup → no edit.
+    let (backup_path, working_directory) =
+        match create_backup_with_fallback(&absolute_path, &filename) {
+            Ok(backup_locations) => backup_locations,
+            Err(()) => return Err(ToggleCommentError::IoError(IoOperation::Backup)),
+        };
 
-    // Create backup copy
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
-
-    // Create temp file
+    // Create temp file beside the backup
     let temp_filename = format!(
         "temp_toggle_docstring_bytewise_{}_{}",
         std::process::id(),
         filename
     );
-    let temp_path = PathBuf::from(&temp_filename);
+    let temp_path = working_directory.join(&temp_filename);
 
     // Byte-wise write operation
     let process_result = write_toggled_file_bytewise(
@@ -3751,22 +4018,60 @@ pub fn toggle_rust_docstring_singleline_comment_bytewise(
     match process_result {
         Ok(()) => {
             // Success: replace original
-            if let Err(_) = std::fs::copy(&temp_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp_path);
+            if let Err(replace_error) = std::fs::copy(&temp_path, &absolute_path) {
+                if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                    if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                        println!(
+                            "Note: could not remove temp file {}: {}",
+                            temp_path.display(),
+                            temp_removal_error
+                        );
+                    }
+                }
+                println!(
+                    "Docstring toggle failed replacing original ({}). Backup retained at: {}",
+                    replace_error,
+                    backup_path.display()
+                );
                 return Err(ToggleCommentError::IoError(IoOperation::Replace));
             }
 
-            // Clean up temp
-            if let Err(_) = std::fs::remove_file(&temp_path) {
-                #[cfg(debug_assertions)]
-                eprintln!("Warning: Failed to clean up temp file");
+            // Clean up temp (non-fatal)
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                println!(
+                    "Note: docstring toggle succeeded but could not remove temp file {}: {}",
+                    temp_path.display(),
+                    temp_removal_error
+                );
+            }
+
+            // Clean up backup (non-fatal, save_file policy)
+            if let Err(backup_removal_error) = std::fs::remove_file(&backup_path) {
+                println!(
+                    "Note: docstring toggle succeeded but could not remove backup {}: {}",
+                    backup_path.display(),
+                    backup_removal_error
+                );
             }
 
             Ok(())
         }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
+        Err(write_error) => {
+            if let Err(temp_removal_error) = std::fs::remove_file(&temp_path) {
+                if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                    println!(
+                        "Note: could not remove temp file {}: {}",
+                        temp_path.display(),
+                        temp_removal_error
+                    );
+                }
+            }
+            println!(
+                "Docstring toggle failed ({:?}). Original not replaced. Backup retained at: {}",
+                write_error,
+                backup_path.display()
+            );
+            Err(write_error)
         }
     }
 }
@@ -4677,13 +4982,37 @@ pub fn insert_line_after_bytewise(
 /// - **ADD mode** - insert new line before start, new line after end
 /// - **REMOVE mode** - delete end line first, then start line
 ///
+/// # Two-Step Edit Sequence
+/// Every mode is two sequential edits, each written to its own temp file and
+/// then copied over the original. The edit at `end` is always done first, so
+/// the `start` line number stays valid for step 2:
+/// - Step 1: ADD → insert end marker after `end`;  REMOVE → delete `end` line
+/// - Step 2: ADD → insert start marker before `start`; REMOVE → delete `start` line
+///
+/// The single-line case (start == end) is ADD mode run through this same
+/// sequence. It skips marker detection, exactly as before.
+///
+/// # Backup & Temp File Lifecycle (Option A: no restore, retain backup)
+/// 1. Backup `backup_toggle_comment_{pid}_{filename}` is created in the
+///    executable's parent directory, falling back to CWD. If both fail, no
+///    edit is made.
+/// 2. Both temp files are written in the same directory as the backup.
+/// 3. On success: both temps and the backup are removed. Removal failures
+///    print a note and still return `Ok(())` (save_file policy).
+/// 4. On ANY failure: temps are removed, the backup is **retained**, its path
+///    is printed, and the error is returned. **No automatic restore is
+///    attempted.** If step 1 was already applied, the file is left
+///    HALF-EDITED (one unmatched marker added or removed) until the user
+///    recovers it manually from the printed backup path. This is a
+///    deliberate simplicity trade-off (Option A).
+///
 /// # Arguments
 /// * `file_path` - Path to source file
 /// * `start_line` - First line of content range (zero-indexed)
 /// * `end_line` - Last line of content range (zero-indexed)
 ///
 /// # Returns
-/// * `Ok(())` - Block comment toggled successfully
+/// * `Ok(())` - Block comment toggled successfully (or unsupported extension: no-op)
 /// * `Err(ToggleCommentError)` - Specific error code
 ///
 /// # Example (Rust - ADD mode)
@@ -4735,6 +5064,12 @@ pub fn toggle_block_comment_bytewise(
         }
     };
 
+    // Canonical path string: detection and modification target the same file.
+    let absolute_path_str = match absolute_path.to_str() {
+        Some(path_str) => path_str,
+        None => return Err(ToggleCommentError::PathError),
+    };
+
     // Determine block markers from extension
     let extension = match absolute_path.extension() {
         Some(ext) => ext.to_string_lossy().to_string(),
@@ -4752,120 +5087,367 @@ pub fn toggle_block_comment_bytewise(
         None => return Err(ToggleCommentError::PathError),
     };
 
-    // EDGE CASE: Single line always ADD mode
-    if start == end {
-        // Create backup
-        let backup_filename = format!("backup_toggle_comment_{}", filename);
-        let backup_path = PathBuf::from(&backup_filename);
-        if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-            return Err(ToggleCommentError::IoError(IoOperation::Backup));
-        }
-
-        // Insert closing marker after line (do this first so line numbers don't shift)
-        let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
-        let temp1_path = PathBuf::from(&temp1_filename);
-        insert_line_after_bytewise(&absolute_path, &temp1_path, start, markers.end)?;
-
-        // Replace original with temp1
-        if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
-            let _ = std::fs::remove_file(&temp1_path);
-            return Err(ToggleCommentError::IoError(IoOperation::Replace));
-        }
-
-        // Insert opening marker before line
-        let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
-        let temp2_path = PathBuf::from(&temp2_filename);
-        insert_line_before_bytewise(&absolute_path, &temp2_path, start, markers.start)?;
-
-        // Replace original with temp2
-        if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
-            let _ = std::fs::remove_file(&temp2_path);
-            return Err(ToggleCommentError::IoError(IoOperation::Replace));
-        }
-
-        // Cleanup temps
-        let _ = std::fs::remove_file(&temp1_path);
-        let _ = std::fs::remove_file(&temp2_path);
-
-        return Ok(());
-    }
-
-    // DETECT MODE: Check if both markers present at column 0
-    let start_has_marker = detect_line_pattern(file_path, start, markers.start)?;
-    let end_has_marker = detect_line_pattern(file_path, end, markers.end)?;
-
-    let mode = if start_has_marker && end_has_marker {
-        BlockMode::Remove
-    } else {
+    // ── Determine mode ──
+    // EDGE CASE: Single line always ADD mode (detection deliberately skipped,
+    // as in the original implementation).
+    let mode = if start == end {
         BlockMode::Add
+    } else {
+        // DETECT MODE: Check if both markers present at column 0.
+        // Explicit matches (not `?`) per project error-visibility rule.
+        let start_has_marker = match detect_line_pattern(absolute_path_str, start, markers.start) {
+            Ok(has_marker) => has_marker,
+            Err(detect_start_error) => return Err(detect_start_error),
+        };
+        let end_has_marker = match detect_line_pattern(absolute_path_str, end, markers.end) {
+            Ok(has_marker) => has_marker,
+            Err(detect_end_error) => return Err(detect_end_error),
+        };
+
+        if start_has_marker && end_has_marker {
+            BlockMode::Remove
+        } else {
+            BlockMode::Add
+        }
     };
 
-    // Create backup
-    let backup_filename = format!("backup_toggle_comment_{}", filename);
-    let backup_path = PathBuf::from(&backup_filename);
-    if let Err(_) = std::fs::copy(&absolute_path, &backup_path) {
-        return Err(ToggleCommentError::IoError(IoOperation::Backup));
-    }
+    // ── Backup: exe-parent directory first, CWD fallback. No backup → no edit. ──
+    let (backup_path, working_directory) =
+        match create_backup_with_fallback(&absolute_path, &filename) {
+            Ok(backup_locations) => backup_locations,
+            Err(()) => return Err(ToggleCommentError::IoError(IoOperation::Backup)),
+        };
 
-    match mode {
-        BlockMode::Remove => {
-            // DELETE end_line FIRST (so start_line number stays valid)
-            let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
-            let temp1_path = PathBuf::from(&temp1_filename);
-            delete_line_bytewise(&absolute_path, &temp1_path, end)?;
+    // Both temp files live beside the backup (same, proven-writable directory).
+    let process_id = std::process::id();
+    let first_step_temp_path =
+        working_directory.join(format!("temp_block_1_{}_{}", process_id, filename));
+    let second_step_temp_path =
+        working_directory.join(format!("temp_block_2_{}_{}", process_id, filename));
 
-            // Replace original
-            if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp1_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
+    // Tracks whether the original file has been (or may have been) written.
+    // Used only to make the failure message accurate:
+    //   false → original untouched
+    //   true  → original may be half-edited (unmatched marker)
+    let mut original_file_write_attempted = false;
 
-            // DELETE start_line
-            let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
-            let temp2_path = PathBuf::from(&temp2_filename);
-            delete_line_bytewise(&absolute_path, &temp2_path, start)?;
-
-            // Replace original
-            if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp2_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
-
-            // Cleanup temps
-            let _ = std::fs::remove_file(&temp1_path);
-            let _ = std::fs::remove_file(&temp2_path);
-        }
-
+    // ── Step 1: edit at `end` (done first so `start` stays valid) ──
+    let mut block_edit_result: Result<(), ToggleCommentError> = match mode {
         BlockMode::Add => {
-            // INSERT closing marker after end_line (do this first)
-            let temp1_filename = format!("temp_block_1_{}_{}", std::process::id(), filename);
-            let temp1_path = PathBuf::from(&temp1_filename);
-            insert_line_after_bytewise(&absolute_path, &temp1_path, end, markers.end)?;
+            // INSERT closing marker after end line
+            insert_line_after_bytewise(&absolute_path, &first_step_temp_path, end, markers.end)
+        }
+        BlockMode::Remove => {
+            // DELETE end line
+            delete_line_bytewise(&absolute_path, &first_step_temp_path, end)
+        }
+    };
 
-            // Replace original
-            if let Err(_) = std::fs::copy(&temp1_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp1_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
-
-            // INSERT opening marker before start_line
-            let temp2_filename = format!("temp_block_2_{}_{}", std::process::id(), filename);
-            let temp2_path = PathBuf::from(&temp2_filename);
-            insert_line_before_bytewise(&absolute_path, &temp2_path, start, markers.start)?;
-
-            // Replace original
-            if let Err(_) = std::fs::copy(&temp2_path, &absolute_path) {
-                let _ = std::fs::remove_file(&temp2_path);
-                return Err(ToggleCommentError::IoError(IoOperation::Replace));
-            }
-
-            // Cleanup temps
-            let _ = std::fs::remove_file(&temp1_path);
-            let _ = std::fs::remove_file(&temp2_path);
+    if block_edit_result.is_ok() {
+        original_file_write_attempted = true;
+        if let Err(first_replace_error) = std::fs::copy(&first_step_temp_path, &absolute_path) {
+            println!(
+                "Block comment step 1 replace failed: {}",
+                first_replace_error
+            );
+            block_edit_result = Err(ToggleCommentError::IoError(IoOperation::Replace));
         }
     }
 
-    Ok(())
+    // ── Step 2: edit at `start` (only if step 1 fully succeeded) ──
+    if block_edit_result.is_ok() {
+        block_edit_result = match mode {
+            BlockMode::Add => {
+                // INSERT opening marker before start line
+                insert_line_before_bytewise(
+                    &absolute_path,
+                    &second_step_temp_path,
+                    start,
+                    markers.start,
+                )
+            }
+            BlockMode::Remove => {
+                // DELETE start line
+                delete_line_bytewise(&absolute_path, &second_step_temp_path, start)
+            }
+        };
+    }
+
+    if block_edit_result.is_ok() {
+        if let Err(second_replace_error) = std::fs::copy(&second_step_temp_path, &absolute_path) {
+            println!(
+                "Block comment step 2 replace failed: {}",
+                second_replace_error
+            );
+            block_edit_result = Err(ToggleCommentError::IoError(IoOperation::Replace));
+        }
+    }
+
+    // ── Cleanup temps: always, on every path ──
+    // Bounded loop over exactly two paths. A temp may not exist if its step
+    // never ran or failed at creation; NotFound is therefore quiet.
+    for block_temp_path in [&first_step_temp_path, &second_step_temp_path] {
+        if let Err(temp_removal_error) = std::fs::remove_file(block_temp_path) {
+            if temp_removal_error.kind() != std::io::ErrorKind::NotFound {
+                println!(
+                    "Note: could not remove temp file {}: {}",
+                    block_temp_path.display(),
+                    temp_removal_error
+                );
+            }
+        }
+    }
+
+    // ── Final outcome ──
+    match block_edit_result {
+        Ok(()) => {
+            // Backup-deletion failure is non-fatal (save_file policy).
+            if let Err(backup_removal_error) = std::fs::remove_file(&backup_path) {
+                println!(
+                    "Note: block comment toggle succeeded but could not remove backup {}: {}",
+                    backup_path.display(),
+                    backup_removal_error
+                );
+            }
+            Ok(())
+        }
+        Err(block_edit_error) => {
+            // Option A: no restore. Backup retained; tell the user where it is,
+            // because the Copy error enum cannot carry the path.
+            if original_file_write_attempted {
+                println!(
+                    "Block comment toggle failed ({:?}). File may be HALF-EDITED \
+                         (unmatched marker): {}. Recover manually from backup retained at: {}",
+                    block_edit_error,
+                    absolute_path.display(),
+                    backup_path.display()
+                );
+            } else {
+                println!(
+                    "Block comment toggle failed ({:?}). Original file unchanged. \
+                         Backup retained at: {}",
+                    block_edit_error,
+                    backup_path.display()
+                );
+            }
+            Err(block_edit_error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod backup_location_and_cleanup_tests {
+    use super::*;
+    use std::fs;
+
+    /// Test-only: create a uniquely named `.rs` file in the OS temp dir.
+    /// The name includes PID + label so parallel tests never collide.
+    fn create_test_source_file(test_label: &str, file_content: &str) -> PathBuf {
+        let test_file_path = std::env::temp_dir().join(format!(
+            "tcim_test_{}_{}.rs",
+            std::process::id(),
+            test_label
+        ));
+        fs::write(&test_file_path, file_content).unwrap();
+        test_file_path
+    }
+
+    /// Test-only: assert no backup or temp file for `test_file_name` remains
+    /// in either candidate working directory (exe-parent and CWD).
+    fn assert_no_leftover_scratch_files(test_file_name: &str) {
+        let mut candidate_directories: Vec<PathBuf> = Vec::new();
+        if let Ok(exe_dir) = get_executable_parent_directory() {
+            candidate_directories.push(exe_dir);
+        }
+        candidate_directories.push(std::env::current_dir().unwrap());
+
+        for candidate_directory in candidate_directories {
+            for directory_entry in fs::read_dir(&candidate_directory).unwrap() {
+                let entry_name = directory_entry.unwrap().file_name();
+                let entry_name = entry_name.to_string_lossy();
+                let is_scratch = (entry_name.starts_with("backup_toggle_comment_")
+                    || entry_name.starts_with("temp_"))
+                    && entry_name.ends_with(test_file_name);
+                assert!(
+                    !is_scratch,
+                    "Leftover scratch file {} in {}",
+                    entry_name,
+                    candidate_directory.display()
+                );
+            }
+        }
+    }
+
+    fn file_name_of(test_file_path: &Path) -> String {
+        test_file_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    }
+
+    #[test]
+    fn executable_parent_directory_is_absolute_existing_directory() {
+        let exe_dir = get_executable_parent_directory().unwrap();
+        assert!(exe_dir.is_absolute());
+        assert!(exe_dir.is_dir());
+    }
+
+    #[test]
+    fn backup_helper_writes_pid_named_identical_copy() {
+        let test_file_path = create_test_source_file("backup_helper", "fn main() {}\n");
+        let canonical_test_path = test_file_path.canonicalize().unwrap();
+        let test_file_name = file_name_of(&canonical_test_path);
+
+        let (backup_path, working_directory) =
+            create_backup_with_fallback(&canonical_test_path, &test_file_name).unwrap();
+
+        assert!(backup_path.is_absolute());
+        assert_eq!(backup_path.parent().unwrap(), working_directory.as_path());
+        let backup_name = file_name_of(&backup_path);
+        assert_eq!(
+            backup_name,
+            format!(
+                "backup_toggle_comment_{}_{}",
+                std::process::id(),
+                test_file_name
+            )
+        );
+        assert_eq!(
+            fs::read(&backup_path).unwrap(),
+            fs::read(&canonical_test_path).unwrap()
+        );
+
+        fs::remove_file(&backup_path).unwrap();
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn indent_success_modifies_line_and_leaves_no_scratch_files() {
+        let test_file_path = create_test_source_file("indent_ok", "code\nnext\n");
+        let test_file_name = file_name_of(&test_file_path);
+
+        indent_line_bytewise(test_file_path.to_str().unwrap(), 0).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            "    code\nnext\n"
+        );
+        assert_no_leftover_scratch_files(&test_file_name);
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn indent_missing_file_reports_file_not_found() {
+        let missing_path = std::env::temp_dir().join("tcim_definitely_missing_indent.rs");
+        assert_eq!(
+            indent_line_bytewise(missing_path.to_str().unwrap(), 0),
+            Err(ToggleIndentError::FileNotFound)
+        );
+    }
+
+    #[test]
+    fn basic_comment_toggle_round_trips_and_leaves_no_scratch_files() {
+        let original_content = "let x = 1;\nlet y = 2;\n";
+        let test_file_path = create_test_source_file("basic_toggle", original_content);
+        let test_file_name = file_name_of(&test_file_path);
+        let test_path_str = test_file_path.to_str().unwrap();
+
+        toggle_basic_singleline_comment_bytewise(test_path_str, 0).unwrap();
+        assert_ne!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            original_content
+        );
+
+        toggle_basic_singleline_comment_bytewise(test_path_str, 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            original_content
+        );
+
+        assert_no_leftover_scratch_files(&test_file_name);
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn docstring_toggle_round_trips_and_leaves_no_scratch_files() {
+        let original_content = "fn documented() {}\n";
+        let test_file_path = create_test_source_file("docstring_toggle", original_content);
+        let test_file_name = file_name_of(&test_file_path);
+        let test_path_str = test_file_path.to_str().unwrap();
+
+        toggle_rust_docstring_singleline_comment_bytewise(test_path_str, 0).unwrap();
+        assert!(
+            fs::read_to_string(&test_file_path)
+                .unwrap()
+                .starts_with("///")
+        );
+
+        toggle_rust_docstring_singleline_comment_bytewise(test_path_str, 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            original_content
+        );
+
+        assert_no_leftover_scratch_files(&test_file_name);
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn block_comment_multiline_add_then_remove_round_trips() {
+        let original_content = "line one\nline two\n";
+        let test_file_path = create_test_source_file("block_multi", original_content);
+        let test_file_name = file_name_of(&test_file_path);
+        let test_path_str = test_file_path.to_str().unwrap();
+
+        // ADD: 2 lines → 4 lines, opening marker first.
+        toggle_block_comment_bytewise(test_path_str, 0, 1).unwrap();
+        let added_content = fs::read_to_string(&test_file_path).unwrap();
+        assert_eq!(added_content.lines().count(), 4);
+        assert!(added_content.starts_with("/*"));
+
+        // REMOVE: markers now on lines 0 and 3.
+        toggle_block_comment_bytewise(test_path_str, 0, 3).unwrap();
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            original_content
+        );
+
+        assert_no_leftover_scratch_files(&test_file_name);
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn block_comment_single_line_add_then_remove_round_trips() {
+        let original_content = "only line\n";
+        let test_file_path = create_test_source_file("block_single", original_content);
+        let test_file_name = file_name_of(&test_file_path);
+        let test_path_str = test_file_path.to_str().unwrap();
+
+        toggle_block_comment_bytewise(test_path_str, 0, 0).unwrap();
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap().lines().count(),
+            3
+        );
+
+        toggle_block_comment_bytewise(test_path_str, 0, 2).unwrap();
+        assert_eq!(
+            fs::read_to_string(&test_file_path).unwrap(),
+            original_content
+        );
+
+        assert_no_leftover_scratch_files(&test_file_name);
+        fs::remove_file(&test_file_path).unwrap();
+    }
+
+    #[test]
+    fn block_comment_missing_file_reports_file_not_found() {
+        let missing_path = std::env::temp_dir().join("tcim_definitely_missing_block.rs");
+        assert_eq!(
+            toggle_block_comment_bytewise(missing_path.to_str().unwrap(), 0, 1),
+            Err(ToggleCommentError::FileNotFound)
+        );
+    }
 }
 
 // ============================================================================

@@ -10705,7 +10705,7 @@ impl std::fmt::Display for FileOperationStatus {
 /// # #[derive(Debug)] enum LinesError { Io(io::Error) }
 /// # impl From<io::Error> for LinesError { fn from(e: io::Error) -> Self { LinesError::Io(e) } }
 /// # #[derive(Debug, PartialEq)] enum FileOperationStatus { Copied, AlreadyExisted, OriginalNotFound }
-/// # fn save_file_as_newfile_with_newname(
+/// # fn saveas_file_as_newfile_with_newname(
 /// #     _original: &Path,
 /// #     _new: &Path,
 /// # ) -> Result<(FileOperationStatus, &'static str), LinesError> {
