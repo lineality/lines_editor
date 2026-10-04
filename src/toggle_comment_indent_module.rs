@@ -2904,7 +2904,7 @@ fn get_executable_parent_directory() -> Result<PathBuf, ()> {
 /// 2. Attempt B (any failure in A): `{current_working_directory}/{backup_filename}`
 /// 3. Both fail: `Err(())`. The caller must NOT edit the file without a backup.
 ///
-/// Failure of the real copy operation IS the permission check; no separate
+/// Failure of the real copy operation is the permission check; no separate
 /// writability probing is performed (it would be a TOCTOU race anyway).
 ///
 /// # Naming
@@ -3003,15 +3003,15 @@ fn create_backup_with_fallback(
 /// No heap allocation, single byte buffer.
 ///
 /// # Backup & Temp File Lifecycle
-/// 1. A backup copy of the original file is placed in the **executable's parent
-///    directory** (not CWD): `backup_toggle_comment_{pid}_{filename}`.
+/// 1. A backup copy of the original file is placed in the executable's parent
+///    directory (not CWD): `backup_toggle_comment_{pid}_{filename}`.
 ///    If that fails for any reason, the backup is placed in the current working
 ///    directory instead (see `create_backup_with_fallback`). If both fail, the
 ///    edit is aborted and the original file is untouched.
 /// 2. Modified content is written to a process-isolated temp file in the same
 ///    directory as the backup, then copied over the original.
 /// 3. On verified success, both the temp file and the backup are removed.
-/// 4. On any failure before replacement completes, the backup is **retained**
+/// 4. On any failure before replacement completes, the backup is retained
 ///    for manual recovery (its path is printed) and the temp file is removed.
 /// 5. If the edit succeeds but the backup (or temp) cannot be deleted, a note
 ///    is printed and the function still returns `Ok(())`, matching
@@ -3171,15 +3171,15 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
 /// No heap allocation, single byte buffer.
 ///
 /// # Backup & Temp File Lifecycle
-/// 1. A backup copy of the original file is placed in the **executable's parent
-///    directory** (not CWD): `backup_toggle_comment_{pid}_{filename}`.
+/// 1. A backup copy of the original file is placed in the executable's parent
+///    directory (not CWD): `backup_toggle_comment_{pid}_{filename}`.
 ///    If that fails for any reason, the backup is placed in the current working
 ///    directory instead (see `create_backup_with_fallback`). If both fail, the
 ///    edit is aborted and the original file is untouched.
 /// 2. Modified content is written to a process-isolated temp file in the same
 ///    directory as the backup, then copied over the original.
 /// 3. On verified success, both the temp file and the backup are removed.
-/// 4. On any failure before replacement completes, the backup is **retained**
+/// 4. On any failure before replacement completes, the backup is retained
 ///    for manual recovery (its path is printed) and the temp file is removed.
 /// 5. If the edit succeeds but the backup (or temp) cannot be deleted, a note
 ///    is printed and the function still returns `Ok(())`, matching
@@ -3500,15 +3500,15 @@ mod exe_directory_and_backup_lifecycle_tests {
 /// Add 4 spaces to multiple lines using simple loop (bytewise)
 ///
 /// # Overview
-/// **Simple implementation:** Calls `indent_line_bytewise()` once for each
+/// Calls `indent_line_bytewise()` once for each
 /// line in the range. File opened/closed multiple times - intentional for simplicity.
 ///
 /// # Path Handling & Recovery Caveat
-/// The caller-supplied path is canonicalized **once** here and the resulting
+/// The caller-supplied path is canonicalized once here and the resulting
 /// absolute path is passed to every per-line call, guaranteeing all iterations
 /// target the identical file and avoiding redundant per-line canonicalization.
 ///
-/// Note: backup/restore granularity is **per line**, not per range. Each
+/// Note: backup/restore granularity is per line, not per range. Each
 /// per-line call creates and (on success) removes its own backup. If a line
 /// partway through the range fails, earlier lines remain modified and the
 /// retained backup reflects the file state before the *failing line only*,
@@ -3583,15 +3583,15 @@ pub fn indent_range_bytewise(
 /// Remove up to 4 spaces from multiple lines using simple loop (bytewise)
 ///
 /// # Overview
-/// **Simple implementation:** Calls `unindent_line_bytewise()` once for each
+/// Calls `unindent_line_bytewise()` once for each
 /// line in the range. File opened/closed multiple times - intentional for simplicity.
 ///
 /// # Path Handling & Recovery Caveat
-/// The caller-supplied path is canonicalized **once** here and the resulting
+/// The caller-supplied path is canonicalized once here and the resulting
 /// absolute path is passed to every per-line call, guaranteeing all iterations
 /// target the identical file and avoiding redundant per-line canonicalization.
 ///
-/// Note: backup/restore granularity is **per line**, not per range. Each
+/// Note: backup/restore granularity is per line, not per range. Each
 /// per-line call creates and (on success) removes its own backup. If a line
 /// partway through the range fails, earlier lines remain modified and the
 /// retained backup reflects the file state before the *failing line only*,
@@ -4079,7 +4079,7 @@ pub fn toggle_rust_docstring_singleline_comment_bytewise(
 /// Toggle basic comments on a range of lines using simple loop (bytewise)
 ///
 /// # Overview
-/// **Simple implementation:** Calls `toggle_basic_singleline_comment_bytewise()`
+/// Calls `toggle_basic_singleline_comment_bytewise()`
 /// once for each line in the range. No optimization, no single-pass complexity.
 /// File is opened/closed multiple times - this is intentional for simplicity.
 ///
@@ -4168,7 +4168,7 @@ pub fn toggle_range_basic_comments_bytewise(
 /// Toggle Rust docstrings on a range of lines using simple loop (bytewise)
 ///
 /// # Overview
-/// **Simple implementation:** Calls `toggle_rust_docstring_singleline_comment_bytewise()`
+/// Calls `toggle_rust_docstring_singleline_comment_bytewise()`
 /// once for each line in the range. No optimization, no single-pass complexity.
 /// File is opened/closed multiple times - this is intentional for simplicity.
 ///
