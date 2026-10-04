@@ -2941,6 +2941,7 @@ pub fn indent_line_bytewise(file_path: &str, line_number: usize) -> Result<(), T
         }
     }
 }
+
 /// Remove up to 4 spaces from the start of a specific line (bytewise)
 ///
 /// # Overview

@@ -2283,7 +2283,7 @@ mod saveas_tests {
         create_test_file(&source_path, test_content).expect("Failed to create test source file");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Operation succeeded with Copied status
         assert!(result.is_ok(), "Copy operation should succeed");
@@ -2324,7 +2324,7 @@ mod saveas_tests {
         create_test_file(&source_path, b"").expect("Failed to create empty source file");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Operation succeeded
         assert!(result.is_ok(), "Empty file copy should succeed");
@@ -2354,7 +2354,7 @@ mod saveas_tests {
             .expect("Failed to create binary source file");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Operation succeeded
         assert!(result.is_ok(), "Binary file copy should succeed");
@@ -2397,7 +2397,7 @@ mod saveas_tests {
         create_test_file(&source_path, &large_content).expect("Failed to create large source file");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Operation succeeded
         assert!(result.is_ok(), "Large file copy should succeed");
@@ -2435,7 +2435,7 @@ mod saveas_tests {
         // Do NOT create source file - it doesn't exist
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Returns Ok with OriginalNotFound status (not an error)
         assert!(result.is_ok(), "Should return Ok for predicated outcome");
@@ -2468,7 +2468,7 @@ mod saveas_tests {
         create_test_file(&dest_path, dest_content).expect("Failed to create destination");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Returns Ok with AlreadyExisted status (not an error)
         assert!(result.is_ok(), "Should return Ok for predicated outcome");
@@ -2506,7 +2506,7 @@ mod saveas_tests {
         fs::create_dir(&source_path).expect("Failed to create source directory");
 
         // Execute copy operation
-        let result = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
 
         // Verify: Returns error (not a file)
         assert!(result.is_err(), "Should return error for directory source");
@@ -2730,12 +2730,12 @@ mod saveas_tests {
         create_test_file(&source_path, content).expect("Failed to create source");
 
         // Copy to first destination
-        let result1 = save_file_as_newfile_with_newname(&source_path, &dest1_path);
+        let result1 = saveas_file_as_newfile_with_newname(&source_path, &dest1_path);
         assert!(result1.is_ok());
         assert_eq!(result1.unwrap().0, FileOperationStatus::Copied);
 
         // Copy to second destination (same source)
-        let result2 = save_file_as_newfile_with_newname(&source_path, &dest2_path);
+        let result2 = saveas_file_as_newfile_with_newname(&source_path, &dest2_path);
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap().0, FileOperationStatus::Copied);
 
@@ -2759,12 +2759,12 @@ mod saveas_tests {
         create_test_file(&source_path, b"content").expect("Failed to create source");
 
         // First copy: should succeed
-        let result1 = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result1 = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
         assert!(result1.is_ok());
         assert_eq!(result1.unwrap().0, FileOperationStatus::Copied);
 
         // Second copy to same destination: should get AlreadyExisted
-        let result2 = save_file_as_newfile_with_newname(&source_path, &dest_path);
+        let result2 = saveas_file_as_newfile_with_newname(&source_path, &dest_path);
         assert!(result2.is_ok());
         assert_eq!(result2.unwrap().0, FileOperationStatus::AlreadyExisted);
 

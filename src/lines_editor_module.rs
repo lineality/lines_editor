@@ -10755,7 +10755,7 @@ impl std::fmt::Display for FileOperationStatus {
 /// Function is thread-safe in that it doesn't use shared mutable state.
 /// However, concurrent access to same files from multiple threads/processes
 /// may cause file locking issues. Caller responsible for coordination.
-pub fn save_file_as_newfile_with_newname(
+pub fn saveas_file_as_newfile_with_newname(
     original_file_path: &Path,
     new_file_path_name: &Path,
 ) -> Result<(FileOperationStatus, &'static str)> {
@@ -11532,7 +11532,7 @@ mod save_backup_tests {
     // ==================================================================
 
     #[test]
-    fn save_file_success_updates_original_and_clears_modified_flag() {
+    fn savefile_success_updates_original_and_clears_modified_flag() {
         let test_dir = create_unique_test_directory("save_success");
         let original_file = test_dir.join("document.txt");
         let read_copy_file = test_dir.join("document.txt.readcopy");
@@ -11549,7 +11549,7 @@ mod save_backup_tests {
     }
 
     #[test]
-    fn save_file_success_removes_its_backup() {
+    fn savefile_success_removes_its_backup() {
         // Under cargo test the centralized archive is target/debug/deps/archive.
         // We can't easily assert "no backup anywhere" without knowing which
         // location was chosen, so we assert the strongest checkable claim:
@@ -11579,7 +11579,7 @@ mod save_backup_tests {
     }
 
     #[test]
-    fn save_file_new_file_saves_without_backup() {
+    fn savefile_new_file_saves_without_backup() {
         // Original does not exist yet: no backup is made, save just writes it.
         let test_dir = create_unique_test_directory("save_new_file");
         let original_file = test_dir.join("brand_new.txt");
@@ -11596,7 +11596,7 @@ mod save_backup_tests {
     }
 
     #[test]
-    fn save_file_failure_restores_original_and_retains_backup() {
+    fn savefile_failure_restores_original_and_retains_backup() {
         // Force the save copy to fail deterministically: the read-copy path
         // points at a file we delete AFTER constructing the state but BEFORE
         // calling save_file. Backup creation succeeds (original exists),
@@ -11695,7 +11695,7 @@ mod save_backup_tests {
     // ==================================================================
 
     #[test]
-    fn save_file_rejects_missing_original_path() {
+    fn savefile_rejects_missing_original_path() {
         let test_dir = create_unique_test_directory("save_no_original");
         let read_copy_file = test_dir.join("orphan.readcopy");
         fs::write(&read_copy_file, b"content").unwrap();
@@ -11717,7 +11717,7 @@ mod save_backup_tests {
     }
 
     #[test]
-    fn save_file_rejects_missing_read_copy_path() {
+    fn savefile_rejects_missing_read_copy_path() {
         let test_dir = create_unique_test_directory("save_no_readcopy");
         let original_file = test_dir.join("document.txt");
         fs::write(&original_file, b"content").unwrap();
@@ -14474,7 +14474,7 @@ pub fn execute_command(lines_editor_state: &mut EditorState, command: Command) -
         Command::SaveAs(save_as_path) => {
             // Execute save-as operation
             // Note: save_as_path is PathBuf, we need &Path
-            match save_file_as_newfile_with_newname(&edit_file_path, &save_as_path) {
+            match saveas_file_as_newfile_with_newname(&edit_file_path, &save_as_path) {
                 // Success: file copied
                 Ok((FileOperationStatus::Copied, _)) => {
                     let info_message = "File Saved As.";
