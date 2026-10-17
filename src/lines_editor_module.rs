@@ -8442,8 +8442,8 @@ impl EditorState {
                 "ki" => Command::EnterKeystrokeInputMode,
                 "v" => Command::EnterVisualSelectMode,
                 // Multi-character commands
-                "wq" | "sq" => Command::SaveAndQuit,
-                "s" | "ww" => Command::SaveFileStandard,
+                "wq" | "sq" | ":wq" => Command::SaveAndQuit,
+                "s" | ":w" => Command::SaveFileStandard,
                 "q" => Command::Quit,
                 "p" | "pasty" => Command::EnterPastyClipboardMode,
                 "hex" | "bytes" | "byte" => Command::EnterHexEditMode,
@@ -8483,9 +8483,9 @@ impl EditorState {
                 "i" => Command::EnterInsertMode,
                 "q" => Command::Quit,
                 "c" | "y" => Command::Copyank,
-                "s" | "ww" => Command::SaveFileStandard,
+                "s" | ":w" => Command::SaveFileStandard,
                 "n" | ESC_KEY_STR => Command::EnterNormalMode,
-                "wq" | "sq" => Command::SaveAndQuit,
+                "wq" | "sq" | ":wq" => Command::SaveAndQuit,
                 // "d" => Command::DeleteBackspace, // minimal, works
                 "d" => Command::DeleteRange,
                 DELETE_KEY_STR => Command::DeleteBackspace, // delete key -> \x1b[3~

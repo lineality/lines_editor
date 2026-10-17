@@ -3,9 +3,9 @@ name = "lines"
 version = "0.4.2"
 edition = "2024"
 
-
 [dependencies]
 # NONE!
+
 # If you need to test on a test-file, use /testfiles/...
 
 # build with -> cargo build --profile release-performance
