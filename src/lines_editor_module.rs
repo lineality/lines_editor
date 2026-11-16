@@ -24684,7 +24684,7 @@ pub fn lines_full_file_editor(
     if !target_path.exists() {
         // new file header = longer readable timestamp
         let header_readable_timestamp = create_readable_archive_timestamp(SystemTime::now());
-        let header = stack_format_it("# {}", &[&header_readable_timestamp], "");
+        let header = stack_format_it("// {}", &[&header_readable_timestamp], "");
 
         // Create with header
         let mut file = File::create(&target_path)?;
