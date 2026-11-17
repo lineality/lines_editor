@@ -25025,6 +25025,20 @@ pub fn lines_fullfile_editor_core(
     while keep_editor_loop_running && iteration_count < limits::MAIN_EDITOR_LOOP_COMMANDS {
         iteration_count += 1;
 
+        /*
+        This should be moved to... what locations, that is the question:
+        move_right
+        move_up
+        move_down
+        delete functions...
+        move right?
+        (note: visual-mode block delete is maybe related but another goal
+        e.g. having the resulting cursor in a sane location)
+
+        Q: Make this a function to be used in each case?
+        Or are different cases unique?
+
+        */
         // ================
         // Bump on Main St.
         // ================
@@ -25078,6 +25092,9 @@ pub fn lines_fullfile_editor_core(
             }
         }
 
+        //  =====
+        //   HEX
+        //  =====
         if lines_editor_state.mode == EditorMode::HexMode {
             //  ======================
             //  HEX Render a Flesh TUI
@@ -25098,9 +25115,9 @@ pub fn lines_fullfile_editor_core(
             })?;
         }
 
-        //  ====
-        //  Iput
-        //  ====
+        //  ============+=
+        //  Handling Input
+        //  ===========+==
         if lines_editor_state.mode == EditorMode::Insert {
             //  ===========
             //  Insert Mode
